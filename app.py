@@ -1,491 +1,1098 @@
-import http.server
-import socketserver
-import json
-import math
-import random
-import time
-import threading
-import os
-from datetime import datetime, time as dtime, timedelta, timezone
-from urllib.parse import urlparse, parse_qs
+#!/usr/bin/env python3
+"""
+PAPER TRADER V2
+NIFTY + SENSEX + optional option-chain support
+TERMUX / ANDROID
 
-try:
-    import yfinance as yf
-except ImportError:
-    yf = None
+IMPORTANT:
+- PAPER TRADING ONLY.
+- NO Dhan.
+- NO broker connection.
+- NO real orders.
+- Option prices are NEVER fabricated.
+- Free Yahoo Finance data can be delayed/unofficial.
+- Indian index option chains may be unavailable through Yahoo. If unavailable,
+  the program displays OPTION DATA UNAVAILABLE and blocks option trades.
 
-IST = timezone(timedelta(hours=5, minutes=30))
+Install:
+    pip install --upgrade yfinance pandas tzdata
 
-HTML_PAGE = """<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Dhan Options & Index Trading Simulator</title>
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-    <style>
-        body { background-color: #0b0e14; color: #d1d5db; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; margin: 0; padding: 0; font-size: 13px; }
-        header { background: #121824; border-bottom: 1px solid #1f293d; padding: 10px 20px; display: flex; justify-content: space-between; align-items: center; }
-        .logo { font-size: 16px; font-weight: bold; color: #f3f4f6; display: flex; gap: 15px; align-items: center; }
-        .expiry-badge { background: #1e293b; color: #38bdf8; padding: 4px 10px; border-radius: 4px; font-size: 11px; border: 1px solid #334155; }
-        .market-status { background: #064e3b; color: #34d399; padding: 4px 10px; border-radius: 4px; font-size: 11px; font-weight: bold; }
-        .container { display: grid; grid-template-columns: 280px 1fr 320px; height: calc(100vh - 51px); }
-        .panel { background: #0f172a; border-right: 1px solid #1f293d; display: flex; flex-direction: column; overflow: hidden; }
-        .panel-header { background: #1e293b; padding: 8px 12px; font-weight: bold; color: #94a3b8; font-size: 12px; border-bottom: 1px solid #334155; }
-        .watchlist-item { padding: 10px 12px; border-bottom: 1px solid #1e293b; cursor: pointer; display: flex; justify-content: space-between; align-items: center; }
-        .watchlist-item:hover { background: #1e293b; }
-        .center-stage { display: flex; flex-direction: column; background: #0b0e14; overflow-y: auto; height: 100%; }
-        .chart-toolbar { display: flex; gap: 10px; padding: 10px; background: #121824; border-bottom: 1px solid #1f293d; align-items: center; flex-shrink: 0; }
-        button { background: #2563eb; color: white; border: none; padding: 6px 12px; border-radius: 4px; cursor: pointer; font-weight: bold; }
-        button:hover { background: #1d4ed8; }
-        .chart-container { position: relative; width: 100%; height: 380px; min-height: 380px; padding: 10px; background: #0b0e14; flex-shrink: 0; }
-        .trading-panel { padding: 15px; background: #111827; border-top: 1px solid #1f293d; display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; align-items: center; flex-shrink: 0; }
-        .input-group { display: flex; flex-direction: column; gap: 4px; }
-        .input-group label { font-size: 11px; color: #9ca3af; }
-        .input-group input, .input-group select { background: #1f2937; border: 1px solid #374151; color: white; padding: 6px; border-radius: 4px; }
-        .right-panel { background: #0f172a; border-left: 1px solid #1f293d; display: flex; flex-direction: column; }
-        .chain-table { width: 100%; border-collapse: collapse; font-size: 11px; }
-        .chain-table th, .chain-table td { padding: 6px; text-align: center; border-bottom: 1px solid #1e293b; }
-        .chain-table th { background: #1e293b; color: #94a3b8; position: sticky; top: 0; }
-        .ce-side { color: #f87171; }
-        .pe-side { color: #4ade80; }
-    </style>
-</head>
-<body>
-    <header>
-        <div class="logo">
-            <span>⚡ Dhan Trading Sim</span>
-            <span class="expiry-badge" id="expiryDisplay">Expiry: Loading...</span>
-            <span class="market-status" id="marketStatus">LIVE (09:00 - 15:40 IST)</span>
-        </div>
-        <div style="display: flex; gap: 20px; align-items: center;">
-            <div>Balance: ₹<span id="walletBalance">50000.00</span></div>
-            <div>Net P&L: ₹<span id="netPnl">0.00</span></div>
-            <button onclick="resetAccount()" style="background: #dc2626; padding: 4px 8px; font-size: 11px;">Reset</button>
-        </div>
-    </header>
-
-    <div class="container">
-        <div class="panel">
-            <div class="panel-header">Indices & Watchlist</div>
-            <div class="watchlist-item" onclick="selectSymbol('NIFTY')">
-                <div>
-                    <div style="font-weight: bold;">NIFTY 50</div>
-                    <div style="font-size: 11px; color: #9ca3af;" id="niftySpot">--</div>
-                </div>
-                <div id="niftyChg" style="color: #34d399;">--</div>
-            </div>
-            <div class="watchlist-item" onclick="selectSymbol('SENSEX')">
-                <div>
-                    <div style="font-weight: bold;">SENSEX</div>
-                    <div style="font-size: 11px; color: #9ca3af;" id="sensexSpot">--</div>
-                </div>
-                <div id="sensexChg" style="color: #34d399;">--</div>
-            </div>
-            <div class="panel-header" style="margin-top: 10px;">Option Chain Strikes</div>
-            <div style="flex: 1; overflow-y: auto;">
-                <table class="chain-table">
-                    <thead>
-                        <tr><th>CE LTP</th><th>Strike</th><th>PE LTP</th></tr>
-                    </thead>
-                    <tbody id="chainBody"></tbody>
-                </table>
-            </div>
-        </div>
-
-        <div class="center-stage">
-            <div class="chart-toolbar">
-                <span id="chartTitle" style="font-weight: bold; font-size: 14px;">NIFTY 50</span>
-                <button onclick="setTimeframe('1m')">1m</button>
-                <button onclick="setTimeframe('5m')">5m</button>
-                <button onclick="setTimeframe('15m')">15m</button>
-                <span style="margin-left: auto; color: #9ca3af;" id="marketCountdown">Close in: --</span>
-            </div>
-            <div class="chart-container">
-                <canvas id="mainChart"></canvas>
-            </div>
-            <div class="trading-panel">
-                <div class="input-group">
-                    <label>Action</label>
-                    <select id="orderAction"><option value="BUY">BUY</option><option value="SELL">SELL</option></select>
-                </div>
-                <div class="input-group">
-                    <label>Quantity</label>
-                    <input type="number" id="orderQty" value="65">
-                </div>
-                <div class="input-group">
-                    <label>Order Type</label>
-                    <select id="orderType"><option value="MARKET">MARKET</option><option value="LIMIT">LIMIT</option></select>
-                </div>
-                <div class="input-group">
-                    <label>&nbsp;</label>
-                    <button onclick="placeOrder()" style="background: #16a34a; width: 100%;">Place Order</button>
-                </div>
-            </div>
-        </div>
-
-        <div class="right-panel">
-            <div class="panel-header">Active Positions</div>
-            <div style="flex: 1; overflow-y: auto; padding: 10px;" id="positionsContainer">
-                <div style="color: #6b7280; text-align: center; margin-top: 20px;">No open positions</div>
-            </div>
-            <div class="panel-header">Recent Orders</div>
-            <div style="height: 150px; overflow-y: auto; padding: 10px; font-size: 11px;" id="ordersContainer"></div>
-        </div>
-    </div>
-
-    <script>
-        let currentSymbol = 'NIFTY';
-        let currentTimeframe = '1m';
-        let chartInstance = null;
-
-        function selectSymbol(sym) { currentSymbol = sym; fetchMarketData(); }
-        function setTimeframe(tf) { currentTimeframe = tf; fetchMarketData(); }
-
-        async function fetchMarketData() {
-            try {
-                let res = await fetch(`/api/market?symbol=${currentSymbol}&tf=${currentTimeframe}`);
-                let data = await res.json();
-                
-                document.getElementById('niftySpot').innerText = data.nifty_spot;
-                document.getElementById('niftyChg').innerText = `${data.nifty_chg} (${data.nifty_pct}%)`;
-                document.getElementById('sensexSpot').innerText = data.sensex_spot;
-                document.getElementById('sensexChg').innerText = `${data.sensex_chg} (${data.sensex_pct}%)`;
-                
-                document.getElementById('walletBalance').innerText = data.wallet.balance.toFixed(2);
-                document.getElementById('netPnl').innerText = data.wallet.net_pnl.toFixed(2);
-
-                let exp = currentSymbol.includes('SENSEX') ? data.sensex_expiry : data.nifty_expiry;
-                document.getElementById('expiryDisplay').innerText = `Expiry: ${exp}`;
-
-                renderChart(data.chart);
-                renderChain(data.chain);
-                renderPositions(data.positions);
-                renderOrders(data.orders);
-            } catch (e) { console.error("Fetch error:", e); }
-        }
-
-        function renderChart(chartData) {
-            document.getElementById('chartTitle').innerText = chartData.display_title;
-            document.getElementById('marketCountdown').innerText = `Close in: ${chartData.countdown}`;
-
-            let labels = chartData.candles.map(c => c.date_label);
-            let prices = chartData.candles.map(c => c.close);
-
-            let ctx = document.getElementById('mainChart').getContext('2d');
-            if (chartInstance) {
-                chartInstance.data.labels = labels;
-                chartInstance.data.datasets[0].data = prices;
-                chartInstance.data.datasets[1].data = chartData.ema9_series;
-                chartInstance.data.datasets[2].data = chartData.ema15_series;
-                chartInstance.update('none');
-            } else {
-                chartInstance = new Chart(ctx, {
-                    type: 'line',
-                    data: {
-                        labels: labels,
-                        datasets: [
-                            { label: 'Close', data: prices, borderColor: '#3b82f6', borderWidth: 1.5, pointRadius: 0 },
-                            { label: 'EMA 9', data: chartData.ema9_series, borderColor: '#eab308', borderWidth: 1, pointRadius: 0 },
-                            { label: 'EMA 15', data: chartData.ema15_series, borderColor: '#a855f7', borderWidth: 1, pointRadius: 0 }
-                        ]
-                    },
-                    options: {
-                        responsive: true,
-                        maintainAspectRatio: false,
-                        scales: {
-                            x: { grid: { color: '#1e293b' }, ticks: { color: '#94a3b8', maxTicksLimit: 8 } },
-                            y: { grid: { color: '#1e293b' }, ticks: { color: '#94a3b8' } }
-                        }
-                    }
-                });
-            }
-        }
-
-        function renderChain(chain) {
-            let tbody = document.getElementById('chainBody');
-            tbody.innerHTML = chain.map(row => `
-                <tr>
-                    <td class="ce-side" onclick="selectSymbol('${currentSymbol.split('_')[0]}_${row.strike}_CE')" style="cursor:pointer;">${row.ce_ltp}</td>
-                    <td style="font-weight:bold; background:#1e293b;">${row.strike}</td>
-                    <td class="pe-side" onclick="selectSymbol('${currentSymbol.split('_')[0]}_${row.strike}_PE')" style="cursor:pointer;">${row.pe_ltp}</td>
-                </tr>
-            `).join('');
-        }
-
-        function renderPositions(posList) {
-            let container = document.getElementById('positionsContainer');
-            if (posList.length === 0) {
-                container.innerHTML = '<div style="color: #6b7280; text-align: center; margin-top: 20px;">No open positions</div>';
-                return;
-            }
-            container.innerHTML = posList.map(p => `
-                <div style="background: #1e293b; padding: 8px; border-radius: 4px; margin-bottom: 6px; font-size: 11px;">
-                    <div style="font-weight:bold; color: #f3f4f6;">${p.symbol} (${p.action})</div>
-                    <div>Qty: ${p.qty} | Buy: ₹${p.buy_price}</div>
-                    <div>PnL: <span style="color: ${p.pnl >= 0 ? '#34d399' : '#f87171'}">₹${p.pnl}</span></div>
-                    <button onclick="exitPosition('${p.id}')" style="background:#dc2626; padding: 2px 6px; font-size: 10px; margin-top: 4px;">Exit</button>
-                </div>
-            `).join('');
-        }
-
-        function renderOrders(orders) {
-            let container = document.getElementById('ordersContainer');
-            container.innerHTML = orders.map(o => `
-                <div style="border-bottom: 1px solid #1e293b; padding: 4px 0;">
-                    <span style="color: #9ca3af;">${o.time}</span> - ${o.symbol} ${o.action}
-                </div>
-            `).join('');
-        }
-
-        async function placeOrder() {
-            let action = document.getElementById('orderAction').value;
-            let qty = parseInt(document.getElementById('orderQty').value);
-            let orderType = document.getElementById('orderType').value;
-            let sym = currentSymbol, strike = 0, type = "INDEX";
-            if (sym.includes('_')) {
-                let parts = sym.split('_');
-                sym = parts[0]; strike = parseFloat(parts[1]); type = parts[2];
-            }
-            await fetch('/api/order', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ symbol: sym, action: action, qty: qty, order_type: orderType, strike: strike, type: type })
-            });
-            fetchMarketData();
-        }
-
-        async function exitPosition(id) {
-            await fetch('/api/exit', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ id: id })
-            });
-            fetchMarketData();
-        }
-
-        async function resetAccount() {
-            await fetch('/api/reset', { method: 'POST' });
-            fetchMarketData();
-        }
-
-        setInterval(fetchMarketData, 1000);
-        fetchMarketData();
-    </script>
-</body>
-</html>
+Run:
+    python game.py
 """
 
-def fetch_historical_candles(ticker_symbol, period="5d", interval="1m"):
-    if not yf: return []
+import os
+import sys
+import time
+import math
+import csv
+from datetime import datetime, time as dtime
+from pathlib import Path
+
+try:
+    import pandas as pd
+    import yfinance as yf
+except ImportError:
+    print("Run: pip install --upgrade yfinance pandas tzdata")
+    sys.exit(1)
+
+# ========================= CONFIG =========================
+STARTING_CAPITAL = 50_000.00
+POLL_SECONDS = 20
+INDEX_PERIOD = "5d"
+INDEX_INTERVAL = "1m"
+
+SYMBOLS = {
+    "NIFTY": "^NSEI",
+    "SENSEX": "^BSESN",
+}
+
+# These are only displayed as reference lot sizes. They are NOT used to
+# fabricate option contracts or prices.
+REFERENCE_LOT_SIZE = {
+    "NIFTY": 65,
+    "SENSEX": 20,
+}
+
+MARKET_OPEN = dtime(9, 15)
+MARKET_CLOSE = dtime(15, 30)
+
+DATA_DIR = Path.home() / "trading_simulator_data"
+TRADE_FILE = DATA_DIR / "trades.csv"
+CANDLE_FILE = DATA_DIR / "candles.csv"
+
+# ========================= STATE =========================
+capital = STARTING_CAPITAL
+positions = {}       # key -> position dict
+running = True
+last_refresh = None
+
+market = {
+    "NIFTY": {"price": None, "prev_close": None, "candles": pd.DataFrame(), "timestamp": None},
+    "SENSEX": {"price": None, "prev_close": None, "candles": pd.DataFrame(), "timestamp": None},
+}
+
+# option_chain[symbol] = {
+#   "status": "...",
+#   "expiry": "...",
+#   "calls": dataframe,
+#   "puts": dataframe,
+#   "timestamp": datetime
+# }
+option_chain = {
+    "NIFTY": {"status": "NOT LOADED", "expiry": None, "calls": pd.DataFrame(), "puts": pd.DataFrame(), "timestamp": None},
+    "SENSEX": {"status": "NOT LOADED", "expiry": None, "calls": pd.DataFrame(), "puts": pd.DataFrame(), "timestamp": None},
+}
+
+
+# ========================= BASIC HELPERS =========================
+def clear_screen():
+    os.system("clear" if os.name != "nt" else "cls")
+
+
+def now():
+    return datetime.now()
+
+
+def market_is_open():
+    n = now()
+    return n.weekday() < 5 and MARKET_OPEN <= n.time() <= MARKET_CLOSE
+
+
+def money(x):
     try:
-        ticker = yf.Ticker(ticker_symbol)
-        df = ticker.history(period=period, interval=interval)
-        if df.empty: return []
-        candles = []
-        timestamps = df.index.astype(int) // 10**9
-        opens, highs, lows, closes, volumes = df["Open"].values, df["High"].values, df["Low"].values, df["Close"].values, df["Volume"].values
-        first_day = None
-        for i in range(len(timestamps)):
-            t = int(timestamps[i])
-            dt = datetime.fromtimestamp(t, tz=timezone.utc).astimezone(IST)
-            if not (dtime(9, 0) <= dt.time() <= dtime(15, 40)): continue
-            day_str = dt.strftime("%Y-%m-%d")
-            if first_day is None: first_day = day_str
-            candles.append({
-                "time": t, "date_label": dt.strftime("%d/%m %H:%M"), "is_prev_day": day_str != first_day,
-                "open": round(float(opens[i]), 2), "high": round(float(highs[i]), 2),
-                "low": round(float(lows[i]), 2), "close": round(float(closes[i]), 2),
-                "volume": int(volumes[i]) if not math.isnan(volumes[i]) else 500
-            })
-        return candles
-    except Exception: return []
+        if x is None or math.isnan(float(x)):
+            return "--"
+        return f"₹{float(x):,.2f}"
+    except Exception:
+        return "--"
 
-def fetch_live_market_prices():
-    if not yf: return None, None
+
+def num(x, digits=2):
     try:
-        nifty_df = yf.Ticker("^NSEI").history(period="1d", interval="1m")
-        sensex_df = yf.Ticker("^BSESN").history(period="1d", interval="1m")
-        if not nifty_df.empty and not sensex_df.empty:
-            return float(nifty_df["Close"].iloc[-1]), float(sensex_df["Close"].iloc[-1])
-    except Exception: pass
-    return None, None
+        if x is None or math.isnan(float(x)):
+            return "--"
+        return f"{float(x):,.{digits}f}"
+    except Exception:
+        return "--"
 
-def norm_pdf(x): return (1.0 / math.sqrt(2.0 * math.pi)) * math.exp(-0.5 * x * x)
-def norm_cdf(x): return 0.5 * (1.0 + math.erf(x / math.sqrt(2.0)))
 
-def get_current_expiry_dates():
-    today = datetime.now(IST).date()
-    days_to_nifty = (3 - today.weekday() + 7) % 7
-    if days_to_nifty == 0 and datetime.now(IST).time() > dtime(15, 30): days_to_nifty = 7
-    nifty_expiry = today + timedelta(days=days_to_nifty)
-    days_to_sensex = (4 - today.weekday() + 7) % 7
-    if days_to_sensex == 0 and datetime.now(IST).time() > dtime(15, 30): days_to_sensex = 7
-    sensex_expiry = today + timedelta(days=days_to_sensex)
-    return nifty_expiry.strftime("%d %b %Y"), sensex_expiry.strftime("%d %b %Y")
+def ensure_files():
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
 
-def calc_black_scholes(spot, strike, dte_days=4.0, iv=0.14, r=0.06):
-    if strike <= 0 or spot <= 0: return {"ce_ltp": 0.50, "pe_ltp": 0.50, "ce_delta": 0.0, "pe_delta": 0.0, "gamma": 0.0, "theta": 0.0}
-    t = max(dte_days / 365.0, 0.0001)
-    sqrt_t = math.sqrt(t)
-    d1 = (math.log(spot / strike) + (r + 0.5 * iv * iv) * t) / (iv * sqrt_t)
-    d2 = d1 - iv * sqrt_t
-    nd1, nd2 = norm_cdf(d1), norm_cdf(d2)
-    ce = spot * nd1 - strike * math.exp(-r * t) * nd2
-    pe = strike * math.exp(-r * t) * norm_cdf(-d2) - spot * norm_cdf(-d1)
-    return {
-        "ce_ltp": max(round(ce, 2), 0.50), "pe_ltp": max(round(pe, 2), 0.50),
-        "ce_delta": round(nd1, 3), "pe_delta": round(nd1 - 1.0, 3),
-        "gamma": round(norm_pdf(d1) / (spot * iv * sqrt_t), 5),
-        "theta": round((- (spot * norm_pdf(d1) * iv) / (2.0 * sqrt_t) - r * strike * math.exp(-r * t) * nd2) / 365.0, 2)
-    }
+    if not TRADE_FILE.exists():
+        with open(TRADE_FILE, "w", newline="") as f:
+            csv.writer(f).writerow([
+                "timestamp", "instrument", "side", "quantity", "entry_or_exit_price",
+                "value", "realized_pnl", "note"
+            ])
 
-def calc_ema_series(data, period):
-    if not data: return []
-    k = 2.0 / (period + 1)
-    series = [data[0]]
-    for p in data[1:]: series.append(round((p * k) + (series[-1] * (1.0 - k)), 2))
-    return series
+    if not CANDLE_FILE.exists():
+        with open(CANDLE_FILE, "w", newline="") as f:
+            csv.writer(f).writerow([
+                "timestamp", "symbol", "open", "high", "low", "close",
+                "volume", "vwap", "ema9", "ema21", "rsi"
+            ])
 
-class SimulationState:
-    def __init__(self):
-        self.lock = threading.Lock()
-        self.nifty_spot, self.sensex_spot = 23850.00, 81450.00
-        self.nifty_base, self.sensex_base = 23826.75, 81400.00
-        self.candles_nifty = fetch_historical_candles("^NSEI", period="5d", interval="1m")
-        self.candles_sensex = fetch_historical_candles("^BSESN", period="5d", interval="1m")
-        if not self.candles_nifty: self.candles_nifty = self._generate_fallback(self.nifty_spot)
-        if not self.candles_sensex: self.candles_sensex = self._generate_fallback(self.sensex_spot)
-        if self.candles_nifty: self.nifty_spot, self.nifty_base = self.candles_nifty[-1]["close"], self.candles_nifty[0]["open"]
-        if self.candles_sensex: self.sensex_spot, self.sensex_base = self.candles_sensex[-1]["close"], self.candles_sensex[0]["open"]
-        self.wallet = {"initial": 50000.0, "balance": 50000.0, "used_margin": 0.0, "realized_pnl": 0.0}
-        self.positions, self.pending_orders, self.orders, self.closed_trades, self.sound_events = [], [], [], [], []
 
-    def _generate_fallback(self, start_p):
-        now, candles, cur = time.time(), [], start_p - 120.0
-        for i in range(150):
-            dt = datetime.fromtimestamp(now - (150 - i) * 60, tz=timezone.utc).astimezone(IST)
-            o, c = cur, cur + random.uniform(-4, 4.5)
-            candles.append({"time": int(dt.timestamp()), "date_label": dt.strftime("%d/%m %H:%M"), "is_prev_day": i < 75, "open": round(o, 2), "high": round(max(o, c) + 2, 2), "low": round(min(o, c) - 2, 2), "close": round(c, 2), "volume": random.randint(1500, 6000)})
-            cur = c
-        return candles
+def rsi(series, period=14):
+    delta = series.diff()
+    gain = delta.clip(lower=0)
+    loss = -delta.clip(upper=0)
 
-    def update_tick(self):
-        with self.lock:
-            ln, ls = fetch_live_market_prices()
-            if ln and ls:
-                self.nifty_spot, self.sensex_spot = round(ln, 2), round(ls, 2)
-            else:
-                step = random.gauss(0, 1.5)
-                self.nifty_spot = round(self.nifty_spot + step, 2)
-                self.sensex_spot = round(self.sensex_spot + step * 3.5, 2)
-            now, dt = time.time(), datetime.now(IST)
-            for cl, sv in [(self.candles_nifty, self.nifty_spot), (self.candles_sensex, self.sensex_spot)]:
-                if cl:
-                    last_c = cl[-1]
-                    if now - last_c["time"] >= 60:
-                        cl.append({"time": int(now), "date_label": dt.strftime("%d/%m %H:%M"), "is_prev_day": False, "open": sv, "high": sv, "low": sv, "close": sv, "volume": random.randint(200, 600)})
-                        if len(cl) > 600: cl.pop(0)
-                    else:
-                        last_c["high"], last_c["low"], last_c["close"] = max(last_c["high"], sv), min(last_c["low"], sv), sv
+    avg_gain = gain.ewm(alpha=1 / period, min_periods=period, adjust=False).mean()
+    avg_loss = loss.ewm(alpha=1 / period, min_periods=period, adjust=False).mean()
 
-    def get_instrument_chart_data(self, symbol, timeframe="1m"):
-        is_sensex = "SENSEX" in symbol
-        raw_candles = self.candles_sensex if is_sensex else self.candles_nifty
-        curr_spot = self.sensex_spot if is_sensex else self.nifty_spot
-        if symbol in ["NIFTY", "SENSEX"] or "_" not in symbol:
-            display_title = "SENSEX" if is_sensex else "NIFTY 50"
-            ltp, greeks = curr_spot, {"delta": 1.0, "gamma": 0.0, "theta": 0.0}
+    rs = avg_gain / avg_loss.replace(0, float("nan"))
+    return 100 - (100 / (1 + rs))
+
+
+def add_indicators(df):
+    if df is None or df.empty:
+        return df
+
+    out = df.copy()
+
+    if "Volume" not in out.columns:
+        out["Volume"] = 0
+
+    typical = (out["High"] + out["Low"] + out["Close"]) / 3
+    volume = out["Volume"].fillna(0)
+
+    # Index feeds may have zero/missing volume. In that case VWAP is unavailable.
+    cum_volume = volume.cumsum()
+    cum_tpv = (typical * volume).cumsum()
+
+    out["VWAP"] = cum_tpv / cum_volume.replace(0, float("nan"))
+    out["EMA9"] = out["Close"].ewm(span=9, adjust=False).mean()
+    out["EMA21"] = out["Close"].ewm(span=21, adjust=False).mean()
+    out["RSI"] = rsi(out["Close"])
+
+    return out
+
+
+# ========================= INDEX DATA =========================
+def fetch_index(symbol):
+    ticker = SYMBOLS[symbol]
+
+    try:
+        df = yf.download(
+            ticker,
+            period=INDEX_PERIOD,
+            interval=INDEX_INTERVAL,
+            auto_adjust=False,
+            progress=False,
+            threads=False,
+        )
+
+        if df is None or df.empty:
+            return None, "No data returned"
+
+        if isinstance(df.columns, pd.MultiIndex):
+            # Usually the first level contains Open/High/Low/Close/Volume.
+            df.columns = df.columns.get_level_values(0)
+
+        required = ["Open", "High", "Low", "Close"]
+        if not all(c in df.columns for c in required):
+            return None, "Unexpected Yahoo columns"
+
+        if "Volume" not in df.columns:
+            df["Volume"] = 0
+
+        df = df[["Open", "High", "Low", "Close", "Volume"]].copy()
+        df.dropna(subset=["Open", "High", "Low", "Close"], inplace=True)
+
+        if df.empty:
+            return None, "No usable candles"
+
+        # Convert timezone if Yahoo supplied one.
+        try:
+            if getattr(df.index, "tz", None) is not None:
+                df.index = df.index.tz_convert("Asia/Kolkata").tz_localize(None)
+        except Exception:
+            pass
+
+        candles = df.resample("5min", label="left", closed="left").agg({
+            "Open": "first",
+            "High": "max",
+            "Low": "min",
+            "Close": "last",
+            "Volume": "sum",
+        })
+
+        candles.dropna(subset=["Open", "High", "Low", "Close"], inplace=True)
+        candles = add_indicators(candles)
+
+        price = float(df["Close"].iloc[-1])
+        stamp = df.index[-1]
+
+        # Previous close is obtained separately when Yahoo exposes it.
+        prev_close = None
+        try:
+            fi = yf.Ticker(ticker).fast_info
+            pc = fi.get("previous_close")
+            if pc is not None:
+                prev_close = float(pc)
+        except Exception:
+            pass
+
+        return {
+            "price": price,
+            "prev_close": prev_close,
+            "candles": candles,
+            "timestamp": stamp,
+        }, None
+
+    except Exception as e:
+        return None, str(e)
+
+
+def refresh_indices():
+    global last_refresh
+
+    errors = {}
+
+    for symbol in SYMBOLS:
+        data, error = fetch_index(symbol)
+
+        if data is not None:
+            market[symbol].update(data)
         else:
-            parts = symbol.split("_")
-            strike, opt_type = float(parts[1]), parts[2]
-            ne, se = get_current_expiry_dates()
-            display_title = f"{'SENSEX' if is_sensex else 'NIFTY'} {int(strike)} {opt_type} ({se if is_sensex else ne})"
-            iv_val = 0.13 if is_sensex else 0.14
-            processed = []
-            for sc in raw_candles:
-                bs_o = calc_black_scholes(sc["open"], strike, iv=iv_val)[f"{opt_type.lower()}_ltp"]
-                bs_c = calc_black_scholes(sc["close"], strike, iv=iv_val)[f"{opt_type.lower()}_ltp"]
-                processed.append({"time": sc["time"], "date_label": sc["date_label"], "is_prev_day": sc["is_prev_day"], "open": bs_o, "high": max(bs_o, bs_c)+1, "low": max(0.50, min(bs_o, bs_c)-1), "close": bs_c, "volume": sc["volume"]})
-            raw_candles = processed
-            opt_cur = calc_black_scholes(curr_spot, strike, iv=iv_val)
-            ltp = opt_cur["ce_ltp"] if opt_type == "CE" else opt_cur["pe_ltp"]
-            greeks = {"delta": opt_cur["ce_delta"] if opt_type == "CE" else opt_cur["pe_delta"], "gamma": opt_cur["gamma"], "theta": opt_cur["theta"]}
-        
-        closes = [c["close"] for c in raw_candles]
-        volumes = [c["volume"] for c in raw_candles]
-        ema9, ema15 = calc_ema_series(closes, 9), calc_ema_series(closes, 15)
-        vwap = round(sum(closes[i]*volumes[i] for i in range(len(closes))) / sum(volumes), 2) if sum(volumes) > 0 else (closes[-1] if closes else 0)
-        
-        now_ist = datetime.now(IST)
-        diff = int((now_ist.replace(hour=15, minute=40, second=0) - now_ist).total_seconds())
-        cd = f"{diff//60:02d}:{diff%60:02d}" if diff > 0 else "CLOSED"
-        
-        return {"symbol": symbol, "display_title": display_title, "timeframe": timeframe, "ltp": ltp, "candles": raw_candles, "countdown": cd, "ema9": ema9[-1] if ema9 else 0, "ema15": ema15[-1] if ema15 else 0, "vwap": vwap, "ema9_series": ema9, "ema15_series": ema15, "greeks": greeks}
+            errors[symbol] = error
 
-    def get_option_chain(self, symbol="NIFTY"):
-        is_sensex = "SENSEX" in symbol
-        curr_spot = self.sensex_spot if is_sensex else self.nifty_spot
-        step_val = 100 if is_sensex else 50
-        atm = round(curr_spot / step_val) * step_val
-        iv_val = 0.13 if is_sensex else 0.14
-        chain = []
-        for s in [atm + (i * step_val) for i in range(-8, 9)]:
-            g = calc_black_scholes(curr_spot, s, iv=iv_val)
-            chain.append({"strike": s, "ce_ltp": g["ce_ltp"], "ce_delta": g["ce_delta"], "pe_ltp": g["pe_ltp"], "pe_delta": g["pe_delta"]})
-        return chain
+    last_refresh = now()
+    return errors
 
-state = SimulationState()
-threading.Thread(target=lambda: [state.update_tick() or time.sleep(1.0) while True], daemon=True).start()
 
-class ThreadedHTTPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
-    allow_reuse_address = True
-    daemon_threads = True
+# ========================= OPTION DATA =========================
+def clean_option_df(df):
+    if df is None or df.empty:
+        return pd.DataFrame()
 
-class DhanSimHandler(http.server.BaseHTTPRequestHandler):
-    def log_message(self, format, *args): pass
-    def do_GET(self):
-        parsed = urlparse(self.path)
-        if parsed.path in ["/", "/index.html"]:
-            self.send_response(200)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.end_headers()
-            self.wfile.write(HTML_PAGE.encode("utf-8"))
-        elif parsed.path == "/api/market":
-            params = parse_qs(parsed.query)
-            sym = params.get("symbol", ["NIFTY"])[0]
-            tf = params.get("tf", ["1m"])[0]
-            with state.lock:
-                ne, se = get_current_expiry_dates()
-                resp = {
-                    "nifty_spot": state.nifty_spot, "sensex_spot": state.sensex_spot,
-                    "nifty_chg": round(state.nifty_spot - state.nifty_base, 2), "nifty_pct": round(((state.nifty_spot - state.nifty_base)/state.nifty_base)*100, 2),
-                    "sensex_chg": round(state.sensex_spot - state.sensex_base, 2), "sensex_pct": round(((state.sensex_spot - state.sensex_base)/state.sensex_base)*100, 2),
-                    "nifty_expiry": ne, "sensex_expiry": se,
-                    "chart": state.get_instrument_chart_data(sym, tf), "chain": state.get_option_chain(sym),
-                    "wallet": {**state.wallet, "net_pnl": state.wallet["realized_pnl"]},
-                    "positions": state.positions, "pending_orders": state.pending_orders, "orders": state.orders, "closed_trades": state.closed_trades[:15]
-                }
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.end_headers()
-            self.wfile.write(json.dumps(resp).encode("utf-8"))
+    out = df.copy()
 
-    def do_POST(self):
-        length = int(self.headers.get("Content-Length", 0))
-        body = json.loads(self.rfile.read(length).decode("utf-8")) if length > 0 else {}
-        if urlparse(self.path).path == "/api/order":
-            sym, qty, action = body.get("symbol"), int(body.get("qty", 65)), body.get("action", "BUY")
-            cs = state.sensex_spot if "SENSEX" in sym else state.nifty_spot
-            with state.lock:
-                state.positions.append({"id": f"POS_{int(time.time()*1000)}", "symbol": sym, "action": action, "qty": qty, "buy_price": cs, "pnl": 0.0})
-                state.orders.insert(0, {"time": time.strftime("%H:%M:%S"), "symbol": sym, "action": f"{action} @ {cs}"})
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.end_headers()
-            self.wfile.write(json.dumps({"status": "SUCCESS"}).encode("utf-8"))
+    wanted = [
+        "contractSymbol", "strike", "lastPrice", "bid", "ask",
+        "volume", "openInterest", "impliedVolatility"
+    ]
+
+    for col in wanted:
+        if col not in out.columns:
+            out[col] = None
+
+    out = out[wanted].copy()
+
+    for col in ["strike", "lastPrice", "bid", "ask", "volume", "openInterest", "impliedVolatility"]:
+        out[col] = pd.to_numeric(out[col], errors="coerce")
+
+    out.dropna(subset=["strike"], inplace=True)
+    return out
+
+
+def fetch_option_chain(symbol):
+    """
+    Try Yahoo's option interface using the index ticker.
+
+    Yahoo does not necessarily list Indian index options for ^NSEI/^BSESN.
+    If unavailable, return a clear unavailable state. Never synthesize premiums.
+    """
+    ticker = SYMBOLS[symbol]
+
+    try:
+        t = yf.Ticker(ticker)
+        expirations = list(t.options)
+
+        if not expirations:
+            return {
+                "status": "OPTION DATA UNAVAILABLE FROM FREE SOURCE",
+                "expiry": None,
+                "calls": pd.DataFrame(),
+                "puts": pd.DataFrame(),
+                "timestamp": now(),
+            }
+
+        expiry = expirations[0]
+        chain = t.option_chain(expiry)
+
+        calls = clean_option_df(chain.calls)
+        puts = clean_option_df(chain.puts)
+
+        if calls.empty and puts.empty:
+            return {
+                "status": "OPTION DATA UNAVAILABLE FROM FREE SOURCE",
+                "expiry": expiry,
+                "calls": calls,
+                "puts": puts,
+                "timestamp": now(),
+            }
+
+        return {
+            "status": "AVAILABLE",
+            "expiry": expiry,
+            "calls": calls,
+            "puts": puts,
+            "timestamp": now(),
+        }
+
+    except Exception as e:
+        return {
+            "status": "OPTION DATA UNAVAILABLE: " + str(e)[:90],
+            "expiry": None,
+            "calls": pd.DataFrame(),
+            "puts": pd.DataFrame(),
+            "timestamp": now(),
+        }
+
+
+def refresh_options(symbol):
+    option_chain[symbol] = fetch_option_chain(symbol)
+
+
+def nearest_strikes(symbol, side, count=9):
+    data = option_chain[symbol]
+    df = data["calls"] if side == "CE" else data["puts"]
+
+    if df is None or df.empty:
+        return pd.DataFrame()
+
+    spot = market[symbol]["price"]
+    if spot is None:
+        return df.head(count)
+
+    temp = df.copy()
+    temp["distance"] = (temp["strike"] - spot).abs()
+    return temp.sort_values("distance").head(count).sort_values("strike")
+
+
+def display_option_chain(symbol):
+    data = option_chain[symbol]
+
+    print(f"\n{symbol} OPTION CHAIN")
+    print("-" * 100)
+    print("Status :", data["status"])
+    print("Expiry :", data["expiry"] or "--")
+    print("Fetched:", data["timestamp"] or "--")
+
+    if data["status"] != "AVAILABLE":
+        print("\nOPTION DATA IS NOT AVAILABLE FROM THE FREE DATA SOURCE.")
+        print("No option premium will be invented and option trading is disabled.")
+        return
+
+    calls = nearest_strikes(symbol, "CE", 11)
+    puts = nearest_strikes(symbol, "PE", 11)
+
+    print("\n" + f"{'CALL LTP':>12}{'CALL OI':>12}{'STRIKE':>12}{'PUT LTP':>12}{'PUT OI':>12}")
+    print("-" * 60)
+
+    strikes = sorted(set(calls["strike"].tolist()) | set(puts["strike"].tolist()))
+
+    for strike in strikes:
+        c = calls[calls["strike"] == strike]
+        p = puts[puts["strike"] == strike]
+
+        c_ltp = c.iloc[0]["lastPrice"] if not c.empty else None
+        c_oi = c.iloc[0]["openInterest"] if not c.empty else None
+        p_ltp = p.iloc[0]["lastPrice"] if not p.empty else None
+        p_oi = p.iloc[0]["openInterest"] if not p.empty else None
+
+        print(
+            f"{num(c_ltp,2):>12}"
+            f"{num(c_oi,0):>12}"
+            f"{num(strike,0):>12}"
+            f"{num(p_ltp,2):>12}"
+            f"{num(p_oi,0):>12}"
+        )
+
+
+def get_option_contract(symbol, side, strike):
+    data = option_chain[symbol]
+
+    if data["status"] != "AVAILABLE":
+        return None
+
+    df = data["calls"] if side == "CE" else data["puts"]
+
+    if df is None or df.empty:
+        return None
+
+    matches = df[abs(df["strike"] - strike) < 0.0001]
+    if matches.empty:
+        return None
+
+    return matches.iloc[0].to_dict()
+
+
+# ========================= PAPER OPTION TRADING =========================
+def option_key(symbol, side, strike, expiry):
+    return f"{symbol}_{expiry}_{strike:.2f}_{side}"
+
+
+def option_price(contract):
+    """
+    Use lastPrice only when it is a real, non-NaN value.
+    We do not estimate or calculate a synthetic premium.
+    """
+    value = contract.get("lastPrice")
+
+    try:
+        value = float(value)
+        if math.isnan(value) or value <= 0:
+            return None
+        return value
+    except Exception:
+        return None
+
+
+def paper_buy_option(symbol, side, strike, quantity):
+    global capital
+
+    data = option_chain[symbol]
+
+    if data["status"] != "AVAILABLE":
+        print("Option data unavailable. Paper option trade blocked.")
+        return
+
+    contract = get_option_contract(symbol, side, strike)
+    if contract is None:
+        print("Strike not found in current option chain.")
+        return
+
+    price = option_price(contract)
+    if price is None:
+        print("Real LTP unavailable for this contract. Trade blocked.")
+        return
+
+    if quantity <= 0:
+        print("Quantity must be positive.")
+        return
+
+    cost = quantity * price
+
+    if cost > capital:
+        print(f"Insufficient virtual cash. Need {money(cost)}, have {money(capital)}.")
+        return
+
+    expiry = data["expiry"]
+    key = option_key(symbol, side, strike, expiry)
+
+    if key in positions:
+        p = positions[key]
+        old_qty = p["quantity"]
+        new_qty = old_qty + quantity
+        p["avg_price"] = ((old_qty * p["avg_price"]) + (quantity * price)) / new_qty
+        p["quantity"] = new_qty
+        p["last_price"] = price
+    else:
+        positions[key] = {
+            "kind": "OPTION",
+            "underlying": symbol,
+            "side": side,
+            "strike": strike,
+            "expiry": expiry,
+            "quantity": quantity,
+            "avg_price": price,
+            "last_price": price,
+            "stop_loss": None,
+            "target": None,
+        }
+
+    capital -= cost
+    log_trade(key, "BUY", quantity, price, 0.0, "PAPER OPTION")
+
+    print(
+        f"Paper BUY {symbol} {strike:.0f} {side} "
+        f"x{quantity} @ {money(price)}"
+    )
+
+
+def paper_sell_option(key, quantity):
+    global capital
+
+    p = positions.get(key)
+
+    if not p:
+        print("Position not found.")
+        return
+
+    data = option_chain[p["underlying"]]
+
+    if data["status"] != "AVAILABLE":
+        print("Current option data unavailable. Exit blocked to avoid fake pricing.")
+        return
+
+    contract = get_option_contract(p["underlying"], p["side"], p["strike"])
+
+    if contract is None:
+        print("Current contract not available. Exit blocked.")
+        return
+
+    price = option_price(contract)
+
+    if price is None:
+        print("Real current LTP unavailable. Exit blocked.")
+        return
+
+    if quantity <= 0 or quantity > p["quantity"]:
+        print("Invalid quantity.")
+        return
+
+    realized = (price - p["avg_price"]) * quantity
+    capital += quantity * price
+
+    p["quantity"] -= quantity
+    p["last_price"] = price
+
+    log_trade(key, "SELL", quantity, price, realized, "PAPER OPTION")
+
+    if p["quantity"] == 0:
+        del positions[key]
+
+    print(
+        f"Paper SELL {p['underlying']} {p['strike']:.0f} {p['side']} "
+        f"x{quantity} @ {money(price)} | P&L {money(realized)}"
+    )
+
+
+def buy_option_menu():
+    symbol = input("NIFTY or SENSEX: ").strip().upper()
+    if symbol not in SYMBOLS:
+        print("Invalid symbol.")
+        return
+
+    refresh_options(symbol)
+
+    if option_chain[symbol]["status"] != "AVAILABLE":
+        print("\nOPTION DATA UNAVAILABLE.")
+        print("No trade will be created.")
+        return
+
+    display_option_chain(symbol)
+
+    side = input("\nCE or PE: ").strip().upper()
+    if side not in ("CE", "PE"):
+        print("Invalid option type.")
+        return
+
+    try:
+        strike = float(input("Strike: ").strip())
+        qty = int(input("Quantity: ").strip())
+    except ValueError:
+        print("Invalid strike or quantity.")
+        return
+
+    paper_buy_option(symbol, side, strike, qty)
+
+
+def sell_option_menu():
+    opts = [(k, p) for k, p in positions.items() if p.get("kind") == "OPTION"]
+
+    if not opts:
+        print("No open option positions.")
+        return
+
+    print("\nOPEN OPTION POSITIONS")
+    for i, (key, p) in enumerate(opts, 1):
+        print(
+            f"{i}. {p['underlying']} {p['strike']:.0f} {p['side']} "
+            f"EXP {p['expiry']} QTY {p['quantity']} AVG {money(p['avg_price'])}"
+        )
+
+    try:
+        choice = int(input("Select position: ").strip())
+        qty = int(input("Quantity to sell: ").strip())
+        key = opts[choice - 1][0]
+    except (ValueError, IndexError):
+        print("Invalid selection.")
+        return
+
+    paper_sell_option(key, qty)
+
+
+# ========================= INDEX PAPER TRADING =========================
+def paper_buy_index(symbol, quantity):
+    global capital
+
+    price = market[symbol]["price"]
+    if price is None:
+        print("No index price.")
+        return
+
+    if quantity <= 0:
+        print("Quantity must be positive.")
+        return
+
+    cost = quantity * price
+    if cost > capital:
+        print(f"Insufficient virtual cash. Need {money(cost)}.")
+        return
+
+    key = symbol
+
+    if key in positions:
+        p = positions[key]
+        old = p["quantity"]
+        new = old + quantity
+        p["avg_price"] = ((old * p["avg_price"]) + quantity * price) / new
+        p["quantity"] = new
+        p["last_price"] = price
+    else:
+        positions[key] = {
+            "kind": "INDEX",
+            "underlying": symbol,
+            "quantity": quantity,
+            "avg_price": price,
+            "last_price": price,
+            "stop_loss": None,
+            "target": None,
+        }
+
+    capital -= cost
+    log_trade(symbol, "BUY", quantity, price, 0.0, "PAPER INDEX")
+    print(f"Paper BUY {symbol} x{quantity} @ {money(price)}")
+
+
+def paper_sell_index(symbol, quantity):
+    global capital
+
+    p = positions.get(symbol)
+    price = market[symbol]["price"]
+
+    if not p or p.get("kind") != "INDEX":
+        print("No index position.")
+        return
+
+    if price is None:
+        print("No current price.")
+        return
+
+    if quantity <= 0 or quantity > p["quantity"]:
+        print("Invalid quantity.")
+        return
+
+    realized = (price - p["avg_price"]) * quantity
+    capital += quantity * price
+
+    p["quantity"] -= quantity
+    p["last_price"] = price
+
+    log_trade(symbol, "SELL", quantity, price, realized, "PAPER INDEX")
+
+    if p["quantity"] == 0:
+        del positions[symbol]
+
+    print(f"Paper SELL {symbol} x{quantity} @ {money(price)} | P&L {money(realized)}")
+
+
+def buy_index_menu():
+    symbol = input("NIFTY or SENSEX: ").strip().upper()
+    if symbol not in SYMBOLS:
+        print("Invalid symbol.")
+        return
+
+    print(f"Current price: {money(market[symbol]['price'])}")
+
+    try:
+        qty = int(input("Quantity: ").strip())
+    except ValueError:
+        print("Invalid quantity.")
+        return
+
+    paper_buy_index(symbol, qty)
+
+
+def sell_index_menu():
+    symbol = input("NIFTY or SENSEX: ").strip().upper()
+    if symbol not in SYMBOLS:
+        print("Invalid symbol.")
+        return
+
+    try:
+        qty = int(input("Quantity: ").strip())
+    except ValueError:
+        print("Invalid quantity.")
+        return
+
+    paper_sell_index(symbol, qty)
+
+
+# ========================= P&L / RISK =========================
+def refresh_position_prices():
+    # Index positions.
+    for key, p in positions.items():
+        if p.get("kind") == "INDEX":
+            price = market[p["underlying"]]["price"]
+            if price is not None:
+                p["last_price"] = price
+
+    # Option positions: refresh chain and use actual lastPrice only.
+    option_symbols = set(
+        p["underlying"] for p in positions.values()
+        if p.get("kind") == "OPTION"
+    )
+
+    for symbol in option_symbols:
+        refresh_options(symbol)
+
+        for key, p in list(positions.items()):
+            if p.get("kind") != "OPTION" or p["underlying"] != symbol:
+                continue
+
+            contract = get_option_contract(symbol, p["side"], p["strike"])
+            if contract:
+                price = option_price(contract)
+                if price is not None:
+                    p["last_price"] = price
+
+
+def unrealized_pnl():
+    total = 0.0
+
+    for p in positions.values():
+        total += (p["last_price"] - p["avg_price"]) * p["quantity"]
+
+    return total
+
+
+def equity():
+    return capital + sum(p["last_price"] * p["quantity"] for p in positions.values())
+
+
+def check_risk():
+    # For a long paper position, trigger only when current real data exists.
+    for key in list(positions.keys()):
+        p = positions.get(key)
+        if not p:
+            continue
+
+        price = p["last_price"]
+
+        if p["stop_loss"] is not None and price <= p["stop_loss"]:
+            if p["kind"] == "INDEX":
+                paper_sell_index(p["underlying"], p["quantity"])
+            else:
+                paper_sell_option(key, p["quantity"])
+
+        elif p["target"] is not None and price >= p["target"]:
+            if p["kind"] == "INDEX":
+                paper_sell_index(p["underlying"], p["quantity"])
+            else:
+                paper_sell_option(key, p["quantity"])
+
+
+def set_risk():
+    if not positions:
+        print("No open positions.")
+        return
+
+    print("\nPOSITIONS")
+    keys = list(positions.keys())
+
+    for i, key in enumerate(keys, 1):
+        p = positions[key]
+        label = key
+        if p["kind"] == "OPTION":
+            label = f"{p['underlying']} {p['strike']:.0f} {p['side']} {p['expiry']}"
+        print(f"{i}. {label}")
+
+    try:
+        idx = int(input("Select: ")) - 1
+        p = positions[keys[idx]]
+
+        sl = input("Stop-loss price (blank = none): ").strip()
+        target = input("Target price (blank = none): ").strip()
+
+        p["stop_loss"] = float(sl) if sl else None
+        p["target"] = float(target) if target else None
+
+        print("Risk levels saved.")
+    except (ValueError, IndexError):
+        print("Invalid input.")
+
+
+# ========================= LOGGING =========================
+def log_trade(instrument, side, quantity, price, realized_pnl, note):
+    with open(TRADE_FILE, "a", newline="") as f:
+        csv.writer(f).writerow([
+            now().strftime("%Y-%m-%d %H:%M:%S"),
+            instrument,
+            side,
+            quantity,
+            f"{price:.4f}",
+            f"{quantity * price:.2f}",
+            f"{realized_pnl:.2f}",
+            note,
+        ])
+
+
+# ========================= DISPLAY =========================
+def latest(symbol, column):
+    df = market[symbol]["candles"]
+
+    if df is None or df.empty or column not in df.columns:
+        return None
+
+    try:
+        return float(df[column].iloc[-1])
+    except Exception:
+        return None
+
+
+def display_dashboard():
+    clear_screen()
+
+    print("=" * 100)
+    print("                         LIVE MARKET PAPER TRADER V2")
+    print("=" * 100)
+    print("DATA : Yahoo Finance / yfinance (free; may be delayed/unofficial)")
+    print("MODE : PAPER ONLY — NO BROKER — NO REAL ORDERS")
+    print(f"TIME : {now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"MARKET: {'OPEN' if market_is_open() else 'CLOSED'}")
+    print("=" * 100)
+
+    print(
+        f"{'INDEX':<10}"
+        f"{'LTP':>14}"
+        f"{'VWAP':>14}"
+        f"{'EMA9':>14}"
+        f"{'EMA21':>14}"
+        f"{'RSI':>10}"
+    )
+    print("-" * 100)
+
+    for symbol in SYMBOLS:
+        print(
+            f"{symbol:<10}"
+            f"{num(market[symbol]['price']):>14}"
+            f"{num(latest(symbol,'VWAP')):>14}"
+            f"{num(latest(symbol,'EMA9')):>14}"
+            f"{num(latest(symbol,'EMA21')):>14}"
+            f"{num(latest(symbol,'RSI')):>10}"
+        )
+
+    print("-" * 100)
+    print("OPTION DATA STATUS")
+    for symbol in SYMBOLS:
+        print(f"  {symbol:<8}: {option_chain[symbol]['status']}")
+
+    print("=" * 100)
+    print(f"Starting Capital : {money(STARTING_CAPITAL)}")
+    print(f"Cash Available   : {money(capital)}")
+    print(f"Unrealized P&L   : {money(unrealized_pnl())}")
+    print(f"Virtual Equity   : {money(equity())}")
+
+    print("\nOPEN POSITIONS")
+    print("-" * 100)
+
+    if not positions:
+        print("No open positions.")
+    else:
+        for key, p in positions.items():
+            pnl = (p["last_price"] - p["avg_price"]) * p["quantity"]
+
+            if p["kind"] == "OPTION":
+                label = f"{p['underlying']} {p['strike']:.0f} {p['side']} EXP {p['expiry']}"
+            else:
+                label = p["underlying"]
+
+            print(
+                f"{label:<34}"
+                f"QTY={p['quantity']:<6}"
+                f"AVG={money(p['avg_price']):<14}"
+                f"LTP={money(p['last_price']):<14}"
+                f"P&L={money(pnl):<14}"
+                f"SL={num(p['stop_loss']):<10}"
+                f"TGT={num(p['target']):<10}"
+            )
+
+    print("=" * 100)
+    print("1 Index BUY   2 Index SELL   3 Option BUY   4 Option SELL")
+    print("5 Positions   6 Option Chain   7 Refresh      8 Candles")
+    print("9 Trades       A SL/Target     R Reset         0 Exit")
+    print("=" * 100)
+
+
+def show_positions():
+    print("\nOPEN POSITIONS")
+    if not positions:
+        print("None.")
+        return
+
+    for key, p in positions.items():
+        pnl = (p["last_price"] - p["avg_price"]) * p["quantity"]
+
+        if p["kind"] == "OPTION":
+            label = f"{p['underlying']} {p['strike']:.0f} {p['side']} EXP {p['expiry']}"
+        else:
+            label = p["underlying"]
+
+        print(
+            f"{label} | Qty {p['quantity']} | "
+            f"Avg {money(p['avg_price'])} | LTP {money(p['last_price'])} | "
+            f"P&L {money(pnl)}"
+        )
+
+
+def show_candles():
+    symbol = input("NIFTY or SENSEX: ").strip().upper()
+
+    if symbol not in SYMBOLS:
+        print("Invalid symbol.")
+        return
+
+    df = market[symbol]["candles"]
+
+    if df is None or df.empty:
+        print("No candle data.")
+        return
+
+    print(f"\n{symbol} — LAST 20 FIVE-MINUTE CANDLES")
+    print("-" * 110)
+    print(
+        f"{'TIME':<20}"
+        f"{'OPEN':>12}"
+        f"{'HIGH':>12}"
+        f"{'LOW':>12}"
+        f"{'CLOSE':>12}"
+        f"{'VOLUME':>12}"
+        f"{'VWAP':>12}"
+    )
+    print("-" * 110)
+
+    for idx, row in df.tail(20).iterrows():
+        print(
+            f"{str(idx):<20}"
+            f"{num(row['Open']):>12}"
+            f"{num(row['High']):>12}"
+            f"{num(row['Low']):>12}"
+            f"{num(row['Close']):>12}"
+            f"{num(row['Volume'],0):>12}"
+            f"{num(row['VWAP']):>12}"
+        )
+
+
+def show_trades():
+    try:
+        df = pd.read_csv(TRADE_FILE)
+        if df.empty:
+            print("No trades.")
+        else:
+            print("\nLAST 30 PAPER TRADES")
+            print(df.tail(30).to_string(index=False))
+    except Exception as e:
+        print("Trade log error:", e)
+
+
+def reset_account():
+    global capital, positions
+
+    confirm = input("Type RESET to erase virtual account: ").strip()
+
+    if confirm != "RESET":
+        print("Cancelled.")
+        return
+
+    capital = STARTING_CAPITAL
+    positions = {}
+
+    if TRADE_FILE.exists():
+        TRADE_FILE.unlink()
+
+    if CANDLE_FILE.exists():
+        CANDLE_FILE.unlink()
+
+    ensure_files()
+    print("Virtual account reset.")
+
+
+# ========================= MAIN =========================
+def main():
+    global running
+
+    ensure_files()
+
+    print("Starting paper-trading engine...")
+    print("Downloading NIFTY + SENSEX data...")
+
+    errors = refresh_indices()
+
+    for symbol, error in errors.items():
+        print(symbol, ":", error)
+
+    if not any(market[s]["price"] is not None for s in SYMBOLS):
+        print("\nNo index data received.")
+        print("Check internet connection.")
+        return
+
+    # Load option status once at startup. It may legitimately be unavailable.
+    print("Checking free option-chain availability...")
+    for symbol in SYMBOLS:
+        refresh_options(symbol)
+
+    while running:
+        try:
+            refresh_indices()
+            refresh_position_prices()
+            check_risk()
+
+            display_dashboard()
+
+            choice = input("Select: ").strip().upper()
+
+            if choice == "1":
+                buy_index_menu()
+                input("\nPress Enter...")
+            elif choice == "2":
+                sell_index_menu()
+                input("\nPress Enter...")
+            elif choice == "3":
+                buy_option_menu()
+                input("\nPress Enter...")
+            elif choice == "4":
+                sell_option_menu()
+                input("\nPress Enter...")
+            elif choice == "5":
+                show_positions()
+                input("\nPress Enter...")
+            elif choice == "6":
+                symbol = input("NIFTY or SENSEX: ").strip().upper()
+                if symbol in SYMBOLS:
+                    refresh_options(symbol)
+                    display_option_chain(symbol)
+                else:
+                    print("Invalid symbol.")
+                input("\nPress Enter...")
+            elif choice == "7":
+                errors = refresh_indices()
+                for symbol, error in errors.items():
+                    print(symbol, ":", error)
+                input("\nPress Enter...")
+            elif choice == "8":
+                show_candles()
+                input("\nPress Enter...")
+            elif choice == "9":
+                show_trades()
+                input("\nPress Enter...")
+            elif choice == "A":
+                set_risk()
+                input("\nPress Enter...")
+            elif choice == "R":
+                reset_account()
+                input("\nPress Enter...")
+            elif choice == "0":
+                running = False
+            else:
+                print("Invalid choice.")
+                time.sleep(1)
+
+        except KeyboardInterrupt:
+            running = False
+        except Exception as e:
+            print("\nProgram error:", e)
+            print("The simulator is still paper-only.")
+            input("Press Enter to continue...")
+
+    print("\nPaper trader stopped.")
+
 
 if __name__ == "__main__":
-    PORT = int(os.environ.get("PORT", 8000))
-    with ThreadedHTTPServer(("0.0.0.0", PORT), DhanSimHandler) as httpd:
-        httpd.serve_forever()
+    main()
