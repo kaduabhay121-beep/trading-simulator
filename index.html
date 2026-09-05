@@ -16,12 +16,12 @@
         .panel-header { background: #1e293b; padding: 8px 12px; font-weight: bold; color: #94a3b8; font-size: 12px; border-bottom: 1px solid #334155; }
         .watchlist-item { padding: 10px 12px; border-bottom: 1px solid #1e293b; cursor: pointer; display: flex; justify-content: space-between; align-items: center; }
         .watchlist-item:hover { background: #1e293b; }
-        .center-stage { display: flex; flex-direction: column; background: #0b0e14; overflow-y: auto; }
-        .chart-toolbar { display: flex; gap: 10px; padding: 10px; background: #121824; border-bottom: 1px solid #1f293d; align-items: center; }
+        .center-stage { display: flex; flex-direction: column; background: #0b0e14; overflow-y: auto; height: 100%; }
+        .chart-toolbar { display: flex; gap: 10px; padding: 10px; background: #121824; border-bottom: 1px solid #1f293d; align-items: center; flex-shrink: 0; }
         button { background: #2563eb; color: white; border: none; padding: 6px 12px; border-radius: 4px; cursor: pointer; font-weight: bold; }
         button:hover { background: #1d4ed8; }
-        .chart-container { position: relative; height: 400px; padding: 10px; background: #0b0e14; }
-        .trading-panel { padding: 15px; background: #111827; border-top: 1px solid #1f293d; display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; align-items: center; }
+        .chart-container { position: relative; width: 100%; height: 380px; min-height: 380px; padding: 10px; background: #0b0e14; flex-shrink: 0; }
+        .trading-panel { padding: 15px; background: #111827; border-top: 1px solid #1f293d; display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; align-items: center; flex-shrink: 0; }
         .input-group { display: flex; flex-direction: column; gap: 4px; }
         .input-group label { font-size: 11px; color: #9ca3af; }
         .input-group input, .input-group select { background: #1f2937; border: 1px solid #374151; color: white; padding: 6px; border-radius: 4px; }
