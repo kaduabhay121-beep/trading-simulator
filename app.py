@@ -237,7 +237,7 @@ class SimulationState:
                 sym = pord["symbol"]
                 exec_p = pord["limit_price"]
                 
-                pos_id = f"POS_{int(time.time()*1000)}"
+                pos_id = f"POS_{int(time.time()*1000}"
                 self.positions.append({
                     "id": pos_id, "symbol": pord["symbol"], "action": pord["action"],
                     "type": pord["type"], "strike": pord["strike"], "qty": pord["qty"],
@@ -247,7 +247,7 @@ class SimulationState:
                 })
                 self.orders.insert(0, {
                     "time": time.strftime("%H:%M:%S"), "symbol": pord["symbol"],
-                    "action": f"{pord['action']} LIMIT TRIGGERED @ ₹{exec_p}",
+                    "action": f"{pord["action"]} LIMIT TRIGGERED @ ₹{exec_p}",
                     "qty": pord["qty"], "price": exec_p, "status": "EXECUTED"
                 })
                 self.sound_events.append("LIMIT_TRIGGERED")
@@ -267,7 +267,7 @@ class SimulationState:
             opt_type = parts[2]
             nifty_exp, sensex_exp = get_current_expiry_dates()
             exp_str = sensex_exp if is_sensex else nifty_exp
-            display_title = f"{'SENSEX' if is_sensex else 'NIFTY'} {int(strike)} {opt_type} ({exp_str})"
+            display_title = f"{SENSEX if is_sensex else NIFTY} {int(strike)} {opt_type} ({exp_str})"
             iv_val = 0.13 if is_sensex else 0.14
             
             processed_candles = []
@@ -410,7 +410,7 @@ class DhanSimHandler(http.server.BaseHTTPRequestHandler):
                 total_margin = round(exec_price * qty * 0.05, 2)
                 state.wallet["balance"] -= total_margin
                 state.pending_orders.append({
-                    "id": f"LMT_{int(time.time()*1000)}", "symbol": symbol, "action": action,
+                    "id": f"LMT_{int(time.time()*1000}", "symbol": symbol, "action": action,
                     "type": opt_type, "strike": strike, "qty": qty, "margin": total_margin,
                     "limit_price": exec_price, "stop_loss": 0, "target": 0, "trailing_sl": 0
                 })
