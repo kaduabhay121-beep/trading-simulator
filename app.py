@@ -237,7 +237,7 @@ class SimulationState:
                 sym = pord["symbol"]
                 exec_p = pord["limit_price"]
                 
-                pos_id = f"POS_{int(time.time()*1000}"
+                pos_id = f"POS_{int(time.time()*1000)}"
                 self.positions.append({
                     "id": pos_id, "symbol": pord["symbol"], "action": pord["action"],
                     "type": pord["type"], "strike": pord["strike"], "qty": pord["qty"],
