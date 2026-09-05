@@ -410,7 +410,7 @@ class DhanSimHandler(http.server.BaseHTTPRequestHandler):
                 total_margin = round(exec_price * qty * 0.05, 2)
                 state.wallet["balance"] -= total_margin
                 state.pending_orders.append({
-                    "id": f"LMT_{int(time.time()*1000})}", "symbol": symbol, "action": action,
+                    "id": f"LMT_{int(time.time()*1000)}", "symbol": symbol, "action": action,
                     "type": opt_type, "strike": strike, "qty": qty, "margin": total_margin,
                     "limit_price": exec_price, "stop_loss": 0, "target": 0, "trailing_sl": 0
                 })
