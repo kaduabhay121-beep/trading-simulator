@@ -1089,7 +1089,7 @@ def main():
         except Exception as e:
             print("\nProgram error:", e)
             print("The simulator is still paper-only.")
-            input("Press Enter to continue...")
+            time.sleep(3600)
 
     print("\nPaper trader stopped.")
 
