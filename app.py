@@ -13,6 +13,50 @@ try:
 except ImportError:
     yf = None
 
+def fetch_historical_candles(ticker_symbol, period="5d", interval="1m"):
+    if not yf:
+        return []
+    try:
+        ticker = yf.Ticker(ticker_symbol)
+        df = ticker.history(period=period, interval=interval)
+        if df.empty:
+            return []
+        
+        candles = []
+        # Determine if previous day boundary can be approximated or marked
+        timestamps = df.index.astype(int) // 10**9
+        opens = df["Open"].values
+        highs = df["High"].values
+        lows = df["Low"].values
+        closes = df["Close"].values
+        volumes = df["Volume"].values
+        
+        first_day = None
+        for i in range(len(timestamps)):
+            t = int(timestamps[i])
+            o = float(opens[i])
+            h = float(highs[i])
+            l = float(lows[i])
+            c = float(closes[i])
+            v = int(volumes[i]) if not math.isnan(volumes[i]) else 500
+            
+            day_str = time.strftime("%Y-%m-%d", time.localtime(t))
+            if first_day is None:
+                first_day = day_str
+            
+            candles.append({
+                "time": t,
+                "is_prev_day": day_str != first_day,
+                "open": round(o, 2),
+                "high": round(h, 2),
+                "low": round(l, 2),
+                "close": round(c, 2),
+                "volume": v
+            })
+        return candles
+    except Exception:
+        return []
+
 def fetch_live_market_prices():
     if not yf:
         return None, None
@@ -40,12 +84,9 @@ def norm_cdf(x):
 def calc_black_scholes(spot, strike, dte_days=4.0, iv=0.14, r=0.06):
     if strike <= 0 or spot <= 0:
         return {
-            "ce_ltp": 0.50,
-            "pe_ltp": 0.50,
-            "ce_delta": 0.0,
-            "pe_delta": 0.0,
-            "gamma": 0.0,
-            "theta": 0.0
+            "ce_ltp": 0.50, "pe_ltp": 0.50,
+            "ce_delta": 0.0, "pe_delta": 0.0,
+            "gamma": 0.0, "theta": 0.0
         }
     t = max(dte_days / 365.0, 0.0001)
     sqrt_t = math.sqrt(t)
@@ -61,18 +102,13 @@ def calc_black_scholes(spot, strike, dte_days=4.0, iv=0.14, r=0.06):
     ce = spot * nd1 - strike * math.exp(-r * t) * nd2
     pe = strike * math.exp(-r * t) * n_neg_d2 - spot * n_neg_d1
     
-    delta_ce = nd1
-    delta_pe = nd1 - 1.0
-    gamma = pdf_d1 / (spot * iv * sqrt_t)
-    theta_ce = (- (spot * pdf_d1 * iv) / (2.0 * sqrt_t) - r * strike * math.exp(-r * t) * nd2) / 365.0
-    
     return {
         "ce_ltp": max(round(ce, 2), 0.50),
         "pe_ltp": max(round(pe, 2), 0.50),
-        "ce_delta": round(delta_ce, 3),
-        "pe_delta": round(delta_pe, 3),
-        "gamma": round(gamma, 5),
-        "theta": round(theta_ce, 2)
+        "ce_delta": round(nd1, 3),
+        "pe_delta": round(nd1 - 1.0, 3),
+        "gamma": round(pdf_d1 / (spot * iv * sqrt_t), 5),
+        "theta": round((- (spot * pdf_d1 * iv) / (2.0 * sqrt_t) - r * strike * math.exp(-r * t) * nd2) / 365.0, 2)
     }
 
 def calc_ema_series(data, period):
@@ -101,56 +137,55 @@ class SimulationState:
     def __init__(self):
         self.lock = threading.Lock()
         self.nifty_spot = 23850.00
-        self.banknifty_spot = 54820.00
         self.sensex_spot = 81450.00
         self.nifty_base = 23826.75
-        self.banknifty_base = 54800.00
         self.sensex_base = 81400.00
+        
+        # Fetch real historical candles from Yahoo Finance for NSE and BSE
+        self.candles_nifty = fetch_historical_candles("^NSEI", period="5d", interval="1m")
+        self.candles_sensex = fetch_historical_candles("^BSESN", period="5d", interval="1m")
+        
+        if not self.candles_nifty:
+            self.candles_nifty = self._generate_fallback_candles(self.nifty_spot)
+        if not self.candles_sensex:
+            self.candles_sensex = self._generate_fallback_candles(self.sensex_spot)
+
+        if self.candles_nifty:
+            self.nifty_spot = self.candles_nifty[-1]["close"]
+            self.nifty_base = self.candles_nifty[0]["open"]
+        if self.candles_sensex:
+            self.sensex_spot = self.candles_sensex[-1]["close"]
+            self.sensex_base = self.candles_sensex[0]["open"]
+
         self.wallet = {
-            "initial": 50000.0,
-            "balance": 50000.0,
-            "used_margin": 0.0,
-            "realized_pnl": 0.0
+            "initial": 50000.0, "balance": 50000.0,
+            "used_margin": 0.0, "realized_pnl": 0.0
         }
         self.positions = []
         self.pending_orders = []
         self.orders = []
         self.closed_trades = []
         self.sound_events = []
-        self.candles_1m = []
-        self.current_1m_candle = None
         self.candle_start_time = time.time()
-        self._init_history()
 
-    def _init_history(self):
+    def _generate_fallback_candles(self, start_p):
         now = time.time()
-        cur = self.nifty_spot - 120.0
-        for i in range(300):
+        candles = []
+        cur = start_p - 120.0
+        for i in range(150):
             o = cur
             c = o + random.uniform(-4, 4.5)
             h = max(o, c) + random.uniform(0.5, 3)
             l = min(o, c) - random.uniform(0.5, 3)
-            v = random.randint(1500, 6000)
-            self.candles_1m.append({
-                "time": int(now - (300 - i) * 60),
-                "is_prev_day": i < 150,
-                "open": round(o, 2),
-                "high": round(h, 2),
-                "low": round(l, 2),
-                "close": round(c, 2),
-                "volume": v
+            candles.append({
+                "time": int(now - (150 - i) * 60),
+                "is_prev_day": i < 75,
+                "open": round(o, 2), "high": round(h, 2),
+                "low": round(l, 2), "close": round(c, 2),
+                "volume": random.randint(1500, 6000)
             })
             cur = c
-
-        self.current_1m_candle = {
-            "time": int(now),
-            "is_prev_day": False,
-            "open": round(cur, 2),
-            "high": round(cur, 2),
-            "low": round(cur, 2),
-            "close": round(cur, 2),
-            "volume": 800
-        }
+        return candles
 
     def update_tick(self):
         with self.lock:
@@ -161,30 +196,28 @@ class SimulationState:
             else:
                 step = random.gauss(random.choice([-1.0, 0, 1.0]) * 0.35, 1.5)
                 self.nifty_spot = round(self.nifty_spot + step, 2)
-                self.banknifty_spot = round(self.banknifty_spot + step * 2.2, 2)
                 self.sensex_spot = round(self.sensex_spot + step * 3.5, 2)
 
             now = time.time()
-            if now - self.candle_start_time >= 60:
-                self.candles_1m.append(self.current_1m_candle)
-                if len(self.candles_1m) > 400:
-                    self.candles_1m.pop(0)
-                self.candle_start_time = now
-                self.current_1m_candle = {
-                    "time": int(now),
-                    "is_prev_day": False,
-                    "open": self.nifty_spot,
-                    "high": self.nifty_spot,
-                    "low": self.nifty_spot,
-                    "close": self.nifty_spot,
-                    "volume": random.randint(200, 600)
-                }
-            else:
-                c = self.current_1m_candle
-                c["high"] = max(c["high"], self.nifty_spot)
-                c["low"] = min(c["low"], self.nifty_spot)
-                c["close"] = self.nifty_spot
-                c["volume"] += random.randint(15, 60)
+            # Append live ticks to active history buffers
+            for candles_list, spot_val in [(self.candles_nifty, self.nifty_spot), (self.candles_sensex, self.sensex_spot)]:
+                if candles_list:
+                    last_c = candles_list[-1]
+                    if now - last_c["time"] >= 60:
+                        candles_list.append({
+                            "time": int(now),
+                            "is_prev_day": False,
+                            "open": spot_val, "high": spot_val,
+                            "low": spot_val, "close": spot_val,
+                            "volume": random.randint(200, 600)
+                        })
+                        if len(candles_list) > 500:
+                            candles_list.pop(0)
+                    else:
+                        last_c["high"] = max(last_c["high"], spot_val)
+                        last_c["low"] = min(last_c["low"], spot_val)
+                        last_c["close"] = spot_val
+                        last_c["volume"] += random.randint(15, 60)
 
             # Limit Order Evaluation
             triggered = []
@@ -225,42 +258,26 @@ class SimulationState:
                     existing["buy_price"] = weighted_price
                     existing["peak_price"] = max(existing.get("peak_price", weighted_price), exec_p)
                     existing["margin"] = round(existing.get("margin", 0.0) + pord["margin"], 2)
-                    if pord["stop_loss"] > 0: existing["stop_loss"] = pord["stop_loss"]
-                    if pord["target"] > 0: existing["target"] = pord["target"]
-                    if pord.get("trailing_sl", 0) > 0: existing["trailing_sl"] = pord["trailing_sl"]
                 else:
                     pos_id = f"POS_{int(time.time()*1000)}"
                     self.positions.append({
-                        "id": pos_id,
-                        "symbol": pord["symbol"],
-                        "action": pord["action"],
-                        "type": pord["type"],
-                        "strike": pord["strike"],
-                        "qty": pord["qty"],
-                        "buy_price": exec_p,
-                        "peak_price": exec_p,
-                        "ltp": exec_p,
-                        "margin": pord["margin"],
-                        "stop_loss": pord["stop_loss"],
-                        "target": pord["target"],
-                        "trailing_sl": pord.get("trailing_sl", 0.0),
-                        "pnl": 0.0
+                        "id": pos_id, "symbol": pord["symbol"], "action": pord["action"],
+                        "type": pord["type"], "strike": pord["strike"], "qty": pord["qty"],
+                        "buy_price": exec_p, "peak_price": exec_p, "ltp": exec_p,
+                        "margin": pord["margin"], "stop_loss": pord["stop_loss"],
+                        "target": pord["target"], "trailing_sl": pord.get("trailing_sl", 0.0), "pnl": 0.0
                     })
 
                 self.orders.insert(0, {
-                    "time": time.strftime("%H:%M:%S"),
-                    "symbol": pord["symbol"],
+                    "time": time.strftime("%H:%M:%S"), "symbol": pord["symbol"],
                     "action": f"{pord['action']} LIMIT TRIGGERED @ ₹{exec_p}",
-                    "qty": pord["qty"],
-                    "price": exec_p,
-                    "status": "EXECUTED"
+                    "qty": pord["qty"], "price": exec_p, "status": "EXECUTED"
                 })
                 self.sound_events.append("LIMIT_TRIGGERED")
 
-            # Position PnL & TSL / SL Evaluation
+            # Position PnL Evaluation
             total_used_margin = 0.0
             auto_exits = []
-
             for pos in self.positions:
                 sym = pos["symbol"]
                 curr_spot = self.sensex_spot if "SENSEX" in sym else self.nifty_spot
@@ -273,11 +290,9 @@ class SimulationState:
                 else:
                     ltp = curr_spot
                     pos["delta"] = 1.0 if pos["action"] == "BUY" else -1.0
-                    pos["theta"] = 0.0
-                    pos["gamma"] = 0.0
+                    pos["theta"] = 0.0; pos["gamma"] = 0.0
 
                 pos["ltp"] = ltp
-
                 if pos["action"] == "BUY":
                     pos["pnl"] = round((ltp - pos["buy_price"]) * pos["qty"], 2)
                     if ltp > pos.get("peak_price", pos["buy_price"]):
@@ -287,9 +302,8 @@ class SimulationState:
                             new_trail_sl = round(ltp - tsl, 2)
                             if new_trail_sl > pos.get("stop_loss", 0.0):
                                 pos["stop_loss"] = new_trail_sl
-
                     if pos.get("stop_loss") and pos["stop_loss"] > 0 and ltp <= pos["stop_loss"]:
-                        auto_exits.append((pos["id"], f"SL/TSL Hit @ ₹{ltp}", "SL_HIT"))
+                        auto_exits.append((pos["id"], f"SL Hit @ ₹{ltp}", "SL_HIT"))
                     elif pos.get("target") and pos["target"] > 0 and ltp >= pos["target"]:
                         auto_exits.append((pos["id"], f"TP Hit @ ₹{ltp}", "TARGET_HIT"))
                 else:
@@ -301,16 +315,13 @@ class SimulationState:
                             new_trail_sl = round(ltp + tsl, 2)
                             if pos.get("stop_loss", 0.0) == 0.0 or new_trail_sl < pos["stop_loss"]:
                                 pos["stop_loss"] = new_trail_sl
-
                     if pos.get("stop_loss") and pos["stop_loss"] > 0 and ltp >= pos["stop_loss"]:
-                        auto_exits.append((pos["id"], f"SL/TSL Hit @ ₹{ltp}", "SL_HIT"))
+                        auto_exits.append((pos["id"], f"SL Hit @ ₹{ltp}", "SL_HIT"))
                     elif pos.get("target") and pos["target"] > 0 and ltp <= pos["target"]:
                         auto_exits.append((pos["id"], f"TP Hit @ ₹{ltp}", "TARGET_HIT"))
 
                 total_used_margin += pos.get("margin", 0.0)
-
             self.wallet["used_margin"] = total_used_margin
-
             for pid, reason, snd in auto_exits:
                 self._internal_exit(pid, exit_reason=reason, sound_type=snd)
 
@@ -322,26 +333,17 @@ class SimulationState:
                 self.wallet["balance"] += (margin_released + pnl)
                 self.wallet["realized_pnl"] = round(self.wallet["realized_pnl"] + pnl, 2)
                 
-                exit_action = "SELL (SQUARE-OFF)" if pos["action"] == "BUY" else "BUY (COVER)"
                 trade_record = {
-                    "id": f"TRD_{int(time.time()*1000)}",
-                    "time": time.strftime("%H:%M:%S"),
-                    "symbol": pos["symbol"],
-                    "action": pos["action"],
-                    "qty": pos["qty"],
-                    "entry_price": pos["buy_price"],
-                    "exit_price": pos["ltp"],
-                    "pnl": pnl,
-                    "reason": exit_reason
+                    "id": f"TRD_{int(time.time()*1000)}", "time": time.strftime("%H:%M:%S"),
+                    "symbol": pos["symbol"], "action": pos["action"], "qty": pos["qty"],
+                    "entry_price": pos["buy_price"], "exit_price": pos["ltp"],
+                    "pnl": pnl, "reason": exit_reason
                 }
                 self.closed_trades.insert(0, trade_record)
                 self.orders.insert(0, {
-                    "time": trade_record["time"],
-                    "symbol": pos["symbol"],
-                    "action": f"{exit_action} - {exit_reason}",
-                    "qty": pos["qty"],
-                    "price": pos["ltp"],
-                    "status": "EXECUTED"
+                    "time": trade_record["time"], "symbol": pos["symbol"],
+                    "action": f"EXIT - {exit_reason}", "qty": pos["qty"],
+                    "price": pos["ltp"], "status": "EXECUTED"
                 })
                 if sound_type:
                     self.sound_events.append(sound_type)
@@ -352,71 +354,41 @@ class SimulationState:
         trades = self.closed_trades
         total = len(trades)
         if total == 0:
-            return {
-                "total_trades": 0, "win_rate": 0.0, "profit_factor": 0.0,
-                "gross_profit": 0.0, "gross_loss": 0.0, "net_pnl": 0.0,
-                "avg_win": 0.0, "avg_loss": 0.0, "max_win": 0.0, "max_loss": 0.0
-            }
-
+            return {"total_trades": 0, "win_rate": 0.0, "profit_factor": 0.0, "net_pnl": 0.0}
         wins = [t["pnl"] for t in trades if t["pnl"] > 0]
         losses = [abs(t["pnl"]) for t in trades if t["pnl"] < 0]
-        gross_profit = round(sum(wins), 2)
-        gross_loss = round(sum(losses), 2)
-        profit_factor = round(gross_profit / gross_loss, 2) if gross_loss > 0 else (gross_profit if gross_profit > 0 else 1.0)
-        win_rate = round((len(wins) / total) * 100, 1)
-
+        gp = sum(wins); gl = sum(losses)
         return {
             "total_trades": total,
-            "win_rate": win_rate,
-            "profit_factor": profit_factor,
-            "gross_profit": gross_profit,
-            "gross_loss": gross_loss,
-            "net_pnl": round(self.wallet["realized_pnl"], 2),
-            "avg_win": round(gross_profit / len(wins), 2) if wins else 0.0,
-            "avg_loss": round(gross_loss / len(losses), 2) if losses else 0.0,
-            "max_win": round(max(wins), 2) if wins else 0.0,
-            "max_loss": round(max(losses), 2) if losses else 0.0
+            "win_rate": round((len(wins) / total) * 100, 1),
+            "profit_factor": round(gp / gl, 2) if gl > 0 else (gp if gp > 0 else 1.0),
+            "net_pnl": round(self.wallet["realized_pnl"], 2)
         }
 
     def get_instrument_chart_data(self, symbol, timeframe="1m"):
-        all_1m = self.candles_1m + [self.current_1m_candle]
-        
         is_sensex = "SENSEX" in symbol
+        raw_candles = self.candles_sensex if is_sensex else self.candles_nifty
         curr_spot = self.sensex_spot if is_sensex else self.nifty_spot
 
         if symbol in ["NIFTY", "SENSEX"] or not "_" in symbol:
-            raw_candles = []
-            multiplier = 3.4 if is_sensex else 1.0
-            for sc in all_1m:
-                raw_candles.append({
-                    "time": sc["time"],
-                    "is_prev_day": sc["is_prev_day"],
-                    "open": round(sc["open"] * multiplier, 2),
-                    "high": round(sc["high"] * multiplier, 2),
-                    "low": round(sc["low"] * multiplier, 2),
-                    "close": round(sc["close"] * multiplier, 2),
-                    "volume": sc["volume"]
-                })
-            ltp = curr_spot
             display_title = "SENSEX" if is_sensex else "NIFTY 50"
+            ltp = curr_spot
             greeks = {"delta": 1.0, "gamma": 0.0, "theta": 0.0}
         else:
             parts = symbol.split("_")
             strike = float(parts[1])
             opt_type = parts[2]
             display_title = f"{'SENSEX' if is_sensex else 'NIFTY'} {int(strike)} {opt_type}"
-            raw_candles = []
             iv_val = 0.13 if is_sensex else 0.14
-            for sc in all_1m:
-                base_spot = sc["close"] / (3.4 if is_sensex else 1.0)
-                base_open = sc["open"] / (3.4 if is_sensex else 1.0)
-                base_high = sc["high"] / (3.4 if is_sensex else 1.0)
-                base_low = sc["low"] / (3.4 if is_sensex else 1.0)
-
-                bs_o = calc_black_scholes(base_open, strike, iv=iv_val)[f"{opt_type.lower()}_ltp"]
+            
+            # Map option candles derived from actual index candles
+            processed_candles = []
+            for sc in raw_candles:
+                base_spot = sc["close"]
+                bs_o = calc_black_scholes(sc["open"], strike, iv=iv_val)[f"{opt_type.lower()}_ltp"]
                 bs_c = calc_black_scholes(base_spot, strike, iv=iv_val)[f"{opt_type.lower()}_ltp"]
-                bs_h_pt = calc_black_scholes(base_high, strike, iv=iv_val)[f"{opt_type.lower()}_ltp"]
-                bs_l_pt = calc_black_scholes(base_low, strike, iv=iv_val)[f"{opt_type.lower()}_ltp"]
+                bs_h_pt = calc_black_scholes(sc["high"], strike, iv=iv_val)[f"{opt_type.lower()}_ltp"]
+                bs_l_pt = calc_black_scholes(sc["low"], strike, iv=iv_val)[f"{opt_type.lower()}_ltp"]
 
                 if opt_type == "CE":
                     c_high = max(bs_o, bs_c, bs_h_pt)
@@ -425,27 +397,20 @@ class SimulationState:
                     c_high = max(bs_o, bs_c, bs_l_pt)
                     c_low = max(0.50, min(bs_o, bs_c, bs_h_pt))
 
-                raw_candles.append({
-                    "time": sc["time"],
-                    "is_prev_day": sc["is_prev_day"],
-                    "open": bs_o,
-                    "high": c_high,
-                    "low": c_low,
-                    "close": bs_c,
-                    "volume": sc["volume"]
+                processed_candles.append({
+                    "time": sc["time"], "is_prev_day": sc["is_prev_day"],
+                    "open": bs_o, "high": c_high, "low": c_low,
+                    "close": bs_c, "volume": sc["volume"]
                 })
+            raw_candles = processed_candles
             opt_cur = calc_black_scholes(curr_spot, strike, iv=iv_val)
             ltp = opt_cur["ce_ltp"] if opt_type == "CE" else opt_cur["pe_ltp"]
             greeks = {
                 "delta": opt_cur["ce_delta"] if opt_type == "CE" else opt_cur["pe_delta"],
-                "gamma": opt_cur["gamma"],
-                "theta": opt_cur["theta"]
+                "gamma": opt_cur["gamma"], "theta": opt_cur["theta"]
             }
 
         tf_mins = {"1m": 1, "3m": 3, "5m": 5, "15m": 15}.get(timeframe, 1)
-        period_sec = tf_mins * 60
-        seconds_remaining = period_sec - (int(time.time()) % period_sec)
-
         if tf_mins > 1:
             candles = []
             chunk = []
@@ -463,28 +428,20 @@ class SimulationState:
         volumes = [c["volume"] for c in candles]
         ema9_s = calc_ema_series(closes, 9)
         ema15_s = calc_ema_series(closes, 15)
-
         cum_pv = sum(closes[i] * volumes[i] for i in range(len(closes)))
         cum_v = sum(volumes)
-        vwap = round(cum_pv / cum_v, 2) if cum_v > 0 else closes[-1]
+        vwap = round(cum_pv / cum_v, 2) if cum_v > 0 else closes[-1] if closes else 0
 
+        period_sec = tf_mins * 60
+        seconds_remaining = period_sec - (int(time.time()) % period_sec)
         mins = seconds_remaining // 60
         secs = seconds_remaining % 60
-        countdown_str = f"{mins:02d}:{secs:02d}"
 
         return {
-            "symbol": symbol,
-            "display_title": display_title,
-            "timeframe": timeframe,
-            "ltp": ltp,
-            "candles": candles,
-            "countdown": countdown_str,
-            "ema9": ema9_s[-1] if ema9_s else 0,
-            "ema15": ema15_s[-1] if ema15_s else 0,
-            "vwap": vwap,
-            "ema9_series": ema9_s,
-            "ema15_series": ema15_s,
-            "greeks": greeks
+            "symbol": symbol, "display_title": display_title, "timeframe": timeframe,
+            "ltp": ltp, "candles": candles, "countdown": f"{mins:02d}:{secs:02d}",
+            "ema9": ema9_s[-1] if ema9_s else 0, "ema15": ema15_s[-1] if ema15_s else 0,
+            "vwap": vwap, "ema9_series": ema9_s, "ema15_series": ema15_s, "greeks": greeks
         }
 
     def get_option_chain(self, symbol="NIFTY"):
@@ -498,15 +455,10 @@ class SimulationState:
         for s in strikes:
             g = calc_black_scholes(curr_spot, s, iv=iv_val)
             chain.append({
-                "strike": s,
-                "ce_ltp": g["ce_ltp"],
-                "ce_delta": g["ce_delta"],
-                "ce_oi": f"{random.randint(15, 65)}L",
-                "pe_ltp": g["pe_ltp"],
-                "pe_delta": g["pe_delta"],
-                "pe_oi": f"{random.randint(18, 70)}L",
-                "gamma": g["gamma"],
-                "theta": g["theta"]
+                "strike": s, "ce_ltp": g["ce_ltp"], "ce_delta": g["ce_delta"],
+                "ce_oi": f"{random.randint(15, 65)}L", "pe_ltp": g["pe_ltp"],
+                "pe_delta": g["pe_delta"], "pe_oi": f"{random.randint(18, 70)}L",
+                "gamma": g["gamma"], "theta": g["theta"]
             })
         return chain
 
@@ -563,26 +515,19 @@ class DhanSimHandler(http.server.BaseHTTPRequestHandler):
                     analytics = state.get_analytics()
                     unrealized = round(sum(p["pnl"] for p in state.positions), 2)
                     resp = {
-                        "nifty_spot": state.nifty_spot,
-                        "banknifty_spot": state.banknifty_spot,
-                        "sensex_spot": state.sensex_spot,
+                        "nifty_spot": state.nifty_spot, "sensex_spot": state.sensex_spot,
                         "nifty_chg": round(state.nifty_spot - state.nifty_base, 2),
                         "nifty_pct": round(((state.nifty_spot - state.nifty_base) / state.nifty_base) * 100, 2),
                         "sensex_chg": round(state.sensex_spot - state.sensex_base, 2),
                         "sensex_pct": round(((state.sensex_spot - state.sensex_base) / state.sensex_base) * 100, 2),
-                        "chart": chart_data,
-                        "chain": chain,
-                        "sounds": sounds,
+                        "chart": chart_data, "chain": chain, "sounds": sounds,
                         "analytics": analytics,
                         "wallet": {
-                            **state.wallet,
-                            "unrealized_pnl": unrealized,
+                            **state.wallet, "unrealized_pnl": unrealized,
                             "net_pnl": round(state.wallet["realized_pnl"] + unrealized, 2)
                         },
-                        "positions": state.positions,
-                        "pending_orders": state.pending_orders,
-                        "orders": state.orders,
-                        "closed_trades": state.closed_trades[:15]
+                        "positions": state.positions, "pending_orders": state.pending_orders,
+                        "orders": state.orders, "closed_trades": state.closed_trades[:15]
                     }
                 if self._safe_send_response(200):
                     self._safe_write(json.dumps(resp).encode("utf-8"))
@@ -656,25 +601,15 @@ class DhanSimHandler(http.server.BaseHTTPRequestHandler):
                     if is_limit_pending:
                         ord_id = f"LMT_{int(time.time()*1000)}"
                         state.pending_orders.append({
-                            "id": ord_id,
-                            "symbol": symbol,
-                            "action": action,
-                            "type": opt_type,
-                            "strike": strike,
-                            "qty": qty,
-                            "margin": total_margin,
-                            "limit_price": limit_price,
-                            "stop_loss": stop_loss,
-                            "target": target,
-                            "trailing_sl": trailing_sl
+                            "id": ord_id, "symbol": symbol, "action": action,
+                            "type": opt_type, "strike": strike, "qty": qty,
+                            "margin": total_margin, "limit_price": limit_price,
+                            "stop_loss": stop_loss, "target": target, "trailing_sl": trailing_sl
                         })
                         state.orders.insert(0, {
-                            "time": time.strftime("%H:%M:%S"),
-                            "symbol": symbol,
+                            "time": time.strftime("%H:%M:%S"), "symbol": symbol,
                             "action": f"{action} LIMIT PENDING @ ₹{limit_price}",
-                            "qty": qty,
-                            "price": limit_price,
-                            "status": "PENDING"
+                            "qty": qty, "price": limit_price, "status": "PENDING"
                         })
                     else:
                         existing_pos = None
@@ -690,35 +625,21 @@ class DhanSimHandler(http.server.BaseHTTPRequestHandler):
                             existing_pos["buy_price"] = weighted_price
                             existing_pos["peak_price"] = max(existing_pos.get("peak_price", weighted_price), exec_price)
                             existing_pos["margin"] = round(existing_pos.get("margin", 0.0) + total_margin, 2)
-                            if stop_loss > 0: existing_pos["stop_loss"] = stop_loss
-                            if target > 0: existing_pos["target"] = target
-                            if trailing_sl > 0: existing_pos["trailing_sl"] = trailing_sl
                         else:
                             pos_id = f"POS_{int(time.time()*1000)}"
                             state.positions.append({
-                                "id": pos_id,
-                                "symbol": symbol,
-                                "action": action,
-                                "type": opt_type,
-                                "strike": strike,
-                                "qty": qty,
-                                "margin": total_margin,
-                                "buy_price": exec_price,
-                                "peak_price": exec_price,
-                                "ltp": current_p,
-                                "stop_loss": stop_loss,
-                                "target": target,
-                                "trailing_sl": trailing_sl,
+                                "id": pos_id, "symbol": symbol, "action": action,
+                                "type": opt_type, "strike": strike, "qty": qty,
+                                "margin": total_margin, "buy_price": exec_price,
+                                "peak_price": exec_price, "ltp": current_p,
+                                "stop_loss": stop_loss, "target": target, "trailing_sl": trailing_sl,
                                 "pnl": 0.0
                             })
 
                         state.orders.insert(0, {
-                            "time": time.strftime("%H:%M:%S"),
-                            "symbol": symbol,
+                            "time": time.strftime("%H:%M:%S"), "symbol": symbol,
                             "action": f"{action} MARKET @ ₹{current_p}",
-                            "qty": qty,
-                            "price": current_p,
-                            "status": "EXECUTED"
+                            "qty": qty, "price": current_p, "status": "EXECUTED"
                         })
 
                     state.sound_events.append("ORDER_PLACED")
@@ -745,9 +666,7 @@ class DhanSimHandler(http.server.BaseHTTPRequestHandler):
                 with state.lock:
                     for pos in state.positions:
                         if pos["id"] == pos_id:
-                            pos["stop_loss"] = sl
-                            pos["target"] = tp
-                            pos["trailing_sl"] = tsl
+                            pos["stop_loss"] = sl; pos["target"] = tp; pos["trailing_sl"] = tsl
                             break
                 if self._safe_send_response(200):
                     self._safe_write(json.dumps({"status": "UPDATED"}).encode("utf-8"))
@@ -768,7 +687,7 @@ class DhanSimHandler(http.server.BaseHTTPRequestHandler):
                     state.closed_trades = []
                     state.sound_events = []
                 if self._safe_send_response(200):
-                    self._safe_write(json.dumps({"status": "RESET"}).encode("utf-8"))
+                    self._safe_write(json.dumps({"status": "RESET"}.encode("utf-8")))
         except (BrokenPipeError, ConnectionResetError):
             pass
 
