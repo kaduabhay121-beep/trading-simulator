@@ -6,13 +6,15 @@ import random
 import time
 import threading
 import os
-from datetime import datetime, time as dtime, timedelta
+from datetime import datetime, time as dtime, timedelta, timezone
 from urllib.parse import urlparse, parse_qs
 
 try:
     import yfinance as yf
 except ImportError:
     yf = None
+
+IST = timezone(timedelta(hours=5, minutes=30))
 
 def fetch_historical_candles(ticker_symbol, period="5d", interval="1m"):
     if not yf:
@@ -34,9 +36,11 @@ def fetch_historical_candles(ticker_symbol, period="5d", interval="1m"):
         first_day = None
         for i in range(len(timestamps)):
             t = int(timestamps[i])
-            dt = datetime.fromtimestamp(t)
+            # Convert UTC timestamp explicitly to IST (UTC+5:30)
+            dt = datetime.fromtimestamp(t, tz=timezone.utc).astimezone(IST)
             
             market_time = dt.time()
+            # Strict Indian Market Hours: Pre-open (09:00) to Market Close (15:40 IST)
             if not (dtime(9, 0) <= market_time <= dtime(15, 40)):
                 continue
 
@@ -79,14 +83,14 @@ def norm_cdf(x):
     return 0.5 * (1.0 + math.erf(x / math.sqrt(2.0)))
 
 def get_current_expiry_dates():
-    today = datetime.now().date()
+    today = datetime.now(IST).date()
     days_to_nifty = (3 - today.weekday() + 7) % 7
-    if days_to_nifty == 0 and datetime.now().time() > dtime(15, 30):
+    if days_to_nifty == 0 and datetime.now(IST).time() > dtime(15, 30):
         days_to_nifty = 7
     nifty_expiry = today + timedelta(days=days_to_nifty)
 
     days_to_sensex = (4 - today.weekday() + 7) % 7
-    if days_to_sensex == 0 and datetime.now().time() > dtime(15, 30):
+    if days_to_sensex == 0 and datetime.now(IST).time() > dtime(15, 30):
         days_to_sensex = 7
     sensex_expiry = today + timedelta(days=days_to_sensex)
 
@@ -122,7 +126,7 @@ def calc_ema_series(data, period):
 
 def merge_candle_chunk(chunk):
     if not chunk: return None
-    dt = datetime.fromtimestamp(chunk[0]["time"])
+    dt = datetime.fromtimestamp(chunk[0]["time"], tz=timezone.utc).astimezone(IST)
     return {
         "time": chunk[0]["time"],
         "date_label": dt.strftime("%d/%m %H:%M"),
@@ -169,7 +173,7 @@ class SimulationState:
         candles = []
         cur = start_p - 120.0
         for i in range(150):
-            dt = datetime.fromtimestamp(now - (150 - i) * 60)
+            dt = datetime.fromtimestamp(now - (150 - i) * 60, tz=timezone.utc).astimezone(IST)
             o = cur
             c = o + random.uniform(-4, 4.5)
             h = max(o, c) + random.uniform(0.5, 3)
@@ -197,7 +201,7 @@ class SimulationState:
                 self.sensex_spot = round(self.sensex_spot + step * 3.5, 2)
 
             now = time.time()
-            dt = datetime.fromtimestamp(now)
+            dt = datetime.fromtimestamp(now, tz=timezone.utc).astimezone(IST)
             for candles_list, spot_val in [(self.candles_nifty, self.nifty_spot), (self.candles_sensex, self.sensex_spot)]:
                 if candles_list:
                     last_c = candles_list[-1]
@@ -217,41 +221,6 @@ class SimulationState:
                         last_c["close"] = spot_val
                         last_c["volume"] += random.randint(15, 60)
 
-            triggered = []
-            for i, pord in enumerate(self.pending_orders):
-                sym = pord["symbol"]
-                curr_spot = self.sensex_spot if "SENSEX" in sym else self.nifty_spot
-                if pord.get("type") in ["CE", "PE"] and pord.get("strike", 0) > 0:
-                    g = calc_black_scholes(curr_spot, pord["strike"], iv=0.13 if "SENSEX" in sym else 0.14)
-                    cur_p = g["ce_ltp"] if pord["type"] == "CE" else g["pe_ltp"]
-                else:
-                    cur_p = curr_spot
-
-                if pord["action"] == "BUY" and cur_p <= pord["limit_price"]:
-                    triggered.append(i)
-                elif pord["action"] == "SELL" and cur_p >= pord["limit_price"]:
-                    triggered.append(i)
-
-            for idx in reversed(triggered):
-                pord = self.pending_orders.pop(idx)
-                sym = pord["symbol"]
-                exec_p = pord["limit_price"]
-                
-                pos_id = f"POS_{int(time.time()*1000)}"
-                self.positions.append({
-                    "id": pos_id, "symbol": pord["symbol"], "action": pord["action"],
-                    "type": pord["type"], "strike": pord["strike"], "qty": pord["qty"],
-                    "buy_price": exec_p, "peak_price": exec_p, "ltp": exec_p,
-                    "margin": pord["margin"], "stop_loss": pord["stop_loss"],
-                    "target": pord["target"], "trailing_sl": pord.get("trailing_sl", 0.0), "pnl": 0.0
-                })
-                self.orders.insert(0, {
-                    "time": time.strftime("%H:%M:%S"), "symbol": pord["symbol"],
-                    "action": f"{pord["action"]} LIMIT TRIGGERED @ ₹{exec_p}",
-                    "qty": pord["qty"], "price": exec_p, "status": "EXECUTED"
-                })
-                self.sound_events.append("LIMIT_TRIGGERED")
-
     def get_instrument_chart_data(self, symbol, timeframe="1m"):
         is_sensex = "SENSEX" in symbol
         raw_candles = self.candles_sensex if is_sensex else self.candles_nifty
@@ -267,7 +236,7 @@ class SimulationState:
             opt_type = parts[2]
             nifty_exp, sensex_exp = get_current_expiry_dates()
             exp_str = sensex_exp if is_sensex else nifty_exp
-            display_title = f"{SENSEX if is_sensex else NIFTY} {int(strike)} {opt_type} ({exp_str})"
+            display_title = f"{'SENSEX' if is_sensex else 'NIFTY'} {int(strike)} {opt_type} ({exp_str})"
             iv_val = 0.13 if is_sensex else 0.14
             
             processed_candles = []
@@ -312,9 +281,20 @@ class SimulationState:
         ema15_s = calc_ema_series(closes, 15)
         vwap = round(sum(closes[i]*volumes[i] for i in range(len(closes))) / sum(volumes), 2) if sum(volumes) > 0 else (closes[-1] if closes else 0)
 
+        # Calculate live IST market countdown timer
+        now_ist = datetime.now(IST)
+        market_close_dt = now_ist.replace(hour=15, minute=40, second=0, microsecond=0)
+        diff_secs = int((market_close_dt - now_ist).total_seconds())
+        if diff_secs > 0:
+            cd_m = diff_secs // 60
+            cd_s = diff_secs % 60
+            countdown_str = f"{cd_m:02d}:{cd_s:02d}"
+        else:
+            countdown_str = "CLOSED"
+
         return {
             "symbol": symbol, "display_title": display_title, "timeframe": timeframe,
-            "ltp": ltp, "candles": candles, "countdown": "00:00",
+            "ltp": ltp, "candles": candles, "countdown": countdown_str,
             "ema9": ema9_s[-1] if ema9_s else 0, "ema15": ema15_s[-1] if ema15_s else 0,
             "vwap": vwap, "ema9_series": ema9_s, "ema15_series": ema15_s, "greeks": greeks
         }
@@ -349,8 +329,7 @@ threading.Thread(target=background_market_ticker, daemon=True).start()
 class ThreadedHTTPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
     allow_reuse_address = True
     daemon_threads = True
-    def handle_error(self, request, client_address):
-        pass
+    def handle_error(self, request, client_address): pass
 
 class DhanSimHandler(http.server.BaseHTTPRequestHandler):
     def log_message(self, format, *args): return
@@ -420,5 +399,3 @@ if __name__ == "__main__":
     PORT = int(os.environ.get("PORT", 8000))
     with ThreadedHTTPServer(("0.0.0.0", PORT), DhanSimHandler) as httpd:
         httpd.serve_forever()
-
-# Deployment refresh timestamp: 1788633080.3533576
