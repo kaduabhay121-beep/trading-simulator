@@ -30,7 +30,7 @@
         .chain-table th, .chain-table td { padding: 6px; text-align: center; border-bottom: 1px solid #1e293b; }
         .chain-table th { background: #1e293b; color: #94a3b8; position: sticky; top: 0; }
         .ce-side { color: #f87171; }
-.pe-side { color: #4ade80; }
+        .pe-side { color: #4ade80; }
     </style>
 </head>
 <body>
@@ -140,14 +140,13 @@
                 let data = await res.json();
                 
                 document.getElementById('niftySpot').innerText = data.nifty_spot;
-                document.getElementById('niftyChg.innerText = `${data.nifty_chg} (${data.nifty_pct}%)`;
+                document.getElementById('niftyChg').innerText = `${data.nifty_chg} (${data.nifty_pct}%)`;
                 document.getElementById('sensexSpot').innerText = data.sensex_spot;
                 document.getElementById('sensexChg').innerText = `${data.sensex_chg} (${data.sensex_pct}%)`;
                 
                 document.getElementById('walletBalance').innerText = data.wallet.balance.toFixed(2);
                 document.getElementById('netPnl').innerText = data.wallet.net_pnl.toFixed(2);
 
-                // Display active expiry in header
                 let exp = currentSymbol.includes('SENSEX') ? data.sensex_expiry : data.nifty_expiry;
                 document.getElementById('expiryDisplay').innerText = `Expiry: ${exp}`;
 
