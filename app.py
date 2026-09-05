@@ -36,7 +36,6 @@ def fetch_historical_candles(ticker_symbol, period="5d", interval="1m"):
             t = int(timestamps[i])
             dt = datetime.fromtimestamp(t)
             
-            # Filter strictly to Indian Market Hours: Pre-open (09:00) to Market Close (15:40)
             market_time = dt.time()
             if not (dtime(9, 0) <= market_time <= dtime(15, 40)):
                 continue
@@ -81,13 +80,11 @@ def norm_cdf(x):
 
 def get_current_expiry_dates():
     today = datetime.now().date()
-    # Nifty Weekly Expiry: Thursday (weekday 3)
     days_to_nifty = (3 - today.weekday() + 7) % 7
     if days_to_nifty == 0 and datetime.now().time() > dtime(15, 30):
         days_to_nifty = 7
     nifty_expiry = today + timedelta(days=days_to_nifty)
 
-    # Sensex Weekly Expiry: Friday (weekday 4)
     days_to_sensex = (4 - today.weekday() + 7) % 7
     if days_to_sensex == 0 and datetime.now().time() > dtime(15, 30):
         days_to_sensex = 7
@@ -220,7 +217,6 @@ class SimulationState:
                         last_c["close"] = spot_val
                         last_c["volume"] += random.randint(15, 60)
 
-            # Limit Order matching
             triggered = []
             for i, pord in enumerate(self.pending_orders):
                 sym = pord["symbol"]
@@ -239,7 +235,6 @@ class SimulationState:
             for idx in reversed(triggered):
                 pord = self.pending_orders.pop(idx)
                 sym = pord["symbol"]
-                curr_spot = self.sensex_spot if "SENSEX" in sym else self.nifty_spot
                 exec_p = pord["limit_price"]
                 
                 pos_id = f"POS_{int(time.time()*1000)}"
@@ -350,6 +345,12 @@ def background_market_ticker():
         time.sleep(1.0)
 
 threading.Thread(target=background_market_ticker, daemon=True).start()
+
+class ThreadedHTTPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
+    allow_reuse_address = True
+    daemon_threads = True
+    def handle_error(self, request, client_address):
+        pass
 
 class DhanSimHandler(http.server.BaseHTTPRequestHandler):
     def log_message(self, format, *args): return
