@@ -1361,7 +1361,8 @@ function drawChart() {
       const x = chartLeft + i * step + step / 2;
       const d = new Date(c.time * 1000);
       const timeStr = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
-      ctx.fillText(timeStr, x, logicalH - 8);
+      const dateStr = `${d.getDate()} ${['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][d.getMonth()]}`;
+      ctx.fillText(i === 0 || d.getHours() === 9 && d.getMinutes() <= 15 ? dateStr + ' ' + timeStr : timeStr, x, logicalH - 8);
     }
   });
 

@@ -17,25 +17,31 @@ except ImportError:
 
 IST = pytz.timezone('Asia/Kolkata')
 
+def get_upcoming_expiry(is_sensex=False):
+    now = datetime.now(IST)
+    target_weekday = 4 if is_sensex else 3 # Thursday (3) for Nifty, Friday (4) for Sensex
+    days_ahead = (target_weekday - now.weekday()) % 7
+    if days_ahead == 0 and now.time() > dtime(15, 30):
+        days_ahead = 7
+    expiry_date = now + timedelta(days=days_ahead)
+    return expiry_date.strftime("%d%b%y").upper()
+
 def is_market_open():
     now = datetime.now(IST)
     if now.weekday() >= 5: 
         return False
-    current_time = now.time()
-    return dtime(9, 15) <= current_time <= dtime(15, 30)
+    return dtime(9, 15) <= now.time() <= dtime(15, 30)
 
 def fetch_historical_sessions():
     if not yf:
         return []
     try:
         ticker = yf.Ticker("^NSEI")
-        # Yahoo Finance maximum intraday limit is 60d for 5m/1m data
         df = ticker.history(period="60d", interval="5m")
         if not df.empty:
             candles = []
             for idx, row in df.iterrows():
                 dt_ist = idx.tz_convert(IST) if idx.tzinfo else IST.localize(idx.to_pydatetime())
-                # Filter strictly within market hours 09:15 to 15:30 IST
                 if dtime(9, 15) <= dt_ist.time() <= dtime(15, 30):
                     candles.append({
                         "time": int(dt_ist.timestamp()),
@@ -101,8 +107,6 @@ class SimulationState:
         self.lock = threading.Lock()
         self.nifty_spot = 23897.70
         self.sensex_spot = 81450.00
-        self.nifty_base = 23826.75
-        self.sensex_base = 81400.00
         self.wallet = {"initial": 50000.0, "balance": 50000.0, "used_margin": 0.0, "realized_pnl": 0.0}
         self.positions = []
         self.pending_orders = []
@@ -174,9 +178,11 @@ class SimulationState:
             greeks = {"delta": 1.0, "gamma": 0.0, "theta": 0.0}
         else:
             parts = symbol.split("_")
-            strike = float(parts[1])
-            opt_type = parts[2]
-            display_title = f"{'SENSEX' if is_sensex else 'NIFTY'} {int(strike)} {opt_type}"
+            # Format: PREFIX_EXPIRY_STRIKE_TYPE (e.g. NIFTY_10SEP26_23800_CE)
+            strike = float(parts[2])
+            opt_type = parts[3]
+            expiry_str = parts[1]
+            display_title = f"{'SENSEX' if is_sensex else 'NIFTY'} {expiry_str} {int(strike)} {opt_type}"
             raw_candles = []
             iv_val = 0.13 if is_sensex else 0.14
             for sc in all_candles:
@@ -192,7 +198,6 @@ class SimulationState:
             ltp = opt_cur["ce_ltp"] if opt_type == "CE" else opt_cur["pe_ltp"]
             greeks = {"delta": opt_cur["ce_delta"] if opt_type == "CE" else opt_cur["pe_delta"], "gamma": opt_cur["gamma"], "theta": opt_cur["theta"]}
 
-        # Timeframe aggregation multiplier relative to 5m base
         tf_multiplier = {"1m": 1, "3m": 3, "5m": 1, "15m": 3}.get(timeframe, 1)
         if tf_multiplier > 1 and timeframe != "1m":
             candles = []
@@ -225,13 +230,16 @@ class SimulationState:
         step_val = 100 if is_sensex else 50
         atm = round(curr_spot / step_val) * step_val
         iv_val = 0.13 if is_sensex else 0.14
+        expiry = get_upcoming_expiry(is_sensex)
         chain = []
         for s in [atm + (i * step_val) for i in range(-8, 9)]:
             g = calc_black_scholes(curr_spot, s, iv=iv_val)
             chain.append({
-                "strike": s, "ce_ltp": g["ce_ltp"], "ce_delta": g["ce_delta"],
-                "ce_oi": f"{random.randint(15, 65)}L", "pe_ltp": g["pe_ltp"],
-                "pe_delta": g["pe_delta"], "pe_oi": f"{random.randint(18, 70)}L",
+                "strike": s, "expiry": expiry,
+                "ce_ltp": g["ce_ltp"], "ce_delta": g["ce_delta"],
+                "ce_oi": f"{random.randint(15, 65)}L",
+                "pe_ltp": g["pe_ltp"], "pe_delta": g["pe_delta"],
+                "pe_oi": f"{random.randint(18, 70)}L",
                 "gamma": g["gamma"], "theta": g["theta"]
             })
         return chain
