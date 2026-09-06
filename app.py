@@ -17,16 +17,6 @@ except ImportError:
 
 IST = pytz.timezone('Asia/Kolkata')
 
-def get_last_market_close_time():
-    now = datetime.now(IST)
-    if now.weekday() == 5:
-        close_day = now - timedelta(days=1)
-    elif now.weekday() == 6:
-        close_day = now - timedelta(days=2)
-    else:
-        close_day = now
-    return close_day.replace(hour=15, minute=30, second=0, microsecond=0)
-
 def is_market_open():
     now = datetime.now(IST)
     if now.weekday() >= 5: 
@@ -34,25 +24,28 @@ def is_market_open():
     current_time = now.time()
     return dtime(9, 15) <= current_time <= dtime(15, 30)
 
-def fetch_historical_session():
+def fetch_historical_sessions():
     if not yf:
         return []
     try:
         ticker = yf.Ticker("^NSEI")
-        df = ticker.history(period="5d", interval="5m")
+        # Yahoo Finance maximum intraday limit is 60d for 5m/1m data
+        df = ticker.history(period="60d", interval="5m")
         if not df.empty:
             candles = []
             for idx, row in df.iterrows():
                 dt_ist = idx.tz_convert(IST) if idx.tzinfo else IST.localize(idx.to_pydatetime())
-                candles.append({
-                    "time": int(dt_ist.timestamp()),
-                    "is_prev_day": False,
-                    "open": round(float(row["Open"]), 2),
-                    "high": round(float(row["High"]), 2),
-                    "low": round(float(row["Low"]), 2),
-                    "close": round(float(row["Close"]), 2),
-                    "volume": int(row["Volume"])
-                })
+                # Filter strictly within market hours 09:15 to 15:30 IST
+                if dtime(9, 15) <= dt_ist.time() <= dtime(15, 30):
+                    candles.append({
+                        "time": int(dt_ist.timestamp()),
+                        "is_prev_day": False,
+                        "open": round(float(row["Open"]), 2),
+                        "high": round(float(row["High"]), 2),
+                        "low": round(float(row["Low"]), 2),
+                        "close": round(float(row["Close"]), 2),
+                        "volume": int(row["Volume"])
+                    })
             return candles
     except Exception:
         pass
@@ -116,36 +109,28 @@ class SimulationState:
         self.orders = []
         self.closed_trades = []
         self.sound_events = []
-        self.candles_1m = []
-        self.current_1m_candle = None
-        self.candle_start_time = time.time()
+        self.candles_5m = []
+        self.current_5m_candle = None
         self._init_history()
 
     def _init_history(self):
-        fetched = fetch_historical_session()
+        fetched = fetch_historical_sessions()
         if fetched:
-            self.candles_1m = fetched
+            self.candles_5m = fetched
             self.nifty_spot = fetched[-1]["close"]
-            self.current_1m_candle = fetched[-1]
+            self.current_5m_candle = fetched[-1]
         else:
-            close_time = get_last_market_close_time()
-            start_time = close_time - timedelta(hours=6, minutes=15)
-            start_ts = int(start_time.timestamp())
+            now = datetime.now(IST)
+            start_ts = int(now.replace(hour=9, minute=15, second=0, microsecond=0).timestamp())
             cur = self.nifty_spot - 50.0
-            for i in range(75):
-                c_time = start_ts + (i * 300)
-                o = cur
-                c = o + random.uniform(-3, 3.5)
-                h = max(o, c) + random.uniform(0.5, 2)
-                l = min(o, c) - random.uniform(0.5, 2)
-                v = random.randint(1500, 5000)
-                self.candles_1m.append({
-                    "time": c_time, "is_prev_day": False,
-                    "open": round(o, 2), "high": round(h, 2),
-                    "low": round(l, 2), "close": round(c, 2), "volume": v
+            for i in range(50):
+                self.candles_5m.append({
+                    "time": start_ts + (i * 300), "is_prev_day": False,
+                    "open": round(cur, 2), "high": round(cur+2, 2),
+                    "low": round(cur-2, 2), "close": round(cur+1, 2), "volume": 2000
                 })
-                cur = c
-            self.current_1m_candle = self.candles_1m[-1]
+                cur += 1
+            self.current_5m_candle = self.candles_5m[-1]
 
     def update_tick(self):
         with self.lock:
@@ -168,14 +153,14 @@ class SimulationState:
         }
 
     def get_instrument_chart_data(self, symbol, timeframe="5m"):
-        all_1m = self.candles_1m + [self.current_1m_candle]
+        all_candles = self.candles_5m + [self.current_5m_candle]
         is_sensex = "SENSEX" in symbol
         curr_spot = self.sensex_spot if is_sensex else self.nifty_spot
 
         if symbol in ["NIFTY", "SENSEX"] or not "_" in symbol:
             raw_candles = []
             multiplier = 3.4 if is_sensex else 1.0
-            for sc in all_1m:
+            for sc in all_candles:
                 raw_candles.append({
                     "time": sc["time"], "is_prev_day": sc["is_prev_day"],
                     "open": round(sc["open"] * multiplier, 2),
@@ -194,7 +179,7 @@ class SimulationState:
             display_title = f"{'SENSEX' if is_sensex else 'NIFTY'} {int(strike)} {opt_type}"
             raw_candles = []
             iv_val = 0.13 if is_sensex else 0.14
-            for sc in all_1m:
+            for sc in all_candles:
                 base_spot = sc["close"] / (3.4 if is_sensex else 1.0)
                 bs_o = calc_black_scholes(sc["open"] / (3.4 if is_sensex else 1.0), strike, iv=iv_val)[f"{opt_type.lower()}_ltp"]
                 bs_c = calc_black_scholes(base_spot, strike, iv=iv_val)[f"{opt_type.lower()}_ltp"]
@@ -207,16 +192,14 @@ class SimulationState:
             ltp = opt_cur["ce_ltp"] if opt_type == "CE" else opt_cur["pe_ltp"]
             greeks = {"delta": opt_cur["ce_delta"] if opt_type == "CE" else opt_cur["pe_delta"], "gamma": opt_cur["gamma"], "theta": opt_cur["theta"]}
 
-        tf_mins = {"1m": 1, "3m": 3, "5m": 5, "15m": 15}.get(timeframe, 5)
-        period_sec = tf_mins * 60
-        seconds_remaining = period_sec - (int(time.time()) % period_sec)
-
-        if tf_mins > 1:
+        # Timeframe aggregation multiplier relative to 5m base
+        tf_multiplier = {"1m": 1, "3m": 3, "5m": 1, "15m": 3}.get(timeframe, 1)
+        if tf_multiplier > 1 and timeframe != "1m":
             candles = []
             chunk = []
             for c in raw_candles:
                 chunk.append(c)
-                if len(chunk) == tf_mins:
+                if len(chunk) == tf_multiplier:
                     candles.append(merge_candle_chunk(chunk))
                     chunk = []
             if chunk: candles.append(merge_candle_chunk(chunk))
@@ -231,7 +214,7 @@ class SimulationState:
 
         return {
             "symbol": symbol, "display_title": display_title, "timeframe": timeframe,
-            "ltp": ltp, "candles": candles, "countdown": f"{seconds_remaining//60:02d}:{seconds_remaining%60:02d}",
+            "ltp": ltp, "candles": candles, "countdown": "05:00",
             "ema9": ema9_s[-1] if ema9_s else 0, "ema15": ema15_s[-1] if ema15_s else 0,
             "vwap": vwap, "ema9_series": ema9_s, "ema15_series": ema15_s, "greeks": greeks
         }
