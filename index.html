@@ -849,10 +849,11 @@ function openStrikeModal() {
     </div>
   `;
   marketCache.chain.forEach(r => {
+    const exp = r.expiry || 'EXP';
     html += `
       <div style="display:flex; justify-content:space-between; padding:8px 4px; border-bottom:1px solid #1a202c;">
-        <span onclick="selectStrike('${prefix}_${r.strike}_CE', '${r.strike} CE')" style="cursor:pointer; color:var(--green); font-weight:700;">${prefix} ${r.strike} CE</span>
-        <span onclick="selectStrike('${prefix}_${r.strike}_PE', '${r.strike} PE')" style="cursor:pointer; color:var(--red); font-weight:700;">${prefix} ${r.strike} PE</span>
+        <span onclick="selectStrike(`${prefix}_${r.expiry}_${r.strike}_CE`, `${r.expiry} ${r.strike} CE`, '${r.strike} CE')" style="cursor:pointer; color:var(--green); font-weight:700;">${prefix} ${r.expiry} ${r.strike} CE</span>
+        <span onclick="selectStrike(`${prefix}_${r.expiry}_${r.strike}_PE`, `${r.expiry} ${r.strike} PE`, '${r.strike} PE')" style="cursor:pointer; color:var(--red); font-weight:700;">${prefix} ${r.expiry} ${r.strike} PE</span>
       </div>
     `;
   });

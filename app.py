@@ -19,7 +19,7 @@ IST = pytz.timezone('Asia/Kolkata')
 
 def get_upcoming_expiry(is_sensex=False):
     now = datetime.now(IST)
-    target_weekday = 4 if is_sensex else 3 # Thursday (3) for Nifty, Friday (4) for Sensex
+    target_weekday = 4 if is_sensex else 3 
     days_ahead = (target_weekday - now.weekday()) % 7
     if days_ahead == 0 and now.time() > dtime(15, 30):
         days_ahead = 7
@@ -178,10 +178,19 @@ class SimulationState:
             greeks = {"delta": 1.0, "gamma": 0.0, "theta": 0.0}
         else:
             parts = symbol.split("_")
-            # Format: PREFIX_EXPIRY_STRIKE_TYPE (e.g. NIFTY_10SEP26_23800_CE)
-            strike = float(parts[2])
-            opt_type = parts[3]
-            expiry_str = parts[1]
+            if len(parts) == 4:
+                expiry_str = parts[1]
+                strike = float(parts[2])
+                opt_type = parts[3]
+            elif len(parts) == 3:
+                expiry_str = get_upcoming_expiry(is_sensex)
+                strike = float(parts[1])
+                opt_type = parts[2]
+            else:
+                strike = curr_spot
+                opt_type = "CE"
+                expiry_str = get_upcoming_expiry(is_sensex)
+
             display_title = f"{'SENSEX' if is_sensex else 'NIFTY'} {expiry_str} {int(strike)} {opt_type}"
             raw_candles = []
             iv_val = 0.13 if is_sensex else 0.14
