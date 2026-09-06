@@ -10,16 +10,17 @@ from datetime import datetime, time as dtime, timedelta
 import pytz
 from urllib.parse import urlparse, parse_qs
 
-try:
-    import yfinance as yf
-except ImportError:
-    yf = None
-
 IST = pytz.timezone('Asia/Kolkata')
+
+def is_market_open():
+    now = datetime.now(IST)
+    if now.weekday() >= 5: 
+        return False
+    return dtime(9, 15) <= now.time() <= dtime(15, 30)
 
 def get_available_expiries(is_sensex=False):
     now = datetime.now(IST)
-    target_weekday = 4 if is_sensex else 3  # Friday (4) for Sensex, Thursday (3) for Nifty
+    target_weekday = 4 if is_sensex else 3
     expiries = []
     curr = now
     while len(expiries) < 3:
@@ -31,47 +32,7 @@ def get_available_expiries(is_sensex=False):
         if exp_str not in expiries:
             expiries.append(exp_str)
         curr = exp_date + timedelta(days=1)
-        
-    # Add monthly expiry (last target weekday of month)
-    last_day = (now.replace(day=1) + timedelta(days=32)).replace(day=1) - timedelta(days=1)
-    while last_day.weekday() != target_weekday:
-        last_day -= timedelta(days=1)
-    monthly_str = last_day.strftime("%d%b%y").upper()
-    if monthly_str not in expiries:
-        expiries.append(monthly_str)
-        
     return expiries
-
-def is_market_open():
-    now = datetime.now(IST)
-    if now.weekday() >= 5: 
-        return False
-    return dtime(9, 15) <= now.time() <= dtime(15, 30)
-
-def fetch_historical_sessions():
-    if not yf:
-        return []
-    try:
-        ticker = yf.Ticker("^NSEI")
-        df = ticker.history(period="60d", interval="5m")
-        if not df.empty:
-            candles = []
-            for idx, row in df.iterrows():
-                dt_ist = idx.tz_convert(IST) if idx.tzinfo else IST.localize(idx.to_pydatetime())
-                if dtime(9, 15) <= dt_ist.time() <= dtime(15, 30):
-                    candles.append({
-                        "time": int(dt_ist.timestamp()),
-                        "is_prev_day": False,
-                        "open": round(float(row["Open"]), 2),
-                        "high": round(float(row["High"]), 2),
-                        "low": round(float(row["Low"]), 2),
-                        "close": round(float(row["Close"]), 2),
-                        "volume": int(row["Volume"])
-                    })
-            return candles
-    except Exception:
-        pass
-    return []
 
 def norm_pdf(x):
     return (1.0 / math.sqrt(2.0 * math.pi)) * math.exp(-0.5 * x * x)
@@ -106,18 +67,6 @@ def calc_ema_series(data, period):
         series.append(round((p * k) + (series[-1] * (1.0 - k)), 2))
     return series
 
-def merge_candle_chunk(chunk):
-    if not chunk: return None
-    return {
-        "time": chunk[0]["time"],
-        "is_prev_day": chunk[0].get("is_prev_day", False),
-        "open": chunk[0]["open"],
-        "high": max(c["high"] for c in chunk),
-        "low": min(c["low"] for c in chunk),
-        "close": chunk[-1]["close"],
-        "volume": sum(c.get("volume", 0) for c in chunk)
-    }
-
 class SimulationState:
     def __init__(self):
         self.lock = threading.Lock()
@@ -130,57 +79,36 @@ class SimulationState:
         self.closed_trades = []
         self.sound_events = []
         self.candles_5m = []
-        self.current_5m_candle = None
         self._init_history()
 
     def _init_history(self):
-        fetched = fetch_historical_sessions()
-        if fetched:
-            self.candles_5m = fetched
-            self.nifty_spot = fetched[-1]["close"]
-            self.current_5m_candle = fetched[-1]
-        else:
-            now = datetime.now(IST)
-            start_ts = int(now.replace(hour=9, minute=15, second=0, microsecond=0).timestamp())
-            cur = self.nifty_spot - 50.0
-            for i in range(50):
-                self.candles_5m.append({
-                    "time": start_ts + (i * 300), "is_prev_day": False,
-                    "open": round(cur, 2), "high": round(cur+2, 2),
-                    "low": round(cur-2, 2), "close": round(cur+1, 2), "volume": 2000
-                })
-                cur += 1
-            self.current_5m_candle = self.candles_5m[-1]
-
-    def update_tick(self):
-        with self.lock:
-            if not is_market_open():
-                return
-            pass
-
-    def get_analytics(self):
-        trades = self.closed_trades
-        total = len(trades)
-        if total == 0: return {"total_trades": 0, "win_rate": 0.0, "profit_factor": 0.0, "net_pnl": 0.0}
-        wins = [t["pnl"] for t in trades if t["pnl"] > 0]
-        losses = [abs(t["pnl"]) for t in trades if t["pnl"] < 0]
-        gp = sum(wins); gl = sum(losses)
-        return {
-            "total_trades": total,
-            "win_rate": round((len(wins) / total) * 100, 1),
-            "profit_factor": round(gp / gl, 2) if gl > 0 else (gp if gp > 0 else 1.0),
-            "net_pnl": round(self.wallet["realized_pnl"], 2)
-        }
+        now_ist = datetime.now(IST)
+        start_dt = now_ist.replace(hour=9, minute=15, second=0, microsecond=0) - timedelta(days=2)
+        start_ts = int(start_dt.timestamp())
+        cur = self.nifty_spot - 40.0
+        for i in range(150):
+            c_time = start_ts + (i * 300)
+            o = cur
+            c = o + random.uniform(-4, 4.5)
+            h = max(o, c) + random.uniform(0.5, 2.5)
+            l = min(o, c) - random.uniform(0.5, 2.5)
+            v = random.randint(1500, 6000)
+            self.candles_5m.append({
+                "time": c_time, "is_prev_day": False,
+                "open": round(o, 2), "high": round(h, 2),
+                "low": round(l, 2), "close": round(c, 2),
+                "volume": v
+            })
+            cur = c
 
     def get_instrument_chart_data(self, symbol, timeframe="5m"):
-        all_candles = self.candles_5m + [self.current_5m_candle]
         is_sensex = "SENSEX" in symbol
         curr_spot = self.sensex_spot if is_sensex else self.nifty_spot
 
         if symbol in ["NIFTY", "SENSEX"] or not "_" in symbol:
             raw_candles = []
             multiplier = 3.4 if is_sensex else 1.0
-            for sc in all_candles:
+            for sc in self.candles_5m:
                 raw_candles.append({
                     "time": sc["time"], "is_prev_day": sc["is_prev_day"],
                     "open": round(sc["open"] * multiplier, 2),
@@ -194,7 +122,7 @@ class SimulationState:
             greeks = {"delta": 1.0, "gamma": 0.0, "theta": 0.0}
         else:
             parts = symbol.split("_")
-            if len(parts) == 4:
+            if len(parts) >= 4:
                 expiry_str = parts[1]
                 strike = float(parts[2])
                 opt_type = parts[3]
@@ -210,7 +138,7 @@ class SimulationState:
             display_title = f"{'SENSEX' if is_sensex else 'NIFTY'} {expiry_str} {int(strike)} {opt_type}"
             raw_candles = []
             iv_val = 0.13 if is_sensex else 0.14
-            for sc in all_candles:
+            for sc in self.candles_5m:
                 base_spot = sc["close"] / (3.4 if is_sensex else 1.0)
                 bs_o = calc_black_scholes(sc["open"] / (3.4 if is_sensex else 1.0), strike, iv=iv_val)[f"{opt_type.lower()}_ltp"]
                 bs_c = calc_black_scholes(base_spot, strike, iv=iv_val)[f"{opt_type.lower()}_ltp"]
@@ -223,28 +151,15 @@ class SimulationState:
             ltp = opt_cur["ce_ltp"] if opt_type == "CE" else opt_cur["pe_ltp"]
             greeks = {"delta": opt_cur["ce_delta"] if opt_type == "CE" else opt_cur["pe_delta"], "gamma": opt_cur["gamma"], "theta": opt_cur["theta"]}
 
-        tf_multiplier = {"1m": 1, "3m": 3, "5m": 1, "15m": 3}.get(timeframe, 1)
-        if tf_multiplier > 1 and timeframe != "1m":
-            candles = []
-            chunk = []
-            for c in raw_candles:
-                chunk.append(c)
-                if len(chunk) == tf_multiplier:
-                    candles.append(merge_candle_chunk(chunk))
-                    chunk = []
-            if chunk: candles.append(merge_candle_chunk(chunk))
-        else:
-            candles = raw_candles
-
-        closes = [c["close"] for c in candles]
-        volumes = [c["volume"] for c in candles]
+        closes = [c["close"] for c in raw_candles]
+        volumes = [c["volume"] for c in raw_candles]
         ema9_s = calc_ema_series(closes, 9)
         ema15_s = calc_ema_series(closes, 15)
         vwap = round(sum(closes[i] * volumes[i] for i in range(len(closes))) / sum(volumes), 2) if sum(volumes) > 0 else closes[-1]
 
         return {
             "symbol": symbol, "display_title": display_title, "timeframe": timeframe,
-            "ltp": ltp, "candles": candles, "countdown": "05:00",
+            "ltp": ltp, "candles": raw_candles, "countdown": "05:00",
             "ema9": ema9_s[-1] if ema9_s else 0, "ema15": ema15_s[-1] if ema15_s else 0,
             "vwap": vwap, "ema9_series": ema9_s, "ema15_series": ema15_s, "greeks": greeks
         }
