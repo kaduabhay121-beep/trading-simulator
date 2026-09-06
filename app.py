@@ -19,10 +19,9 @@ IST = pytz.timezone('Asia/Kolkata')
 
 def get_last_market_close_time():
     now = datetime.now(IST)
-    # If weekend, roll back to Friday 15:30 IST
-    if now.weekday() == 5: # Saturday
+    if now.weekday() == 5:
         close_day = now - timedelta(days=1)
-    elif now.weekday() == 6: # Sunday
+    elif now.weekday() == 6:
         close_day = now - timedelta(days=2)
     else:
         close_day = now
@@ -44,7 +43,6 @@ def fetch_historical_session():
         if not df.empty:
             candles = []
             for idx, row in df.iterrows():
-                # Convert timestamp to IST
                 dt_ist = idx.tz_convert(IST) if idx.tzinfo else IST.localize(idx.to_pydatetime())
                 candles.append({
                     "time": int(dt_ist.timestamp()),
@@ -130,7 +128,6 @@ class SimulationState:
             self.nifty_spot = fetched[-1]["close"]
             self.current_1m_candle = fetched[-1]
         else:
-            # Fallback mock session ending at last close
             close_time = get_last_market_close_time()
             start_time = close_time - timedelta(hours=6, minutes=15)
             start_ts = int(start_time.timestamp())
@@ -153,9 +150,7 @@ class SimulationState:
     def update_tick(self):
         with self.lock:
             if not is_market_open():
-                return # Freeze completely when market is closed (weekends / post-15:30)
-
-            # Live updates when market is open...
+                return
             pass
 
     def get_analytics(self):
@@ -301,8 +296,12 @@ class DhanSimHandler(http.server.BaseHTTPRequestHandler):
                 self._safe_write(json.dumps(resp).encode("utf-8"))
 
     def do_POST(self):
-        # Standard API post handles orders / resets
         pass
+
+class ThreadedHTTPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
+    allow_reuse_address = True
+    daemon_threads = True
+    def handle_error(self, request, client_address): pass
 
 if __name__ == "__main__":
     PORT = int(os.environ.get("PORT", 8000))
