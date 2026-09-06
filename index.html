@@ -1640,5 +1640,20 @@ renderWatchlist();
 setInterval(fetchMarket, 1000);
 fetchMarket();
 </script>
-</body>
+
+    <script>
+    window.addEventListener("DOMContentLoaded", () => {
+        console.log("Initializing Dhan Simulator UI...");
+        try {
+            if (typeof fetchMarket === "function") {
+                fetchMarket();
+                setInterval(() => { try { fetchMarket(); } catch(e){} }, 1000);
+            }
+        } catch(err) {
+            console.error("Initialization crash:", err);
+        }
+    });
+    </script>
+    </body>
+    
 </html>
