@@ -17,14 +17,30 @@ except ImportError:
 
 IST = pytz.timezone('Asia/Kolkata')
 
-def get_upcoming_expiry(is_sensex=False):
+def get_available_expiries(is_sensex=False):
     now = datetime.now(IST)
-    target_weekday = 4 if is_sensex else 3 
-    days_ahead = (target_weekday - now.weekday()) % 7
-    if days_ahead == 0 and now.time() > dtime(15, 30):
-        days_ahead = 7
-    expiry_date = now + timedelta(days=days_ahead)
-    return expiry_date.strftime("%d%b%y").upper()
+    target_weekday = 4 if is_sensex else 3  # Friday (4) for Sensex, Thursday (3) for Nifty
+    expiries = []
+    curr = now
+    while len(expiries) < 3:
+        days_ahead = (target_weekday - curr.weekday()) % 7
+        if days_ahead == 0 and curr.time() > dtime(15, 30):
+            days_ahead = 7
+        exp_date = curr + timedelta(days=days_ahead)
+        exp_str = exp_date.strftime("%d%b%y").upper()
+        if exp_str not in expiries:
+            expiries.append(exp_str)
+        curr = exp_date + timedelta(days=1)
+        
+    # Add monthly expiry (last target weekday of month)
+    last_day = (now.replace(day=1) + timedelta(days=32)).replace(day=1) - timedelta(days=1)
+    while last_day.weekday() != target_weekday:
+        last_day -= timedelta(days=1)
+    monthly_str = last_day.strftime("%d%b%y").upper()
+    if monthly_str not in expiries:
+        expiries.append(monthly_str)
+        
+    return expiries
 
 def is_market_open():
     now = datetime.now(IST)
@@ -183,13 +199,13 @@ class SimulationState:
                 strike = float(parts[2])
                 opt_type = parts[3]
             elif len(parts) == 3:
-                expiry_str = get_upcoming_expiry(is_sensex)
+                expiry_str = get_available_expiries(is_sensex)[0]
                 strike = float(parts[1])
                 opt_type = parts[2]
             else:
                 strike = curr_spot
                 opt_type = "CE"
-                expiry_str = get_upcoming_expiry(is_sensex)
+                expiry_str = get_available_expiries(is_sensex)[0]
 
             display_title = f"{'SENSEX' if is_sensex else 'NIFTY'} {expiry_str} {int(strike)} {opt_type}"
             raw_candles = []
@@ -233,25 +249,27 @@ class SimulationState:
             "vwap": vwap, "ema9_series": ema9_s, "ema15_series": ema15_s, "greeks": greeks
         }
 
-    def get_option_chain(self, symbol="NIFTY"):
+    def get_option_chain(self, symbol="NIFTY", expiry=None):
         is_sensex = "SENSEX" in symbol
         curr_spot = self.sensex_spot if is_sensex else self.nifty_spot
         step_val = 100 if is_sensex else 50
         atm = round(curr_spot / step_val) * step_val
         iv_val = 0.13 if is_sensex else 0.14
-        expiry = get_upcoming_expiry(is_sensex)
+        expiries = get_available_expiries(is_sensex)
+        selected_expiry = expiry if expiry in expiries else expiries[0]
+        
         chain = []
         for s in [atm + (i * step_val) for i in range(-8, 9)]:
             g = calc_black_scholes(curr_spot, s, iv=iv_val)
             chain.append({
-                "strike": s, "expiry": expiry,
+                "strike": s, "expiry": selected_expiry,
                 "ce_ltp": g["ce_ltp"], "ce_delta": g["ce_delta"],
                 "ce_oi": f"{random.randint(15, 65)}L",
                 "pe_ltp": g["pe_ltp"], "pe_delta": g["pe_delta"],
                 "pe_oi": f"{random.randint(18, 70)}L",
                 "gamma": g["gamma"], "theta": g["theta"]
             })
-        return chain
+        return {"expiries": expiries, "selected_expiry": selected_expiry, "chain": chain}
 
 state = SimulationState()
 
@@ -281,13 +299,15 @@ class DhanSimHandler(http.server.BaseHTTPRequestHandler):
             params = parse_qs(parsed.query)
             symbol = params.get("symbol", ["NIFTY"])[0]
             tf = params.get("tf", ["5m"])[0]
+            expiry = params.get("expiry", [None])[0]
             with state.lock:
                 chart_data = state.get_instrument_chart_data(symbol, timeframe=tf)
-                chain = state.get_option_chain(symbol)
+                chain_data = state.get_option_chain(symbol, expiry=expiry)
                 resp = {
                     "nifty_spot": state.nifty_spot, "sensex_spot": state.sensex_spot,
                     "nifty_chg": 24.25, "nifty_pct": 0.10,
-                    "chart": chart_data, "chain": chain,
+                    "chart": chart_data, "chain": chain_data["chain"],
+                    "expiries": chain_data["expiries"], "selected_expiry": chain_data["selected_expiry"],
                     "wallet": {**state.wallet, "unrealized_pnl": 0.0, "net_pnl": state.wallet["realized_pnl"]},
                     "positions": state.positions, "pending_orders": state.pending_orders,
                     "orders": state.orders, "closed_trades": state.closed_trades[:15]

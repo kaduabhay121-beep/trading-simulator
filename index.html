@@ -209,7 +209,12 @@
     <div class="chain-scroll-container">
       <div style="background:#11151e; border:1px solid #1e2430; border-radius:8px; margin-bottom: 24px;">
         <div style="display:flex; justify-content:space-between; align-items:center; padding:8px 12px; background:#0c0f15; border-bottom:1px solid #1e2430;">
-          <span style="font-weight:800; font-size:12px;" id="chainTitleBadge">NIFTY OPTION CHAIN</span>
+          
+<div style="display:flex; align-items:center; gap:8px;">
+  <span style="font-weight:800; font-size:12px;" id="chainTitleBadge">OPTION CHAIN</span>
+  <select id="expirySelectDropdown" onchange="onExpiryChange()" style="background:#0c0f15; color:#fff; border:1px solid #1e2430; border-radius:4px; font-size:10px; padding:2px 4px; font-weight:700;"></select>
+</div>
+
           <span id="chainSpotBadge" style="color:var(--blue); font-weight:800; font-size:11px;">SPOT: 23,850.00</span>
         </div>
         <div style="overflow-x:auto;">
@@ -1110,7 +1115,32 @@ function renderJournal() {
   document.getElementById('journalHistoryList').innerHTML = html || '<div style="text-align:center; color:var(--text-sub); padding:16px;">No closed trades yet</div>';
 }
 
+
+let currentSelectedExpiry = '';
+function onExpiryChange() {
+  currentSelectedExpiry = document.getElementById('expirySelectDropdown').value;
+  fetchMarket();
+}
 function renderOptionChain(data) {
+  if (!data || !data.chain) return;
+  const isSensex = currentChartSymbol.includes("SENSEX");
+  const spot = isSensex ? data.sensex_spot : data.nifty_spot;
+  
+  // Populate expiries dropdown
+  if (data.expiries) {
+    const sel = document.getElementById('expirySelectDropdown');
+    if (sel && sel.children.length === 0) {
+      currentSelectedExpiry = data.selected_expiry || data.expiries[0];
+      let expHtml = '';
+      data.expiries.forEach(e => {
+        expHtml += `<option value="${e}" ${e === currentSelectedExpiry ? 'selected' : ''}>${e}</option>`;
+      });
+      sel.innerHTML = expHtml;
+    }
+  }
+  const expiryToUse = currentSelectedExpiry || (data.expiries ? data.expiries[0] : 'EXP');
+  document.getElementById('chainTitleBadge.innerText') = `${isSensex ? 'SENSEX' : 'NIFTY'} (${expiryToUse}) CHAIN`;
+
   if (!data || !data.chain) return;
   const isSensex = currentChartSymbol.includes("SENSEX");
   const spot = isSensex ? data.sensex_spot : data.nifty_spot;
