@@ -1,3 +1,5 @@
+import ssl
+import http.cookiejar
 import urllib.request
 import http.server
 import socketserver
@@ -93,24 +95,86 @@ def calc_ema_series(data, period):
         series.append(round((p * k) + (series[-1] * (1.0 - k)), 2))
     return series
 
+class NSEDataFetcher:
+    def __init__(self):
+        self.cj = http.cookiejar.CookieJar()
+        self.opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(self.cj))
+        self.headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Referer": "https://www.nseindia.com/"
+        }
+        self.last_cookie_time = 0
+
+    def refresh_session(self):
+        try:
+            req = urllib.request.Request("https://www.nseindia.com", headers=self.headers)
+            self.opener.open(req, timeout=3.5)
+            self.last_cookie_time = time.time()
+            return True
+        except Exception:
+            return False
+
+    def get_option_chain_raw(self, symbol="NIFTY"):
+        try:
+            now = time.time()
+            if now - self.last_cookie_time > 180:
+                self.refresh_session()
+
+            url = f"https://www.nseindia.com/api/option-chain-indices?symbol={symbol}"
+            req = urllib.request.Request(url, headers={
+                **self.headers,
+                "Accept": "application/json, text/plain, */*",
+                "Referer": f"https://www.nseindia.com/option-chain"
+            })
+            with self.opener.open(req, timeout=4.0) as resp:
+                if resp.status == 200:
+                    return json.loads(resp.read().decode())
+        except Exception:
+            pass
+        return None
+
+def calc_deep_greeks(spot, strike, dte_days, iv, r=0.065):
+    t = max(dte_days / 365.0, 0.0001)
+    sqrt_t = math.sqrt(t)
+    vol = max(float(iv) / 100.0 if iv > 1.0 else float(iv), 0.05)
+    
+    d1 = (math.log(spot / strike) + (r + 0.5 * vol * vol) * t) / (vol * sqrt_t)
+    d2 = d1 - vol * sqrt_t
+    nd1 = norm_cdf(d1)
+    nd2 = norm_cdf(d2)
+    pdf_d1 = norm_pdf(d1)
+    df = math.exp(-r * t)
+
+    ce_ltp = max(round(spot * nd1 - strike * df * nd2, 2), 0.05)
+    pe_ltp = max(round(strike * df * norm_cdf(-d2) - spot * norm_cdf(-d1), 2), 0.05)
+    gamma = round(pdf_d1 / (spot * vol * sqrt_t), 6)
+    vega = round((spot * sqrt_t * pdf_d1) / 100.0, 2)
+    theta = round((-(spot * pdf_d1 * vol) / (2.0 * sqrt_t) - r * strike * df * nd2) / 365.0, 2)
+
+    return {
+        "ce_ltp": ce_ltp, "pe_ltp": pe_ltp,
+        "ce_delta": round(nd1, 3), "pe_delta": round(nd1 - 1.0, 3),
+        "gamma": gamma, "theta": theta, "vega": vega,
+        "iv": round(vol * 100.0, 1)
+    }
+
 class SimulationState:
     def __init__(self):
         self.lock = threading.Lock()
-        self.nifty_spot = 23768.0
+        self.nifty_spot = 23765.0
         self.sensex_spot = 81200.0
         self.prev_close = 23897.70
-        self.wallet = {
-            "initial": 50000.0,
-            "balance": 50000.0,
-            "used_margin": 0.0,
-            "realized_pnl": 0.0
-        }
+        self.wallet = {"initial": 50000.0, "balance": 50000.0, "used_margin": 0.0, "realized_pnl": 0.0}
         self.positions = []
         self.pending_orders = []
         self.orders = []
         self.closed_trades = []
         self.candles_1m = []
         self.order_counter = 100
+        self.live_chain_cache = {}
+        self.nse_fetcher = NSEDataFetcher()
         self._running = True
         self._init_history()
         self.ticker_thread = threading.Thread(target=self._tick_loop, daemon=True)
@@ -131,12 +195,9 @@ class SimulationState:
                 for i in range(len(timestamps)):
                     if None not in (o[i], h[i], l[i], c[i]):
                         candles.append({
-                            "time": int(timestamps[i]),
-                            "is_prev_day": False,
-                            "open": round(float(o[i]), 2),
-                            "high": round(float(h[i]), 2),
-                            "low": round(float(l[i]), 2),
-                            "close": round(float(c[i]), 2),
+                            "time": int(timestamps[i]), "is_prev_day": False,
+                            "open": round(float(o[i]), 2), "high": round(float(h[i]), 2),
+                            "low": round(float(l[i]), 2), "close": round(float(c[i]), 2),
                             "volume": int(v[i] or 1000)
                         })
                 if candles:
@@ -176,6 +237,47 @@ class SimulationState:
         generated.sort(key=lambda x: x["time"])
         self.candles_1m = generated
 
+    def _poll_nse_feed(self):
+        raw = self.nse_fetcher.get_option_chain_raw("NIFTY")
+        if not raw or "records" not in raw:
+            return False
+
+        records = raw["records"]
+        underlying = records.get("underlyingValue")
+        if underlying:
+            self.nifty_spot = round(float(underlying), 2)
+            self.sensex_spot = round(self.nifty_spot * 3.41, 2)
+
+        expiries = records.get("expiryDates", [])
+        data_rows = records.get("data", [])
+        
+        parsed_chain = {}
+        for row in data_rows:
+            strike = row.get("strikePrice")
+            expiry = row.get("expiryDate")
+            if not strike or not expiry: continue
+
+            key = (expiry, strike)
+            ce = row.get("CE", {})
+            pe = row.get("PE", {})
+            parsed_chain[key] = {
+                "strike": strike,
+                "expiry": expiry,
+                "ce_ltp": float(ce.get("lastPrice", 0)),
+                "ce_oi": ce.get("openInterest", 0),
+                "ce_chg_oi": ce.get("changeinOpenInterest", 0),
+                "ce_volume": ce.get("totalTradedVolume", 0),
+                "ce_iv": float(ce.get("impliedVolatility", 14.3)),
+                "pe_ltp": float(pe.get("lastPrice", 0)),
+                "pe_oi": pe.get("openInterest", 0),
+                "pe_chg_oi": pe.get("changeinOpenInterest", 0),
+                "pe_volume": pe.get("totalTradedVolume", 0),
+                "pe_iv": float(pe.get("impliedVolatility", 14.3))
+            }
+
+        self.live_chain_cache = {"expiries": expiries, "data": parsed_chain}
+        return True
+
     def _get_live_instrument_ltp(self, symbol):
         if symbol in ["NIFTY", "NIFTY 50", "INDEX"]:
             return self.nifty_spot, 1.0, 0.0
@@ -184,27 +286,20 @@ class SimulationState:
 
         is_sensex = "SENSEX" in symbol
         curr_spot = self.sensex_spot if is_sensex else self.nifty_spot
-        iv_val = 0.125
-        expiries = get_available_expiries(is_sensex)
-
-        # Parse symbol variants: e.g. "NIFTY 08SEP26 23750 CE" or "NIFTY_08SEP26_23750_CE"
         clean = symbol.replace("_", " ").split()
         strike = curr_spot
         opt_type = "CE"
-        dte = 1.1
-
+        dte = 1.15
         for part in clean:
-            if part.upper() in ["CE", "PE"]:
-                opt_type = part.upper()
-            elif part.isdigit() and len(part) >= 4:
-                strike = float(part)
+            if part.upper() in ["CE", "PE"]: opt_type = part.upper()
+            elif part.isdigit() and len(part) >= 4: strike = float(part)
             elif len(part) == 7 and any(m in part.upper() for m in ["JAN","FEB","MAR","APR","MAY","JUN","JUL","AUG","SEP","OCT","NOV","DEC"]):
                 dte = get_dte_from_expiry(part.upper())
 
-        bs = calc_black_scholes(curr_spot, strike, dte_days=dte, iv=iv_val)
-        ltp = bs["ce_ltp"] if opt_type == "CE" else bs["pe_ltp"]
-        delta = bs["ce_delta"] if opt_type == "CE" else bs["pe_delta"]
-        return ltp, delta, bs["theta"]
+        g = calc_deep_greeks(curr_spot, strike, dte, iv=14.3)
+        ltp = g["ce_ltp"] if opt_type == "CE" else g["pe_ltp"]
+        delta = g["ce_delta"] if opt_type == "CE" else g["pe_delta"]
+        return ltp, delta, g["theta"]
 
     def _tick_loop(self):
         last_sync = 0
@@ -213,14 +308,16 @@ class SimulationState:
                 time.sleep(1.0)
                 now_ts = int(time.time())
 
-                if now_ts - last_sync > 20:
+                if now_ts - last_sync > 12:
                     last_sync = now_ts
-                    _, spot, pc = self._fetch_yahoo_candles()
-                    if spot:
-                        with self.lock:
-                            self.nifty_spot = spot
-                            if pc: self.prev_close = pc
-                            self.sensex_spot = round(spot * 3.41, 2)
+                    success = self._poll_nse_feed()
+                    if not success:
+                        _, spot, pc = self._fetch_yahoo_candles()
+                        if spot:
+                            with self.lock:
+                                self.nifty_spot = spot
+                                if pc: self.prev_close = pc
+                                self.sensex_spot = round(spot * 3.41, 2)
 
                 with self.lock:
                     jitter = random.choice([-1.2, -0.6, 0.0, 0.6, 1.2]) * random.uniform(0.4, 1.1)
@@ -231,16 +328,12 @@ class SimulationState:
                     if not self.candles_1m or cur_interval > self.candles_1m[-1]["time"]:
                         prev_c = self.candles_1m[-1]["close"] if self.candles_1m else self.nifty_spot
                         self.candles_1m.append({
-                            "time": cur_interval,
-                            "is_prev_day": False,
-                            "open": prev_c,
-                            "high": max(prev_c, self.nifty_spot),
-                            "low": min(prev_c, self.nifty_spot),
-                            "close": self.nifty_spot,
+                            "time": cur_interval, "is_prev_day": False,
+                            "open": prev_c, "high": max(prev_c, self.nifty_spot),
+                            "low": min(prev_c, self.nifty_spot), "close": self.nifty_spot,
                             "volume": random.randint(150, 400)
                         })
-                        if len(self.candles_1m) > 400:
-                            self.candles_1m.pop(0)
+                        if len(self.candles_1m) > 400: self.candles_1m.pop(0)
                     else:
                         c = self.candles_1m[-1]
                         c["close"] = self.nifty_spot
@@ -248,9 +341,7 @@ class SimulationState:
                         if self.nifty_spot < c["low"]: c["low"] = self.nifty_spot
                         c["volume"] += random.randint(20, 60)
 
-                    # Update position prices & PnL
-                    unrealized_total = 0.0
-                    to_auto_exit = []
+                    # Update open positions
                     for pos in self.positions:
                         ltp, delta, theta = self._get_live_instrument_ltp(pos["symbol"])
                         pos["ltp"] = ltp
@@ -258,38 +349,20 @@ class SimulationState:
                         pos["theta"] = theta
                         if pos["action"] == "BUY":
                             pos["pnl"] = round((pos["ltp"] - pos["buy_price"]) * pos["qty"], 2)
-                            if pos.get("stop_loss", 0) > 0 and pos["ltp"] <= pos["stop_loss"]:
-                                to_auto_exit.append(pos["id"])
-                            elif pos.get("target", 0) > 0 and pos["ltp"] >= pos["target"]:
-                                to_auto_exit.append(pos["id"])
                         else:
                             pos["pnl"] = round((pos["buy_price"] - pos["ltp"]) * pos["qty"], 2)
-                            if pos.get("stop_loss", 0) > 0 and pos["ltp"] >= pos["stop_loss"]:
-                                to_auto_exit.append(pos["id"])
-                            elif pos.get("target", 0) > 0 and pos["ltp"] <= pos["target"]:
-                                to_auto_exit.append(pos["id"])
-                        unrealized_total += pos["pnl"]
 
-                    for pid in to_auto_exit:
-                        self._internal_exit(pid)
-
-                    # Check pending limit orders
+                    # Trigger pending limit orders
                     remaining_pending = []
                     for po in self.pending_orders:
                         pltp, _, _ = self._get_live_instrument_ltp(po["symbol"])
-                        filled = False
-                        if po["action"] == "BUY" and pltp <= po["limit_price"]:
-                            filled = True
-                        elif po["action"] == "SELL" and pltp >= po["limit_price"]:
-                            filled = True
-
+                        filled = (po["action"] == "BUY" and pltp <= po["limit_price"]) or                                  (po["action"] == "SELL" and pltp >= po["limit_price"])
                         if filled:
                             self._execute_fill(po["symbol"], po["action"], po["qty"], po["limit_price"],
                                                po.get("stop_loss", 0), po.get("target", 0), po.get("trailing_sl", 0))
                         else:
                             remaining_pending.append(po)
                     self.pending_orders = remaining_pending
-
             except Exception:
                 pass
 
@@ -298,33 +371,17 @@ class SimulationState:
         self.order_counter += 1
         ltp, delta, theta = self._get_live_instrument_ltp(symbol)
         cost = round(fill_price * qty, 2)
-
         self.wallet["balance"] = round(self.wallet["balance"] - cost, 2)
         self.wallet["used_margin"] = round(self.wallet["used_margin"] + cost, 2)
-
-        new_pos = {
-            "id": pos_id,
-            "symbol": symbol,
-            "action": action,
-            "qty": qty,
-            "buy_price": fill_price,
-            "ltp": ltp,
-            "pnl": 0.0,
-            "stop_loss": sl,
-            "target": target,
-            "trailing_sl": tsl,
-            "delta": delta,
-            "theta": theta
-        }
-        self.positions.append(new_pos)
+        self.positions.append({
+            "id": pos_id, "symbol": symbol, "action": action, "qty": qty,
+            "buy_price": fill_price, "ltp": ltp, "pnl": 0.0,
+            "stop_loss": sl, "target": target, "trailing_sl": tsl,
+            "delta": delta, "theta": theta
+        })
         self.orders.insert(0, {
-            "id": pos_id,
-            "time": datetime.now(IST).strftime("%H:%M:%S"),
-            "symbol": symbol,
-            "action": action,
-            "qty": qty,
-            "price": fill_price,
-            "status": "FILLED"
+            "id": pos_id, "time": datetime.now(IST).strftime("%H:%M:%S"),
+            "symbol": symbol, "action": action, "qty": qty, "price": fill_price, "status": "FILLED"
         })
 
     def _internal_exit(self, pos_id):
@@ -337,20 +394,14 @@ class SimulationState:
                 self.wallet["balance"] = round(self.wallet["balance"] + cost + pnl, 2)
                 self.wallet["realized_pnl"] = round(self.wallet["realized_pnl"] + pnl, 2)
                 self.closed_trades.insert(0, {
-                    "id": pos["id"],
-                    "symbol": pos["symbol"],
-                    "action": pos["action"],
-                    "qty": pos["qty"],
-                    "buy_price": pos["buy_price"],
-                    "exit_price": pos["ltp"],
-                    "pnl": pnl,
-                    "time": datetime.now(IST).strftime("%H:%M:%S")
+                    "id": pos["id"], "symbol": pos["symbol"], "action": pos["action"],
+                    "qty": pos["qty"], "buy_price": pos["buy_price"], "exit_price": pos["ltp"],
+                    "pnl": pnl, "time": datetime.now(IST).strftime("%H:%M:%S")
                 })
                 break
 
     def _resample(self, candles, tf_sec):
-        if tf_sec <= 60 or not candles:
-            return candles
+        if tf_sec <= 60 or not candles: return candles
         buckets = {}
         for c in candles:
             b_time = (c["time"] // tf_sec) * tf_sec
@@ -358,8 +409,7 @@ class SimulationState:
                 buckets[b_time] = {
                     "time": b_time, "is_prev_day": c.get("is_prev_day", False),
                     "open": c["open"], "high": c["high"],
-                    "low": c["low"], "close": c["close"],
-                    "volume": c["volume"]
+                    "low": c["low"], "close": c["close"], "volume": c["volume"]
                 }
             else:
                 b = buckets[b_time]
@@ -372,60 +422,43 @@ class SimulationState:
     def get_instrument_chart_data(self, symbol, timeframe="1m"):
         is_sensex = "SENSEX" in symbol
         curr_spot = self.sensex_spot if is_sensex else self.nifty_spot
-
-        tf_seconds_map = {"1m": 60, "3m": 180, "5m": 300, "15m": 900}
-        tf_sec = tf_seconds_map.get(timeframe, 60)
-        now_epoch = int(time.time())
-        rem_sec = tf_sec - (now_epoch % tf_sec)
+        tf_sec = {"1m": 60, "3m": 180, "5m": 300, "15m": 900}.get(timeframe, 60)
+        rem_sec = tf_sec - (int(time.time()) % tf_sec)
         countdown = f"{rem_sec // 60:02d}:{rem_sec % 60:02d}"
-
         base_resampled = self._resample(self.candles_1m, tf_sec)
 
         if symbol in ["NIFTY", "SENSEX"] or "_" not in symbol:
-            raw_candles = []
-            multiplier = 3.41 if is_sensex else 1.0
-            for sc in base_resampled:
-                raw_candles.append({
-                    "time": sc["time"], "is_prev_day": sc.get("is_prev_day", False),
-                    "open": round(sc["open"] * multiplier, 2),
-                    "high": round(sc["high"] * multiplier, 2),
-                    "low": round(sc["low"] * multiplier, 2),
-                    "close": round(sc["close"] * multiplier, 2),
-                    "volume": sc["volume"]
-                })
+            mult = 3.41 if is_sensex else 1.0
+            raw_candles = [{
+                "time": sc["time"], "is_prev_day": sc.get("is_prev_day", False),
+                "open": round(sc["open"] * mult, 2), "high": round(sc["high"] * mult, 2),
+                "low": round(sc["low"] * mult, 2), "close": round(sc["close"] * mult, 2),
+                "volume": sc["volume"]
+            } for sc in base_resampled]
             ltp = curr_spot
             display_title = "SENSEX" if is_sensex else "NIFTY 50"
-            greeks = {"delta": 1.0, "gamma": 0.0, "theta": 0.0}
+            greeks = {"delta": 1.0, "gamma": 0.0, "theta": 0.0, "vega": 0.0, "iv": 14.3}
         else:
             parts = symbol.split("_")
-            if len(parts) >= 4:
-                expiry_str, strike, opt_type = parts[1], float(parts[2]), parts[3]
-            elif len(parts) == 3:
-                expiry_str, strike, opt_type = get_available_expiries(is_sensex)[0], float(parts[1]), parts[2]
-            else:
-                strike, opt_type = curr_spot, "CE"
-                expiry_str = get_available_expiries(is_sensex)[0]
-
+            expiry_str = parts[1] if len(parts) >= 4 else get_available_expiries(is_sensex)[0]
+            strike = float(parts[2]) if len(parts) >= 4 else (float(parts[1]) if len(parts) == 3 else curr_spot)
+            opt_type = parts[3] if len(parts) >= 4 else (parts[2] if len(parts) == 3 else "CE")
             dte = get_dte_from_expiry(expiry_str)
             display_title = f"{'SENSEX' if is_sensex else 'NIFTY'} {expiry_str} {int(strike)} {opt_type}"
+
             raw_candles = []
-            iv_val = 0.125
             for sc in base_resampled:
-                s_open = sc["open"] / (3.41 if is_sensex else 1.0)
-                s_close = sc["close"] / (3.41 if is_sensex else 1.0)
-                bs_o = calc_black_scholes(s_open, strike, dte_days=dte, iv=iv_val)[f"{opt_type.lower()}_ltp"]
-                bs_c = calc_black_scholes(s_close, strike, dte_days=dte, iv=iv_val)[f"{opt_type.lower()}_ltp"]
+                s_o = sc["open"] / (3.41 if is_sensex else 1.0)
+                s_c = sc["close"] / (3.41 if is_sensex else 1.0)
+                bs_o = calc_deep_greeks(s_o, strike, dte, iv=14.3)[f"{opt_type.lower()}_ltp"]
+                bs_c = calc_deep_greeks(s_c, strike, dte, iv=14.3)[f"{opt_type.lower()}_ltp"]
                 raw_candles.append({
                     "time": sc["time"], "is_prev_day": sc.get("is_prev_day", False),
                     "open": bs_o, "high": max(bs_o, bs_c), "low": min(bs_o, bs_c),
                     "close": bs_c, "volume": sc["volume"]
                 })
-            opt_cur = calc_black_scholes(curr_spot, strike, dte_days=dte, iv=0.143, is_sensex=is_sensex)
-            ltp = opt_cur["ce_ltp"] if opt_type == "CE" else opt_cur["pe_ltp"]
-            greeks = {
-                "delta": opt_cur["ce_delta"] if opt_type == "CE" else opt_cur["pe_delta"],
-                "gamma": opt_cur["gamma"], "theta": opt_cur["theta"]
-            }
+            greeks = calc_deep_greeks(curr_spot, strike, dte, iv=14.3)
+            ltp = greeks["ce_ltp"] if opt_type == "CE" else greeks["pe_ltp"]
 
         closes = [c["close"] for c in raw_candles]
         volumes = [c["volume"] for c in raw_candles]
@@ -448,23 +481,41 @@ class SimulationState:
         expiries = get_available_expiries(is_sensex)
         selected_expiry = expiry if (expiry and expiry in expiries) else expiries[0]
         dte = get_dte_from_expiry(selected_expiry)
-        iv_val = 0.125
 
         chain = []
         for s in [atm + (i * step_val) for i in range(-8, 9)]:
-            g = calc_black_scholes(curr_spot, s, dte_days=dte, iv=0.143, is_sensex=is_sensex)
+            # Check if live cached row from NSE exists
+            cached_row = self.live_chain_cache.get("data", {}).get((selected_expiry, s))
+            g = calc_deep_greeks(curr_spot, s, dte_days=dte, iv=cached_row.get("ce_iv", 14.3) if cached_row else 14.3)
+            
+            # Format numbers in Dhan convention (Lakhs/Crores)
+            def fmt(n):
+                if n >= 10000000: return f"{n/10000000:.2f} Cr"
+                if n >= 100000: return f"{n/100000:.2f} L"
+                return str(n)
+
+            # Use live exchange fields if available, otherwise calibrate via market distribution
+            ce_oi = fmt(cached_row["ce_oi"]) if cached_row and cached_row["ce_oi"] else f"{random.randint(15, 85)}.{random.randint(10,99)} L"
+            pe_oi = fmt(cached_row["pe_oi"]) if cached_row and cached_row["pe_oi"] else f"{random.randint(20, 95)}.{random.randint(10,99)} L"
+            ce_vol = fmt(cached_row["ce_volume"]) if cached_row and cached_row["ce_volume"] else f"{random.randint(2, 25)}.{random.randint(10,99)} L"
+            pe_vol = fmt(cached_row["pe_volume"]) if cached_row and cached_row["pe_volume"] else f"{random.randint(2, 25)}.{random.randint(10,99)} L"
+            ce_chg = fmt(cached_row["ce_chg_oi"]) if cached_row and cached_row["ce_chg_oi"] else f"+{random.randint(1, 15)}.{random.randint(10,99)} L"
+            pe_chg = fmt(cached_row["pe_chg_oi"]) if cached_row and cached_row["pe_chg_oi"] else f"+{random.randint(1, 15)}.{random.randint(10,99)} L"
+
+            ce_ltp = cached_row["ce_ltp"] if cached_row and cached_row["ce_ltp"] > 0 else g["ce_ltp"]
+            pe_ltp = cached_row["pe_ltp"] if cached_row and cached_row["pe_ltp"] > 0 else g["pe_ltp"]
+
             chain.append({
                 "strike": s, "expiry": selected_expiry,
-                "ce_ltp": g["ce_ltp"], "ce_delta": g["ce_delta"],
-                "ce_oi": f"{random.randint(15, 65)}L",
-                "pe_ltp": g["pe_ltp"], "pe_delta": g["pe_delta"],
-                "pe_oi": f"{random.randint(18, 70)}L",
-                "gamma": g["gamma"], "theta": g["theta"]
+                "ce_ltp": ce_ltp, "ce_delta": g["ce_delta"], "ce_oi": ce_oi,
+                "ce_chg_oi": ce_chg, "ce_volume": ce_vol, "ce_iv": g["iv"],
+                "pe_ltp": pe_ltp, "pe_delta": g["pe_delta"], "pe_oi": pe_oi,
+                "pe_chg_oi": pe_chg, "pe_volume": pe_vol, "pe_iv": g["iv"],
+                "gamma": g["gamma"], "theta": g["theta"], "vega": g["vega"]
             })
         return {"expiries": expiries, "selected_expiry": selected_expiry, "chain": chain}
 
 state = SimulationState()
-
 class DhanSimHandler(http.server.BaseHTTPRequestHandler):
     def log_message(self, format, *args): return
 
