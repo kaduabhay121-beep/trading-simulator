@@ -21,21 +21,18 @@ def is_market_open():
 
 def get_available_expiries(is_sensex=False):
     now = datetime.now(IST)
-    # Support Tuesday near-week expiry & Thursday regular expiry
-    target_weekdays = [1, 3] if not is_sensex else [4]
+    target_weekday = 4 if is_sensex else 1  # Tuesday for Nifty, Friday for Sensex
     expiries = []
-    for d in range(0, 15):
-        cand = now + timedelta(days=d)
-        if cand.weekday() in target_weekdays:
-            if d == 0 and now.time() > dtime(15, 30):
-                continue
-            s = cand.strftime("%d%b%y").upper()
-            if s not in expiries:
-                expiries.append(s)
-            if len(expiries) >= 4:
-                break
-    if not expiries:
-        expiries = [(now + timedelta(days=1)).strftime("%d%b%y").upper()]
+    curr = now
+    while len(expiries) < 5:
+        days_ahead = (target_weekday - curr.weekday()) % 7
+        if days_ahead == 0 and curr.time() > dtime(15, 30):
+            days_ahead = 7
+        exp_date = curr + timedelta(days=days_ahead)
+        s = exp_date.strftime("%d%b%y").upper()
+        if s not in expiries:
+            expiries.append(s)
+        curr = exp_date + timedelta(days=1)
     return expiries
 
 def get_dte_from_expiry(expiry_str):
@@ -54,23 +51,38 @@ def norm_pdf(x):
 def norm_cdf(x):
     return 0.5 * (1.0 + math.erf(x / math.sqrt(2.0)))
 
-def calc_black_scholes(spot, strike, dte_days=4.0, iv=0.14, r=0.06):
+def calc_black_scholes(spot, strike, dte_days=1.15, iv=0.143, r=0.065, is_sensex=False):
     if strike <= 0 or spot <= 0:
         return {"ce_ltp": 0.50, "pe_ltp": 0.50, "ce_delta": 0.0, "pe_delta": 0.0, "gamma": 0.0, "theta": 0.0}
+    
+    # Forward basis alignment: +46.5 pts basis on Nifty, +140 pts on Sensex
+    basis = (140.0 if is_sensex else 46.5) * max(min(dte_days / 1.15, 2.5), 0.2)
+    F = spot + basis
     t = max(dte_days / 365.0, 0.0001)
     sqrt_t = math.sqrt(t)
-    d1 = (math.log(spot / strike) + (r + 0.5 * iv * iv) * t) / (iv * sqrt_t)
-    d2 = d1 - iv * sqrt_t
+    vol = iv if iv else 0.143
+
+    d1 = (math.log(F / strike) + 0.5 * vol * vol * t) / (vol * sqrt_t)
+    d2 = d1 - vol * sqrt_t
     nd1 = norm_cdf(d1)
     nd2 = norm_cdf(d2)
     pdf_d1 = norm_pdf(d1)
-    ce = spot * nd1 - strike * math.exp(-r * t) * nd2
-    pe = strike * math.exp(-r * t) * norm_cdf(-d2) - spot * norm_cdf(-d1)
+    df = math.exp(-r * t)
+
+    ce = df * (F * nd1 - strike * nd2)
+    pe = df * (strike * norm_cdf(-d2) - F * norm_cdf(-d1))
+
+    # OTM Put volatility skew calibration
+    if strike < F:
+        pe *= (1.0 + min(0.06, ((F - strike) / F) * 1.2))
+
     return {
-        "ce_ltp": max(round(ce, 2), 0.50), "pe_ltp": max(round(pe, 2), 0.50),
-        "ce_delta": round(nd1, 3), "pe_delta": round(nd1 - 1.0, 3),
-        "gamma": round(pdf_d1 / (spot * iv * sqrt_t), 5),
-        "theta": round((- (spot * pdf_d1 * iv) / (2.0 * sqrt_t) - r * strike * math.exp(-r * t) * nd2) / 365.0, 2)
+        "ce_ltp": max(round(ce, 2), 0.50),
+        "pe_ltp": max(round(pe, 2), 0.50),
+        "ce_delta": round(nd1, 3),
+        "pe_delta": round(nd1 - 1.0, 3),
+        "gamma": round(pdf_d1 / (spot * vol * sqrt_t), 5),
+        "theta": round((- (spot * pdf_d1 * vol) / (2.0 * sqrt_t) - r * strike * df * nd2) / 365.0, 2)
     }
 
 def calc_ema_series(data, period):
@@ -408,7 +420,7 @@ class SimulationState:
                     "open": bs_o, "high": max(bs_o, bs_c), "low": min(bs_o, bs_c),
                     "close": bs_c, "volume": sc["volume"]
                 })
-            opt_cur = calc_black_scholes(curr_spot, strike, dte_days=dte, iv=iv_val)
+            opt_cur = calc_black_scholes(curr_spot, strike, dte_days=dte, iv=0.143, is_sensex=is_sensex)
             ltp = opt_cur["ce_ltp"] if opt_type == "CE" else opt_cur["pe_ltp"]
             greeks = {
                 "delta": opt_cur["ce_delta"] if opt_type == "CE" else opt_cur["pe_delta"],
@@ -440,7 +452,7 @@ class SimulationState:
 
         chain = []
         for s in [atm + (i * step_val) for i in range(-8, 9)]:
-            g = calc_black_scholes(curr_spot, s, dte_days=dte, iv=iv_val)
+            g = calc_black_scholes(curr_spot, s, dte_days=dte, iv=0.143, is_sensex=is_sensex)
             chain.append({
                 "strike": s, "expiry": selected_expiry,
                 "ce_ltp": g["ce_ltp"], "ce_delta": g["ce_delta"],
