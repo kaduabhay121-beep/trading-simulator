@@ -87,6 +87,19 @@ def calc_black_scholes(spot, strike, dte_days=1.15, iv=0.143, r=0.065, is_sensex
         "theta": round((- (spot * pdf_d1 * vol) / (2.0 * sqrt_t) - r * strike * df * nd2) / 365.0, 2)
     }
 
+def calc_vwap_series(candles):
+    if not candles: return []
+    series = []
+    cum_pv = 0.0
+    cum_vol = 0
+    for c in candles:
+        tp = (c["high"] + c["low"] + c["close"]) / 3.0
+        v = max(int(c.get("volume", 100)), 1)
+        cum_pv += tp * v
+        cum_vol += v
+        series.append(round(cum_pv / cum_vol, 2))
+    return series
+
 def calc_ema_series(data, period):
     if not data: return []
     k = 2.0 / (period + 1)
@@ -199,11 +212,18 @@ class SimulationState:
                 candles = []
                 for i in range(len(timestamps)):
                     if None not in (o[i], h[i], l[i], c[i]):
+                        o_val, h_val = round(float(o[i]), 2), round(float(h[i]), 2)
+                        l_val, c_val = round(float(l[i]), 2), round(float(c[i]), 2)
+                        raw_v = v[i] if (v[i] and int(v[i]) > 0) else None
+                        if raw_v is None:
+                            rng = max(abs(h_val - l_val), 0.5)
+                            sim_vol = int(rng * random.randint(14000, 32000) + random.randint(18000, 65000))
+                        else:
+                            sim_vol = int(raw_v)
                         candles.append({
                             "time": int(timestamps[i]), "is_prev_day": False,
-                            "open": round(float(o[i]), 2), "high": round(float(h[i]), 2),
-                            "low": round(float(l[i]), 2), "close": round(float(c[i]), 2),
-                            "volume": int(v[i] or 1000)
+                            "open": o_val, "high": h_val, "low": l_val, "close": c_val,
+                            "volume": sim_vol
                         })
                 if candles:
                     pc = meta.get("chartPreviousClose") or meta.get("previousClose") or candles[0]["open"]
@@ -484,7 +504,7 @@ class SimulationState:
                 raw_candles.append({
                     "time": sc["time"], "is_prev_day": sc.get("is_prev_day", False),
                     "open": bs_o, "high": c_high, "low": c_low,
-                    "close": bs_c, "volume": sc["volume"]
+                    "close": bs_c, "volume": int(max(abs(c_high - c_low), 0.4) * random.randint(900, 2600) + random.randint(1200, 4800))
                 })
             greeks = calc_deep_greeks(curr_spot, strike, dte, iv=14.3, is_sensex=is_sensex)
             greeks["delta"] = greeks["ce_delta"] if opt_type == "CE" else greeks["pe_delta"]
@@ -494,13 +514,14 @@ class SimulationState:
         volumes = [c["volume"] for c in raw_candles]
         ema9_s = calc_ema_series(closes, 9)
         ema15_s = calc_ema_series(closes, 15)
-        vwap = round(sum(closes[i] * volumes[i] for i in range(len(closes))) / sum(volumes), 2) if sum(volumes) > 0 else (closes[-1] if closes else 0)
+        vwap_s = calc_vwap_series(raw_candles)
 
         return {
             "symbol": symbol, "display_title": display_title, "timeframe": timeframe,
             "ltp": ltp, "candles": raw_candles, "countdown": countdown,
             "ema9": ema9_s[-1] if ema9_s else 0, "ema15": ema15_s[-1] if ema15_s else 0,
-            "vwap": vwap, "ema9_series": ema9_s, "ema15_series": ema15_s, "greeks": greeks
+            "vwap": vwap_s[-1] if vwap_s else 0, "vwap_series": vwap_s,
+            "ema9_series": ema9_s, "ema15_series": ema15_s, "greeks": greeks
         }
 
     def get_option_chain(self, symbol="NIFTY", expiry=None):
