@@ -527,11 +527,7 @@ function getPriceFromY(pixelY) {
   let minP = Math.min(...allCandles.map(c => c.low));
   let maxP = Math.max(...allCandles.map(c => c.high));
 
-  const matchingPos = findMatchingPosition();
-    if (currentChartSymbol === 'SENSEX') return p.symbol === 'SENSEX';
-    const parts = currentChartSymbol.split('_');
-    return p.strike == parts[1] && p.type == parts[2];
-  });
+  const matchingPos = (typeof findMatchingPosition === 'function') ? findMatchingPosition() : null;
   if (matchingPos) {
     minP = Math.min(minP, matchingPos.buy_price);
     maxP = Math.max(maxP, matchingPos.buy_price);
@@ -1202,11 +1198,7 @@ let activeEditBracket = 'SL';
 let activePosId = null;
 
 function updatePositionPills(data) {
-  const matchingPos = findMatchingPosition();
-    if (currentChartSymbol === 'SENSEX') return p.symbol === 'SENSEX';
-    const parts = currentChartSymbol.split('_');
-    return p.strike == parts[1] && p.type == parts[2];
-  });
+  const matchingPos = (typeof findMatchingPosition === 'function') ? findMatchingPosition() : null;
 
   const overlayPill = document.getElementById('livePriceOverlayPill');
   if (matchingPos) {
@@ -1337,11 +1329,7 @@ function drawChart() {
   let targetMinP = Math.min(...candles.map(c => c.low));
   let targetMaxP = Math.max(...candles.map(c => c.high));
 
-  const matchingPos = findMatchingPosition();
-    if (currentChartSymbol === 'SENSEX') return p.symbol === 'SENSEX';
-    const parts = currentChartSymbol.split('_');
-    return p.strike == parts[1] && p.type == parts[2];
-  });
+  const matchingPos = (typeof findMatchingPosition === 'function') ? findMatchingPosition() : null;
 
   if (matchingPos) {
     targetMinP = Math.min(targetMinP, matchingPos.buy_price);
