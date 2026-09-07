@@ -1,6 +1,10 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
+<script>
+window.onerror = function(msg, src, line) { alert("FATAL JS ERROR: " + msg + " (Line " + line + ")"); };
+window.addEventListener("unhandledrejection", function(e) { alert("API/PROMISE ERROR: " + (e.reason ? (e.reason.message || e.reason) : "Unknown error")); });
+</script>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <title>Trading Simulator</title>
@@ -1690,6 +1694,15 @@ window.triggerDirectTrade = window.triggerDirectTrade || function(action) {
 // Also catch any stray functions that might be missing
 window.changeTimeframe = window.changeTimeframe || function(tf) { console.log("Timeframe changed:", tf); };
 window.openSettings = window.openSettings || function() { console.log("Settings opened"); };
+</script>
+<script>
+window.switchNavTab = window.switchNavTab || function(tabId) {
+    document.querySelectorAll('.screen, [id$="Screen"], [id$="Tab"]').forEach(s => {
+        if(s.id !== 'debugOverlay') s.style.display = 'none';
+    });
+    const t = document.getElementById(tabId) || document.getElementById(tabId + 'Screen');
+    if(t) t.style.display = 'block';
+};
 </script>
 </body>
 
