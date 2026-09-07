@@ -71,40 +71,87 @@ def calc_ema_series(data, period):
 class SimulationState:
     def __init__(self):
         self.lock = threading.Lock()
-        self.prev_close = 23873.45
-        self.nifty_spot = 23897.70
-        self.sensex_spot = 81450.00
-        self._running = True
+        self.nifty_spot = 23772.0
+        self.sensex_spot = 81200.0
+        self.prev_close = 23897.70
         self.wallet = {"initial": 50000.0, "balance": 50000.0, "used_margin": 0.0, "realized_pnl": 0.0}
         self.positions = []
         self.pending_orders = []
         self.orders = []
         self.closed_trades = []
-        self.sound_events = []
-        self.candles_5m = []
+        self.candles_1m = []
+        self._running = True
         self._init_history()
         self.ticker_thread = threading.Thread(target=self._tick_loop, daemon=True)
         self.ticker_thread.start()
 
+    def _fetch_yahoo_candles(self):
+        try:
+            url = "https://query1.finance.yahoo.com/v8/finance/chart/%5ENSEI?interval=1m&range=1d"
+            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"})
+            with urllib.request.urlopen(req, timeout=3.5) as resp:
+                data = json.loads(resp.read().decode())
+                res = data["chart"]["result"][0]
+                meta = res.get("meta", {})
+                timestamps = res.get("timestamp", [])
+                quote = res["indicators"]["quote"][0]
+                opens = quote.get("open", [])
+                highs = quote.get("high", [])
+                lows = quote.get("low", [])
+                closes = quote.get("close", [])
+                volumes = quote.get("volume", [])
+
+                candles = []
+                for i in range(len(timestamps)):
+                    if None not in (opens[i], highs[i], lows[i], closes[i]):
+                        candles.append({
+                            "time": int(timestamps[i]),
+                            "is_prev_day": False,
+                            "open": round(float(opens[i]), 2),
+                            "high": round(float(highs[i]), 2),
+                            "low": round(float(lows[i]), 2),
+                            "close": round(float(closes[i]), 2),
+                            "volume": int(volumes[i] or 1000)
+                        })
+                if candles:
+                    pc = meta.get("chartPreviousClose") or meta.get("previousClose") or candles[0]["open"]
+                    return candles, round(float(candles[-1]["close"]), 2), round(float(pc), 2)
+        except Exception:
+            pass
+        return None, None, None
+
     def _init_history(self):
-        now_ist = datetime.now(IST)
-        start_dt = now_ist.replace(hour=9, minute=15, second=0, microsecond=0) - timedelta(days=2)
-        start_ts = int(start_dt.timestamp())
-        cur = self.nifty_spot - 40.0
-        for i in range(150):
-            c_time = start_ts + (i * 300)
-            o = cur
-            c = o + random.uniform(-4, 4.5)
-            h = max(o, c) + random.uniform(0.5, 2.5)
-            l = min(o, c) - random.uniform(0.5, 2.5)
-            v = random.randint(1500, 6000)
-            self.candles_5m.append({
-                "time": c_time, "is_prev_day": False,
-                "open": round(o, 2), "high": round(h, 2),
-                "low": round(l, 2), "close": round(c, 2),
+        real_candles, spot, pc = self._fetch_yahoo_candles()
+        if real_candles and len(real_candles) >= 15:
+            self.candles_1m = real_candles
+            self.nifty_spot = spot
+            self.prev_close = pc
+            self.sensex_spot = round(self.nifty_spot * 3.41, 2)
+            return
+
+        # Gapless fallback: generate 1m candles backward from current IST minute to avoid flash crash spikes
+        now_ts = int(time.time())
+        cur_min_ts = (now_ts // 60) * 60
+        cur_price = self.nifty_spot
+
+        generated = []
+        for i in range(90):
+            t = cur_min_ts - ((89 - i) * 60)
+            change = random.uniform(-2.5, 2.5)
+            o = round(cur_price - change, 2)
+            c = round(cur_price, 2)
+            h = round(max(o, c) + random.uniform(0.2, 1.8), 2)
+            l = round(min(o, c) - random.uniform(0.2, 1.8), 2)
+            v = random.randint(1200, 6500)
+            generated.append({
+                "time": t, "is_prev_day": False,
+                "open": o, "high": h, "low": l, "close": c,
                 "volume": v
             })
-            cur = c
+            cur_price = o
+
+        generated.sort(key=lambda x: x["time"])
+        self.candles_1m = generated
 
     def _tick_loop(self):
         last_sync = 0
@@ -113,67 +160,86 @@ class SimulationState:
                 time.sleep(1.0)
                 now_ts = int(time.time())
 
-                # Sync with live exchange spot every 15s during market hours
-                if now_ts - last_sync > 15:
+                # Query Yahoo Finance every 20 seconds during live hours
+                if now_ts - last_sync > 20:
                     last_sync = now_ts
-                    try:
-                        req = urllib.request.Request(
-                            "https://query1.finance.yahoo.com/v8/finance/chart/%5ENSEI?interval=1m&range=1d",
-                            headers={"User-Agent": "Mozilla/5.0"}
-                        )
-                        with urllib.request.urlopen(req, timeout=2.5) as resp:
-                            d = json.loads(resp.read().decode())
-                            meta = d["chart"]["result"][0]["meta"]
-                            p = meta.get("regularMarketPrice")
-                            pc = meta.get("chartPreviousClose", meta.get("previousClose"))
-                            if p and p > 1000:
-                                with self.lock:
-                                    self.nifty_spot = round(float(p), 2)
-                                    if pc: self.prev_close = round(float(pc), 2)
-                                    self.sensex_spot = round(self.nifty_spot * 3.41, 2)
-                    except Exception:
-                        pass
+                    _, spot, pc = self._fetch_yahoo_candles()
+                    if spot:
+                        with self.lock:
+                            self.nifty_spot = spot
+                            if pc: self.prev_close = pc
+                            self.sensex_spot = round(spot * 3.41, 2)
 
                 with self.lock:
-                    # Realistic market tick jitter (spread fluctuations & micro-trends)
-                    jitter = random.choice([-2.0, -1.2, -0.6, 0.0, 0.6, 1.2, 2.0]) * random.uniform(0.5, 1.3)
+                    # Realistic micro tick jitter
+                    jitter = random.choice([-1.2, -0.6, 0.0, 0.6, 1.2]) * random.uniform(0.4, 1.1)
                     self.nifty_spot = round(self.nifty_spot + jitter, 2)
                     self.sensex_spot = round(self.nifty_spot * 3.41, 2)
 
-                    # Update active 5-minute candle in real time
-                    cur_interval = (now_ts // 300) * 300
-                    if self.candles_5m and cur_interval > self.candles_5m[-1]["time"]:
-                        prev_c = self.candles_5m[-1]["close"]
-                        self.candles_5m.append({
+                    # Manage current 1-minute candle
+                    cur_interval = (now_ts // 60) * 60
+                    if not self.candles_1m or cur_interval > self.candles_1m[-1]["time"]:
+                        prev_c = self.candles_1m[-1]["close"] if self.candles_1m else self.nifty_spot
+                        self.candles_1m.append({
                             "time": cur_interval,
                             "is_prev_day": False,
                             "open": prev_c,
                             "high": max(prev_c, self.nifty_spot),
                             "low": min(prev_c, self.nifty_spot),
                             "close": self.nifty_spot,
-                            "volume": random.randint(100, 350)
+                            "volume": random.randint(150, 400)
                         })
-                        if len(self.candles_5m) > 160:
-                            self.candles_5m.pop(0)
-                    elif self.candles_5m:
-                        c = self.candles_5m[-1]
+                        if len(self.candles_1m) > 400:
+                            self.candles_1m.pop(0)
+                    else:
+                        c = self.candles_1m[-1]
                         c["close"] = self.nifty_spot
                         if self.nifty_spot > c["high"]: c["high"] = self.nifty_spot
                         if self.nifty_spot < c["low"]: c["low"] = self.nifty_spot
-                        c["volume"] += random.randint(20, 80)
+                        c["volume"] += random.randint(20, 60)
             except Exception:
                 pass
 
-    def get_instrument_chart_data(self, symbol, timeframe="5m"):
+    def _resample(self, candles, tf_sec):
+        if tf_sec <= 60 or not candles:
+            return candles
+        buckets = {}
+        for c in candles:
+            b_time = (c["time"] // tf_sec) * tf_sec
+            if b_time not in buckets:
+                buckets[b_time] = {
+                    "time": b_time, "is_prev_day": c.get("is_prev_day", False),
+                    "open": c["open"], "high": c["high"],
+                    "low": c["low"], "close": c["close"],
+                    "volume": c["volume"]
+                }
+            else:
+                b = buckets[b_time]
+                b["high"] = max(b["high"], c["high"])
+                b["low"] = min(b["low"], c["low"])
+                b["close"] = c["close"]
+                b["volume"] += c["volume"]
+        return list(buckets.values())
+
+    def get_instrument_chart_data(self, symbol, timeframe="1m"):
         is_sensex = "SENSEX" in symbol
         curr_spot = self.sensex_spot if is_sensex else self.nifty_spot
 
-        if symbol in ["NIFTY", "SENSEX"] or not "_" in symbol:
+        tf_seconds_map = {"1m": 60, "3m": 180, "5m": 300, "15m": 900}
+        tf_sec = tf_seconds_map.get(timeframe, 60)
+
+        now_epoch = int(time.time())
+        rem_sec = tf_sec - (now_epoch % tf_sec)
+        countdown = f"{rem_sec // 60:02d}:{rem_sec % 60:02d}"
+
+        base_resampled = self._resample(self.candles_1m, tf_sec)
+
+        if symbol in ["NIFTY", "SENSEX"] or "_" not in symbol:
             raw_candles = []
-            multiplier = 3.4 if is_sensex else 1.0
-            for sc in self.candles_5m:
+            multiplier = 3.41 if is_sensex else 1.0
+            for sc in base_resampled:
                 raw_candles.append({
-                    "time": sc["time"], "is_prev_day": sc["is_prev_day"],
+                    "time": sc["time"], "is_prev_day": sc.get("is_prev_day", False),
                     "open": round(sc["open"] * multiplier, 2),
                     "high": round(sc["high"] * multiplier, 2),
                     "low": round(sc["low"] * multiplier, 2),
@@ -186,43 +252,42 @@ class SimulationState:
         else:
             parts = symbol.split("_")
             if len(parts) >= 4:
-                expiry_str = parts[1]
-                strike = float(parts[2])
-                opt_type = parts[3]
+                expiry_str, strike, opt_type = parts[1], float(parts[2]), parts[3]
             elif len(parts) == 3:
-                expiry_str = get_available_expiries(is_sensex)[0]
-                strike = float(parts[1])
-                opt_type = parts[2]
+                expiry_str, strike, opt_type = get_available_expiries(is_sensex)[0], float(parts[1]), parts[2]
             else:
-                strike = curr_spot
-                opt_type = "CE"
+                strike, opt_type = curr_spot, "CE"
                 expiry_str = get_available_expiries(is_sensex)[0]
 
             display_title = f"{'SENSEX' if is_sensex else 'NIFTY'} {expiry_str} {int(strike)} {opt_type}"
             raw_candles = []
             iv_val = 0.13 if is_sensex else 0.14
-            for sc in self.candles_5m:
-                base_spot = sc["close"] / (3.4 if is_sensex else 1.0)
-                bs_o = calc_black_scholes(sc["open"] / (3.4 if is_sensex else 1.0), strike, iv=iv_val)[f"{opt_type.lower()}_ltp"]
-                bs_c = calc_black_scholes(base_spot, strike, iv=iv_val)[f"{opt_type.lower()}_ltp"]
+            for sc in base_resampled:
+                s_open = sc["open"] / (3.41 if is_sensex else 1.0)
+                s_close = sc["close"] / (3.41 if is_sensex else 1.0)
+                bs_o = calc_black_scholes(s_open, strike, iv=iv_val)[f"{opt_type.lower()}_ltp"]
+                bs_c = calc_black_scholes(s_close, strike, iv=iv_val)[f"{opt_type.lower()}_ltp"]
                 raw_candles.append({
-                    "time": sc["time"], "is_prev_day": sc["is_prev_day"],
+                    "time": sc["time"], "is_prev_day": sc.get("is_prev_day", False),
                     "open": bs_o, "high": max(bs_o, bs_c), "low": min(bs_o, bs_c),
                     "close": bs_c, "volume": sc["volume"]
                 })
             opt_cur = calc_black_scholes(curr_spot, strike, iv=iv_val)
             ltp = opt_cur["ce_ltp"] if opt_type == "CE" else opt_cur["pe_ltp"]
-            greeks = {"delta": opt_cur["ce_delta"] if opt_type == "CE" else opt_cur["pe_delta"], "gamma": opt_cur["gamma"], "theta": opt_cur["theta"]}
+            greeks = {
+                "delta": opt_cur["ce_delta"] if opt_type == "CE" else opt_cur["pe_delta"],
+                "gamma": opt_cur["gamma"], "theta": opt_cur["theta"]
+            }
 
         closes = [c["close"] for c in raw_candles]
         volumes = [c["volume"] for c in raw_candles]
         ema9_s = calc_ema_series(closes, 9)
         ema15_s = calc_ema_series(closes, 15)
-        vwap = round(sum(closes[i] * volumes[i] for i in range(len(closes))) / sum(volumes), 2) if sum(volumes) > 0 else closes[-1]
+        vwap = round(sum(closes[i] * volumes[i] for i in range(len(closes))) / sum(volumes), 2) if sum(volumes) > 0 else (closes[-1] if closes else 0)
 
         return {
             "symbol": symbol, "display_title": display_title, "timeframe": timeframe,
-            "ltp": ltp, "candles": raw_candles, "countdown": f"{(300 - (int(time.time()) % 300)) // 60:02d}:{(300 - (int(time.time()) % 300)) % 60:02d}",
+            "ltp": ltp, "candles": raw_candles, "countdown": countdown,
             "ema9": ema9_s[-1] if ema9_s else 0, "ema15": ema15_s[-1] if ema15_s else 0,
             "vwap": vwap, "ema9_series": ema9_s, "ema15_series": ema15_s, "greeks": greeks
         }
@@ -235,7 +300,7 @@ class SimulationState:
         iv_val = 0.13 if is_sensex else 0.14
         expiries = get_available_expiries(is_sensex)
         selected_expiry = expiry if expiry in expiries else expiries[0]
-        
+
         chain = []
         for s in [atm + (i * step_val) for i in range(-8, 9)]:
             g = calc_black_scholes(curr_spot, s, iv=iv_val)
@@ -250,7 +315,6 @@ class SimulationState:
         return {"expiries": expiries, "selected_expiry": selected_expiry, "chain": chain}
 
 state = SimulationState()
-
 class DhanSimHandler(http.server.BaseHTTPRequestHandler):
     def log_message(self, format, *args): return
     def _safe_send_response(self, code=200, content_type="application/json"):
