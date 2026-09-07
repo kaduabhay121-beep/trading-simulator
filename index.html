@@ -439,6 +439,7 @@ let openTabs = [{ id: 'NIFTY', label: 'Nifty 50' }];
 let visibleCandleCount = 35;
 let panOffset = 0;
   verticalPanOffset = 0;
+  verticalPanOffset = 0;
   priceScaleZoomFactor = 1.0;
 let verticalPanOffset = 0;
 
@@ -818,6 +819,7 @@ function cycleTimeframe() {
   currentTimeframe = tfs[idx];
   document.getElementById('tfDisplay').innerText = `${currentTimeframe} ▾`;
   panOffset = 0;
+  verticalPanOffset = 0;
   verticalPanOffset = 0;
   priceScaleZoomFactor = 1.0;
   fetchMarket();
@@ -1338,6 +1340,7 @@ canvas.addEventListener('touchend', e => {
   if (now - lastCanvasTap < 300) {
     verticalPanOffset = 0;
     panOffset = 0;
+  verticalPanOffset = 0;
     priceScaleZoomFactor = 1.0;
     smoothMinP = null;
     smoothMaxP = null;
@@ -1549,16 +1552,27 @@ function drawChart() {
     ctx.stroke();
   }
 
-  if (configInd.vwap && marketCache.chart.vwap_series && marketCache.chart.vwap_series.length) {
-    ctx.strokeStyle = '#2962ff';
-    ctx.lineWidth = 1.4;
-    ctx.beginPath();
-    marketCache.chart.vwap_series.forEach((val, i) => {
-      const x = chartLeft + i * step + step / 2;
-      if (i === 0) ctx.moveTo(x, toY(val));
-      else ctx.lineTo(x, toY(val));
-    });
-    ctx.stroke();
+  if (configInd.vwap && marketCache.chart) {
+    const vSeries = marketCache.chart.vwap_series;
+    if (vSeries && vSeries.length) {
+      ctx.strokeStyle = '#2962ff';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      vSeries.forEach((val, i) => {
+        const x = chartLeft + i * step + step / 2;
+        if (i === 0) ctx.moveTo(x, toY(val));
+        else ctx.lineTo(x, toY(val));
+      });
+      ctx.stroke();
+    } else if (marketCache.chart.vwap) {
+      ctx.strokeStyle = '#2962ff';
+      ctx.lineWidth = 1.2;
+      ctx.beginPath();
+      const yVwap = toY(marketCache.chart.vwap);
+      ctx.moveTo(chartLeft, yVwap);
+      ctx.lineTo(chartRight, yVwap);
+      ctx.stroke();
+    }
   }
 
   // 7. Entry, SL, TP Lines
