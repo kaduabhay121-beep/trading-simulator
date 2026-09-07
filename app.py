@@ -409,7 +409,7 @@ class SimulationState:
             "symbol": symbol, "action": action, "qty": qty, "price": fill_price, "status": "FILLED"
         })
 
-    def _internal_exit(self, pos_id):
+    def _internal_exit(self, pos_id, reason='MANUAL'):
         for i, p in enumerate(self.positions):
             if p["id"] == pos_id:
                 pos = self.positions.pop(i)

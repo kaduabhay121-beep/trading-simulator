@@ -1107,9 +1107,9 @@ function renderJournal() {
       <div class="pos-item" style="border-left: 3px solid ${isW ? 'var(--green)' : 'var(--red)'};">
         <div class="flex-between">
           <div>
-            <div style="font-weight:700;">${t.symbol} • <span style="color:var(--text-sub);">${t.reason}</span></div>
+            <div style="font-weight:700;">${t.symbol} • <span style="color:var(--text-sub);">${t.reason || 'EXIT'}</span></div>
             <div style="font-size:10px; color:var(--text-sub); margin-top:2px;">
-              ${t.action} ${t.qty} Qty • Entry ₹${t.entry_price.toFixed(2)} ➔ Exit ₹${t.exit_price.toFixed(2)}
+              ${t.action} ${t.qty} Qty • Entry ₹${(t.entry_price ?? t.buy_price ?? 0).toFixed(2)} ➔ Exit ₹${(t.exit_price ?? 0).toFixed(2)}
             </div>
           </div>
           <div style="text-align:right;">
@@ -1276,24 +1276,33 @@ async function saveBracketEdit() {
 
 function findMatchingPosition() {
   if (!marketCache || !marketCache.positions || marketCache.positions.length === 0) return null;
+  const isIndex = (currentChartSymbol === 'NIFTY' || currentChartSymbol === 'SENSEX');
   const targetTitle = (marketCache.chart && marketCache.chart.display_title) ? marketCache.chart.display_title : '';
-  const cleanTarget = targetTitle.replace(/[\s_]+/g, '').toUpperCase();
-  const cleanCur = (currentChartSymbol || '').replace(/[\s_]+/g, '').toUpperCase();
 
   return marketCache.positions.find(p => {
-    if (!p.symbol) return false;
-    const cleanP = p.symbol.replace(/[\s_]+/g, '').toUpperCase();
-    if (cleanP === cleanTarget || cleanP === cleanCur) return true;
-    if (cleanTarget.includes(cleanP) || cleanP.includes(cleanTarget)) return true;
-    if (cleanCur.includes(cleanP) || cleanP.includes(cleanCur)) return true;
+    if (!p || !p.symbol) return false;
+    const isOptionPos = p.symbol.includes('CE') || p.symbol.includes('PE');
 
-    // Match strike and type (e.g. 23800CE)
-    const getST = (s) => { const m = s.match(/(\d{4,6})\s*(CE|PE)/i); return m ? m[1] + m[2].toUpperCase() : null; };
-    const pST = getST(p.symbol);
-    const tST = getST(targetTitle);
-    const cST = getST(currentChartSymbol);
-    if (pST && (pST === tST || pST === cST)) return true;
+    if (isIndex) {
+      if (isOptionPos) return false;
+      if (currentChartSymbol === 'NIFTY') return p.symbol === 'NIFTY 50' || p.symbol === 'NIFTY';
+      if (currentChartSymbol === 'SENSEX') return p.symbol === 'SENSEX';
+      return false;
+    }
 
+    if (!isOptionPos) return false;
+
+    const extractST = (s) => {
+      const m = s.match(/(\d{4,6})\s*(CE|PE)/i);
+      return m ? (m[1] + m[2].toUpperCase()) : null;
+    };
+
+    const pKey = extractST(p.symbol);
+    const tKey = extractST(targetTitle);
+    const cKey = extractST(currentChartSymbol);
+
+    if (pKey && tKey && pKey === tKey) return true;
+    if (pKey && cKey && pKey === cKey) return true;
     return false;
   }) || null;
 }
@@ -1340,18 +1349,13 @@ function drawChart() {
 
   if (marketCache.pending_orders) {
     
-      // Auto-scale bounds to encompass active position prices
+        // Auto-scale bounds: strictly isolated to the instrument on screen
   if (marketCache && marketCache.positions) {
-    marketCache.positions.forEach(pos => {
-      let matches = false;
-      if (currentChartSymbol === 'NIFTY' && (pos.symbol === 'NIFTY 50' || pos.symbol === 'NIFTY')) matches = true;
-      else if (currentChartSymbol === 'SENSEX' && pos.symbol === 'SENSEX') matches = true;
-      else if (pos.symbol === marketCache.chart.display_title || marketCache.chart.display_title.includes(pos.symbol) || pos.symbol.includes(marketCache.chart.display_title)) matches = true;
-      if (matches && pos.buy_price > 0) {
-        targetMinP = Math.min(targetMinP, pos.buy_price);
-        targetMaxP = Math.max(targetMaxP, pos.buy_price);
-      }
-    });
+    const activeChartPos = (typeof findMatchingPosition === 'function') ? findMatchingPosition() : null;
+    if (activeChartPos && activeChartPos.buy_price > 0) {
+      targetMinP = Math.min(targetMinP, activeChartPos.buy_price);
+      targetMaxP = Math.max(targetMaxP, activeChartPos.buy_price);
+    }
   }
 
     marketCache.pending_orders.forEach(po => {
