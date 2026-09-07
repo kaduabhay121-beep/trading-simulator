@@ -220,6 +220,19 @@ class SimulationState:
                             sim_vol = int(rng * random.randint(14000, 32000) + random.randint(18000, 65000))
                         else:
                             sim_vol = int(raw_v)
+                        o_val, h_val = round(float(o[i]), 2), round(float(h[i]), 2)
+                        l_val, c_val = round(float(l[i]), 2), round(float(c[i]), 2)
+                        raw_v = v[i] if (v[i] and int(v[i]) > 0) else None
+                        if raw_v is None:
+                            dt = datetime.fromtimestamp(int(timestamps[i]), IST)
+                            m_open = (dt.hour * 60 + dt.minute) - (9 * 60 + 15)
+                            u_mult = 1.0
+                            if 0 <= m_open <= 375:
+                                u_mult = 1.0 + 2.2 * math.exp(-m_open / 40.0) + 1.9 * math.exp(-(375 - m_open) / 45.0)
+                            rng = max(abs(h_val - l_val), 0.4)
+                            sim_vol = int(rng * 9500 * u_mult + random.randint(14000, 32000) * u_mult)
+                        else:
+                            sim_vol = int(raw_v)
                         candles.append({
                             "time": int(timestamps[i]), "is_prev_day": False,
                             "open": o_val, "high": h_val, "low": l_val, "close": c_val,
@@ -504,7 +517,8 @@ class SimulationState:
                 raw_candles.append({
                     "time": sc["time"], "is_prev_day": sc.get("is_prev_day", False),
                     "open": bs_o, "high": c_high, "low": c_low,
-                    "close": bs_c, "volume": int(max(abs(c_high - c_low), 0.4) * random.randint(900, 2600) + random.randint(1200, 4800))
+                    "close": bs_c,
+                    "volume": int(max(abs(c_high - c_low), 0.3) * random.randint(1800, 4200) + random.randint(1500, 5200))
                 })
             greeks = calc_deep_greeks(curr_spot, strike, dte, iv=14.3, is_sensex=is_sensex)
             greeks["delta"] = greeks["ce_delta"] if opt_type == "CE" else greeks["pe_delta"]

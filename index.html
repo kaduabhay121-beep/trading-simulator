@@ -438,6 +438,9 @@ let currentTradeMode = 'MARKET';
 let openTabs = [{ id: 'NIFTY', label: 'Nifty 50' }];
 let visibleCandleCount = 35;
 let panOffset = 0;
+  verticalPanOffset = 0;
+  priceScaleZoomFactor = 1.0;
+let verticalPanOffset = 0;
 
 let configInd = { ema9: true, ema15: true, vwap: true, vol: true };
 let userWatchlist = JSON.parse(localStorage.getItem('sim_watchlist') || '["NIFTY", "BANKNIFTY", "SENSEX"]');
@@ -538,8 +541,8 @@ function getPriceFromY(pixelY) {
 
   const midP = (minP + maxP) / 2;
   const span = ((maxP - minP) / 2 || 1) * priceScaleZoomFactor;
-  minP = midP - span;
-  maxP = midP + span;
+  minP = midP - span + verticalPanOffset;
+  maxP = midP + span + verticalPanOffset;
 
   const clampedY = Math.max(chartTop, Math.min(chartBottom, pixelY));
   const price = maxP - ((clampedY - chartTop) / chartHeight) * (maxP - minP);
@@ -612,14 +615,9 @@ viewport.addEventListener('touchmove', e => {
     } else if (dragMode === 'time_row_zoom') {
       e.preventDefault();
       const dx = touchX - dragStartX;
-      const step = Math.round(dx / 6);
-      if (step !== 0) {
-        visibleCandleCount = Math.max(10, Math.min(120, visibleCandleCount + step));
-        dragStartX = touchX;
-        drawChart();
-      }
-    } else if (dragMode === 'chart_pan') {
-      const dx = touchX - dragStartX;
+      const dy = touchY - dragStartY;
+      let redraw = false;
+
       const logicalW = canvas.width / (window.devicePixelRatio || 1);
       const candlePx = (logicalW - 70) / visibleCandleCount;
       const shift = Math.round(dx / candlePx);
@@ -627,6 +625,20 @@ viewport.addEventListener('touchmove', e => {
         const total = marketCache.chart.candles.length;
         panOffset = Math.max(0, Math.min(total - visibleCandleCount, panOffset + shift));
         dragStartX = touchX;
+        redraw = true;
+      }
+
+      if (Math.abs(dy) >= 1) {
+        const chartTop = 68;
+        const chartBottom = (canvas.height / (window.devicePixelRatio || 1)) - 24;
+        const chartH = Math.max(chartBottom - chartTop, 50);
+        const pRange = (smoothMaxP && smoothMinP) ? (smoothMaxP - smoothMinP) : 80;
+        verticalPanOffset += dy * (pRange / chartH);
+        dragStartY = touchY;
+        redraw = true;
+      }
+
+      if (redraw) {
         drawChart();
       }
     }
@@ -806,6 +818,8 @@ function cycleTimeframe() {
   currentTimeframe = tfs[idx];
   document.getElementById('tfDisplay').innerText = `${currentTimeframe} ▾`;
   panOffset = 0;
+  verticalPanOffset = 0;
+  priceScaleZoomFactor = 1.0;
   fetchMarket();
 }
 
@@ -1317,6 +1331,21 @@ function findMatchingPosition() {
   }) || null;
 }
 
+
+let lastCanvasTap = 0;
+canvas.addEventListener('touchend', e => {
+  const now = Date.now();
+  if (now - lastCanvasTap < 300) {
+    verticalPanOffset = 0;
+    panOffset = 0;
+    priceScaleZoomFactor = 1.0;
+    smoothMinP = null;
+    smoothMaxP = null;
+    drawChart();
+  }
+  lastCanvasTap = now;
+});
+
 function drawChart() {
   if (!marketCache || !marketCache.chart) return;
   const ctx = canvas.getContext('2d');
@@ -1385,8 +1414,8 @@ function drawChart() {
 
   const midP = (targetMinP + targetMaxP) / 2;
   const span = ((targetMaxP - targetMinP) / 2 || 1) * priceScaleZoomFactor;
-  targetMinP = midP - span;
-  targetMaxP = midP + span;
+  targetMinP = midP - span + verticalPanOffset;
+  targetMaxP = midP + span + verticalPanOffset;
 
   if (smoothMinP === null || smoothMaxP === null || Math.abs(smoothMinP - targetMinP) > (targetMaxP - targetMinP) * 1.5) {
     smoothMinP = targetMinP;
