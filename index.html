@@ -1139,7 +1139,7 @@ function renderOptionChain(data) {
     }
   }
   const expiryToUse = currentSelectedExpiry || (data.expiries ? data.expiries[0] : 'EXP');
-  document.getElementById('chainTitleBadge.innerText') = `${isSensex ? 'SENSEX' : 'NIFTY'} (${expiryToUse}) CHAIN`;
+  document.getElementById('chainTitleBadge').innerText = `${isSensex ? 'SENSEX' : 'NIFTY'} (${expiryToUse}) CHAIN`;
 
   if (!data || !data.chain) return;
   const isSensex = currentChartSymbol.includes("SENSEX");
