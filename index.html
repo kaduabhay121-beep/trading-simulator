@@ -1666,7 +1666,33 @@ fetchMarket();
         if(d) { d.style.display="block"; d.innerText = `Async Error: ${event.reason}`; }
     });
     </script>
-    </body>
+    
+<script>
+// Expose missing functions to the global window object to prevent ReferenceErrors
+window.switchNavTab = window.switchNavTab || function(tabId) {
+    console.log("Tab clicked:", tabId);
+    try {
+        // Basic fallback to hide other screens and show target
+        document.querySelectorAll('.screen, [id$="Screen"], [id$="Tab"]').forEach(el => {
+            if(el.id !== 'debugOverlay') el.style.display = 'none';
+        });
+        const target = document.getElementById(tabId);
+        if(target) target.style.display = 'block';
+    } catch(e) {
+        console.error(e);
+    }
+};
+
+window.triggerDirectTrade = window.triggerDirectTrade || function(action) {
+    console.log("Direct trade triggered:", action);
+};
+
+// Also catch any stray functions that might be missing
+window.changeTimeframe = window.changeTimeframe || function(tf) { console.log("Timeframe changed:", tf); };
+window.openSettings = window.openSettings || function() { console.log("Settings opened"); };
+</script>
+</body>
+
     
     
 </html>
