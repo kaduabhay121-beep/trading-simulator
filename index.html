@@ -527,8 +527,7 @@ function getPriceFromY(pixelY) {
   let minP = Math.min(...allCandles.map(c => c.low));
   let maxP = Math.max(...allCandles.map(c => c.high));
 
-  const matchingPos = marketCache.positions.find(p => {
-    if (currentChartSymbol === 'NIFTY') return p.symbol === 'NIFTY 50';
+  const matchingPos = findMatchingPosition();
     if (currentChartSymbol === 'SENSEX') return p.symbol === 'SENSEX';
     const parts = currentChartSymbol.split('_');
     return p.strike == parts[1] && p.type == parts[2];
@@ -1203,8 +1202,7 @@ let activeEditBracket = 'SL';
 let activePosId = null;
 
 function updatePositionPills(data) {
-  const matchingPos = data.positions.find(p => {
-    if (currentChartSymbol === 'NIFTY') return p.symbol === 'NIFTY 50';
+  const matchingPos = findMatchingPosition();
     if (currentChartSymbol === 'SENSEX') return p.symbol === 'SENSEX';
     const parts = currentChartSymbol.split('_');
     return p.strike == parts[1] && p.type == parts[2];
@@ -1283,6 +1281,31 @@ async function saveBracketEdit() {
 }
 
 // Chart Draw Engine with High-DPI Scaling & Stable Scaling
+
+function findMatchingPosition() {
+  if (!marketCache || !marketCache.positions || marketCache.positions.length === 0) return null;
+  const targetTitle = (marketCache.chart && marketCache.chart.display_title) ? marketCache.chart.display_title : '';
+  const cleanTarget = targetTitle.replace(/[\s_]+/g, '').toUpperCase();
+  const cleanCur = (currentChartSymbol || '').replace(/[\s_]+/g, '').toUpperCase();
+
+  return marketCache.positions.find(p => {
+    if (!p.symbol) return false;
+    const cleanP = p.symbol.replace(/[\s_]+/g, '').toUpperCase();
+    if (cleanP === cleanTarget || cleanP === cleanCur) return true;
+    if (cleanTarget.includes(cleanP) || cleanP.includes(cleanTarget)) return true;
+    if (cleanCur.includes(cleanP) || cleanP.includes(cleanCur)) return true;
+
+    // Match strike and type (e.g. 23800CE)
+    const getST = (s) => { const m = s.match(/(\d{4,6})\s*(CE|PE)/i); return m ? m[1] + m[2].toUpperCase() : null; };
+    const pST = getST(p.symbol);
+    const tST = getST(targetTitle);
+    const cST = getST(currentChartSymbol);
+    if (pST && (pST === tST || pST === cST)) return true;
+
+    return false;
+  }) || null;
+}
+
 function drawChart() {
   if (!marketCache || !marketCache.chart) return;
   const ctx = canvas.getContext('2d');
@@ -1314,8 +1337,7 @@ function drawChart() {
   let targetMinP = Math.min(...candles.map(c => c.low));
   let targetMaxP = Math.max(...candles.map(c => c.high));
 
-  const matchingPos = marketCache.positions.find(p => {
-    if (currentChartSymbol === 'NIFTY') return p.symbol === 'NIFTY 50';
+  const matchingPos = findMatchingPosition();
     if (currentChartSymbol === 'SENSEX') return p.symbol === 'SENSEX';
     const parts = currentChartSymbol.split('_');
     return p.strike == parts[1] && p.type == parts[2];
@@ -1506,7 +1528,7 @@ function drawChart() {
   // 7. Entry, SL, TP Lines
   if (matchingPos) {
     const yBuy = toY(matchingPos.buy_price);
-    ctx.strokeStyle = matchingPos.action === 'BUY' ? '#2563eb' : '#dc2626';
+    ctx.strokeStyle = matchingPos.action === 'BUY' ? 'rgba(37,99,235,0.65)' : 'rgba(220,38,38,0.65)';
     ctx.lineWidth = 1.2;
     ctx.setLineDash([4, 3]);
     ctx.beginPath(); ctx.moveTo(0, yBuy); ctx.lineTo(chartRight, yBuy); ctx.stroke();
