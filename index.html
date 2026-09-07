@@ -489,22 +489,28 @@ function playSound(type) {
   }
 }
 
-const canvas = document.getElementById('chartCanvas');
-const viewport = document.getElementById('chartViewport');
+var canvas = document.getElementById('chartCanvas') || document.querySelector('canvas');
+var viewport = document.getElementById('chartViewport') || (canvas ? canvas.parentElement : null);
 
 function resizeCanvas() {
+  canvas = document.getElementById('chartCanvas') || document.querySelector('canvas');
+  viewport = document.getElementById('chartViewport') || (canvas ? canvas.parentElement : null);
+  if (!canvas || !viewport) return;
+
   const dpr = window.devicePixelRatio || 1;
-  const width = viewport.clientWidth;
-  const height = viewport.clientHeight;
-  
+  const width = viewport.clientWidth || window.innerWidth || 350;
+  const height = viewport.clientHeight || 350;
+
   canvas.width = width * dpr;
   canvas.height = height * dpr;
   canvas.style.width = width + 'px';
   canvas.style.height = height + 'px';
-  
+
   const ctx = canvas.getContext('2d');
-  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  drawChart();
+  if (ctx) {
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    if (typeof drawChart === 'function') drawChart();
+  }
 }
 window.addEventListener('resize', resizeCanvas);
 
