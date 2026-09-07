@@ -1357,21 +1357,30 @@ function drawChart() {
     if (matchingPos.target > 0) targetMaxP = Math.max(targetMaxP, matchingPos.target);
   }
 
-  if (marketCache.pending_orders) {
-    
-          // Auto-scale bounds: strictly isolated to active chart
+  if (marketCache && marketCache.pending_orders) {
+    marketCache.pending_orders.forEach(po => {
+      let matches = false;
+      if (currentChartSymbol === 'NIFTY' && (po.symbol === 'NIFTY 50' || po.symbol === 'NIFTY')) matches = true;
+      else if (currentChartSymbol === 'SENSEX' && po.symbol === 'SENSEX') matches = true;
+      else if (marketCache.chart && po.symbol === marketCache.chart.display_title) matches = true;
+
+      if (matches && po.limit_price > 0) {
+        targetMinP = Math.min(targetMinP, po.limit_price);
+        targetMaxP = Math.max(targetMaxP, po.limit_price);
+      }
+    });
+  }
+
+  // Auto-scale bounds: strictly isolated to active instrument
   if (marketCache && marketCache.positions) {
     const activeChartPos = (typeof findMatchingPosition === 'function') ? findMatchingPosition() : null;
     if (activeChartPos && activeChartPos.buy_price > 0) {
       const avgCandleP = (targetMinP + targetMaxP) / 2;
-      // Mathematical safeguard: only adjust bounds if price is within 35% of current candles
       if (Math.abs(activeChartPos.buy_price - avgCandleP) / avgCandleP < 0.35) {
         targetMinP = Math.min(targetMinP, activeChartPos.buy_price);
         targetMaxP = Math.max(targetMaxP, activeChartPos.buy_price);
       }
     }
-  }
-    });
   }
 
   const midP = (targetMinP + targetMaxP) / 2;
