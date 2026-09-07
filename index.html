@@ -1654,6 +1654,19 @@ fetchMarket();
         }
     });
     </script>
+    
+    <div id="debugOverlay" style="position:fixed;bottom:60px;left:0;right:0;background:rgba(220,50,50,0.9);color:white;font-size:11px;padding:6px 10px;z-index:99999;display:none;word-break:break-all;font-family:monospace;"></div>
+    <script>
+    window.onerror = function(msg, url, line) {
+        const d = document.getElementById("debugOverlay");
+        if(d) { d.style.display="block"; d.innerText = `Error: ${msg} :${line}`; }
+    };
+    window.addEventListener("unhandledrejection", function(event) {
+        const d = document.getElementById("debugOverlay");
+        if(d) { d.style.display="block"; d.innerText = `Async Error: ${event.reason}`; }
+    });
+    </script>
     </body>
+    
     
 </html>
