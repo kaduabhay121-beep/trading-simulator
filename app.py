@@ -317,17 +317,32 @@ class SimulationState:
 state = SimulationState()
 class DhanSimHandler(http.server.BaseHTTPRequestHandler):
     def log_message(self, format, *args): return
+    def _send_json(self, data_dict, code=200):
+        try:
+            body = json.dumps(data_dict).encode("utf-8")
+            self.send_response(code)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Connection", "close")
+            self.end_headers()
+            self.wfile.write(body)
+        except Exception:
+            pass
+
     def _safe_send_response(self, code=200, content_type="application/json"):
         try:
             self.send_response(code)
             self.send_header("Content-Type", content_type)
             self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Connection", "close")
             self.end_headers()
             return True
-        except: return False
+        except Exception: return False
+
     def _safe_write(self, data: bytes):
         try: self.wfile.write(data)
-        except: pass
+        except Exception: pass
 
     def do_GET(self):
         parsed = urlparse(self.path)
@@ -354,11 +369,10 @@ class DhanSimHandler(http.server.BaseHTTPRequestHandler):
                     "positions": state.positions, "pending_orders": state.pending_orders,
                     "orders": state.orders, "closed_trades": state.closed_trades[:15]
                 }
-            if self._safe_send_response(200):
-                self._safe_write(json.dumps(resp).encode("utf-8"))
+            self._send_json(resp)
 
     def do_POST(self):
-        pass
+        self._send_json({"status": "ok"})
 
 class ThreadedHTTPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
     allow_reuse_address = True

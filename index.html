@@ -3,7 +3,7 @@
 <head>
 <script>
 window.onerror = function(msg, src, line) { alert("FATAL JS ERROR: " + msg + " (Line " + line + ")"); };
-window.addEventListener("unhandledrejection", function(e) { alert("API/PROMISE ERROR: " + (e.reason ? (e.reason.message || e.reason) : "Unknown error")); });
+
 </script>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
@@ -763,7 +763,10 @@ async function submitLomOrder() {
     })
   });
 
-  const data = await res.json();
+  if (!res.ok) return;
+    const text = await res.text();
+    if (!text || text.trim().length === 0) return;
+    const data = JSON.parse(text);
   if (!res.ok) {
     alert(data.error || 'Limit order failed');
     return;
@@ -1657,7 +1660,7 @@ fetchMarket();
         try {
             if (typeof fetchMarket === "function") {
                 fetchMarket();
-                setInterval(() => { try { fetchMarket(); } catch(e){} }, 1000);
+                
             }
         } catch(err) {
             console.error("Initialization crash:", err);
