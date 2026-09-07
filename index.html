@@ -1330,66 +1330,19 @@ function drawChart() {
 
   if (marketCache.pending_orders) {
     
-    // --- Render Open Position Overlay & P&L on Chart ---
-    if (marketCache && marketCache.positions && marketCache.positions.length > 0) {
-      marketCache.positions.forEach(pos => {
-        let matches = false;
-        if (currentChartSymbol === 'NIFTY' && (pos.symbol === 'NIFTY 50' || pos.symbol === 'NIFTY')) matches = true;
-        else if (currentChartSymbol === 'SENSEX' && pos.symbol === 'SENSEX') matches = true;
-        else if (pos.symbol === marketCache.chart.display_title || marketCache.chart.display_title.includes(pos.symbol) || pos.symbol.includes(marketCache.chart.display_title)) matches = true;
-
-        if (matches) {
-          const yPos = toY(pos.buy_price);
-          const isPnlPos = pos.pnl >= 0;
-          const pnlCol = isPnlPos ? '#10b981' : '#ef4444';
-          const isBuy = pos.action === 'BUY';
-
-          ctx.save();
-          // Average Price Dashed Line
-          ctx.strokeStyle = isBuy ? '#3b82f6' : '#ef4444';
-          ctx.lineWidth = 1.4;
-          ctx.setLineDash([4, 3]);
-          ctx.beginPath();
-          ctx.moveTo(0, yPos);
-          ctx.lineTo(chartRight, yPos);
-          ctx.stroke();
-          ctx.setLineDash([]);
-
-          // Price Tag on Right Axis
-          ctx.fillStyle = isBuy ? '#2563eb' : '#dc2626';
-          ctx.fillRect(chartRight + 1, yPos - 9, priceColWidth - 2, 18);
-          ctx.fillStyle = '#ffffff';
-          ctx.font = 'bold 9px Inter, sans-serif';
-          ctx.textAlign = 'center';
-          ctx.fillText(`AVG ${pos.buy_price.toFixed(1)}`, chartRight + priceColWidth / 2, yPos + 3.5);
-
-          // On-Canvas Floating P&L Capsule (Dhan Style)
-          const pnlText = `${pos.action} ${pos.qty} Qty • Avg ₹${pos.buy_price.toFixed(2)} • P&L: ${isPnlPos ? '+' : ''}₹${pos.pnl.toFixed(2)}`;
-          ctx.font = 'bold 10px Inter, sans-serif';
-          const tWidth = ctx.measureText(pnlText).width;
-          const bX = Math.max(12, chartRight - tWidth - 22);
-          const bY = Math.max(25, yPos - 22);
-
-          ctx.fillStyle = isPnlPos ? 'rgba(16, 185, 129, 0.22)' : 'rgba(239, 68, 68, 0.22)';
-          ctx.strokeStyle = pnlCol;
-          ctx.lineWidth = 1;
-          if (ctx.roundRect) {
-            ctx.beginPath();
-            ctx.roundRect(bX, bY, tWidth + 16, 18, 4);
-            ctx.fill();
-            ctx.stroke();
-          } else {
-            ctx.fillRect(bX, bY, tWidth + 16, 18);
-            ctx.strokeRect(bX, bY, tWidth + 16, 18);
-          }
-
-          ctx.fillStyle = pnlCol;
-          ctx.textAlign = 'left';
-          ctx.fillText(pnlText, bX + 8, bY + 12.5);
-          ctx.restore();
-        }
-      });
-    }
+      // Auto-scale bounds to encompass active position prices
+  if (marketCache && marketCache.positions) {
+    marketCache.positions.forEach(pos => {
+      let matches = false;
+      if (currentChartSymbol === 'NIFTY' && (pos.symbol === 'NIFTY 50' || pos.symbol === 'NIFTY')) matches = true;
+      else if (currentChartSymbol === 'SENSEX' && pos.symbol === 'SENSEX') matches = true;
+      else if (pos.symbol === marketCache.chart.display_title || marketCache.chart.display_title.includes(pos.symbol) || pos.symbol.includes(marketCache.chart.display_title)) matches = true;
+      if (matches && pos.buy_price > 0) {
+        targetMinP = Math.min(targetMinP, pos.buy_price);
+        targetMaxP = Math.max(targetMaxP, pos.buy_price);
+      }
+    });
+  }
 
     marketCache.pending_orders.forEach(po => {
       let matches = false;
