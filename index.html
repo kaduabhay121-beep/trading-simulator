@@ -641,7 +641,7 @@ function openChartLimitModal(targetPrice) {
   if (!marketCache || !marketCache.chart) return;
   playSound('ORDER_PLACED');
   
-  const isSensex = currentChartSymbol.includes("SENSEX");
+  var isSensex = currentChartSymbol.includes("SENSEX");
   const formattedPrice = isSensex || currentChartSymbol !== 'NIFTY' ? targetPrice.toFixed(2) : targetPrice.toFixed(1);
   document.getElementById('lomSymbolTitle').innerText = `${marketCache.chart.display_title} (LIMIT)`;
   document.getElementById('lomCurrentLTP').innerText = `₹${marketCache.chart.ltp.toFixed(2)}`;
@@ -691,7 +691,7 @@ function setLomSide(side) {
 }
 
 function onLomQtyChange() {
-  const isSensex = currentChartSymbol.includes("SENSEX");
+  var isSensex = currentChartSymbol.includes("SENSEX");
   const lotSize = isSensex ? 10 : 65;
   const qty = parseInt(document.getElementById('selectLomQty').value, 10);
   const lots = Math.round(qty / lotSize);
@@ -701,7 +701,7 @@ function onLomQtyChange() {
 
 function updateLomMargin() {
   if (!marketCache) return;
-  const isSensex = currentChartSymbol.includes("SENSEX");
+  var isSensex = currentChartSymbol.includes("SENSEX");
   const lotSize = isSensex ? 10 : 65;
   const qty = parseInt(document.getElementById('selectLomQty').value, 10) || lotSize;
   const price = parseFloat(document.getElementById('inputLomPrice').value) || marketCache.chart.ltp;
@@ -846,7 +846,7 @@ function closeTab(e, symId) {
 function openStrikeModal() {
   if (!marketCache) return;
   const listEl = document.getElementById('modalStrikeList');
-  const isSensex = currentChartSymbol.includes("SENSEX");
+  var isSensex = currentChartSymbol.includes("SENSEX");
   const prefix = isSensex ? "SENSEX" : "NIFTY";
   
   let html = `
@@ -958,7 +958,7 @@ function updateUI(data) {
   document.getElementById('btnBuyLTP').innerText = curLTP.toFixed(2);
   document.getElementById('onChartSymbol').innerText = `${data.chart.display_title} • ${currentTimeframe.toUpperCase()} • IDX`;
   
-  const isSensex = currentChartSymbol.includes("SENSEX");
+  var isSensex = currentChartSymbol.includes("SENSEX");
   const chgVal = isSensex ? data.sensex_chg : data.nifty_chg;
   const pctVal = isSensex ? data.sensex_pct : data.nifty_pct;
   const chg = chgVal >= 0 ? `+${chgVal.toFixed(2)} (+${pctVal.toFixed(2)}%)` : `${chgVal.toFixed(2)} (${pctVal.toFixed(2)}%)`;
@@ -1127,8 +1127,8 @@ function onExpiryChange() {
 }
 function renderOptionChain(data) {
   if (!data || !data.chain) return;
-  const isSensex = currentChartSymbol.includes("SENSEX");
-  const spot = isSensex ? data.sensex_spot : data.nifty_spot;
+  var isSensex = currentChartSymbol.includes("SENSEX");
+  var spot = isSensex ? data.sensex_spot : data.nifty_spot;
   
   // Populate expiries dropdown
   if (data.expiries) {
@@ -1146,8 +1146,8 @@ function renderOptionChain(data) {
   document.getElementById('chainTitleBadge').innerText = `${isSensex ? 'SENSEX' : 'NIFTY'} (${expiryToUse}) CHAIN`;
 
   if (!data || !data.chain) return;
-  const isSensex = currentChartSymbol.includes("SENSEX");
-  const spot = isSensex ? data.sensex_spot : data.nifty_spot;
+  var isSensex = currentChartSymbol.includes("SENSEX");
+  var spot = isSensex ? data.sensex_spot : data.nifty_spot;
   const stepVal = isSensex ? 100 : 50;
   const atmStrike = Math.round(spot / stepVal) * stepVal;
   let chainHtml = '';
