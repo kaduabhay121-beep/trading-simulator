@@ -1559,6 +1559,41 @@ function drawChart() {
     ctx.beginPath(); ctx.moveTo(0, yBuy); ctx.lineTo(chartRight, yBuy); ctx.stroke();
     ctx.setLineDash([]);
 
+    // 1. Right-Axis AVG Price Tag
+    ctx.fillStyle = matchingPos.action === 'BUY' ? '#2563eb' : '#dc2626';
+    ctx.fillRect(chartRight + 1, yBuy - 9, priceColWidth - 2, 18);
+    ctx.fillStyle = '#ffffff';
+    ctx.font = 'bold 9px Inter, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText(`AVG ${matchingPos.buy_price.toFixed(1)}`, chartRight + priceColWidth / 2, yBuy + 3.5);
+
+    // 2. On-Canvas Floating P&L Capsule (Dhan Style)
+    const curPnl = matchingPos.pnl || 0;
+    const isPnlPos = curPnl >= 0;
+    const pnlCol = isPnlPos ? '#10b981' : '#ef4444';
+    const pnlBadgeText = `${matchingPos.action} ${matchingPos.qty} Qty • Avg ₹${matchingPos.buy_price.toFixed(2)} • P&L: ${isPnlPos ? '+' : ''}₹${curPnl.toFixed(2)}`;
+    
+    ctx.font = 'bold 10px Inter, sans-serif';
+    const badgeWidth = ctx.measureText(pnlBadgeText).width;
+    const badgeX = Math.max(12, chartRight - badgeWidth - 24);
+    const badgeY = Math.max(22, yBuy - 24);
+
+    ctx.fillStyle = isPnlPos ? 'rgba(16, 185, 129, 0.22)' : 'rgba(239, 68, 68, 0.22)';
+    ctx.strokeStyle = pnlCol;
+    ctx.lineWidth = 1;
+    if (ctx.roundRect) {
+      ctx.beginPath();
+      ctx.roundRect(badgeX, badgeY, badgeWidth + 16, 18, 4);
+      ctx.fill();
+      ctx.stroke();
+    } else {
+      ctx.fillRect(badgeX, badgeY, badgeWidth + 16, 18);
+      ctx.strokeRect(badgeX, badgeY, badgeWidth + 16, 18);
+    }
+    ctx.fillStyle = pnlCol;
+    ctx.textAlign = 'left';
+    ctx.fillText(pnlBadgeText, badgeX + 8, badgeY + 12.5);
+
     if (matchingPos.stop_loss > 0) {
       const ySL = toY(matchingPos.stop_loss);
       ctx.strokeStyle = '#ef4444';
