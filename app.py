@@ -1,3 +1,4 @@
+import urllib.request
 import http.server
 import socketserver
 import json
@@ -70,8 +71,10 @@ def calc_ema_series(data, period):
 class SimulationState:
     def __init__(self):
         self.lock = threading.Lock()
+        self.prev_close = 23873.45
         self.nifty_spot = 23897.70
         self.sensex_spot = 81450.00
+        self._running = True
         self.wallet = {"initial": 50000.0, "balance": 50000.0, "used_margin": 0.0, "realized_pnl": 0.0}
         self.positions = []
         self.pending_orders = []
@@ -80,6 +83,8 @@ class SimulationState:
         self.sound_events = []
         self.candles_5m = []
         self._init_history()
+        self.ticker_thread = threading.Thread(target=self._tick_loop, daemon=True)
+        self.ticker_thread.start()
 
     def _init_history(self):
         now_ist = datetime.now(IST)
@@ -100,6 +105,64 @@ class SimulationState:
                 "volume": v
             })
             cur = c
+
+    def _tick_loop(self):
+        last_sync = 0
+        while self._running:
+            try:
+                time.sleep(1.0)
+                now_ts = int(time.time())
+
+                # Sync with live exchange spot every 15s during market hours
+                if now_ts - last_sync > 15:
+                    last_sync = now_ts
+                    try:
+                        req = urllib.request.Request(
+                            "https://query1.finance.yahoo.com/v8/finance/chart/%5ENSEI?interval=1m&range=1d",
+                            headers={"User-Agent": "Mozilla/5.0"}
+                        )
+                        with urllib.request.urlopen(req, timeout=2.5) as resp:
+                            d = json.loads(resp.read().decode())
+                            meta = d["chart"]["result"][0]["meta"]
+                            p = meta.get("regularMarketPrice")
+                            pc = meta.get("chartPreviousClose", meta.get("previousClose"))
+                            if p and p > 1000:
+                                with self.lock:
+                                    self.nifty_spot = round(float(p), 2)
+                                    if pc: self.prev_close = round(float(pc), 2)
+                                    self.sensex_spot = round(self.nifty_spot * 3.41, 2)
+                    except Exception:
+                        pass
+
+                with self.lock:
+                    # Realistic market tick jitter (spread fluctuations & micro-trends)
+                    jitter = random.choice([-2.0, -1.2, -0.6, 0.0, 0.6, 1.2, 2.0]) * random.uniform(0.5, 1.3)
+                    self.nifty_spot = round(self.nifty_spot + jitter, 2)
+                    self.sensex_spot = round(self.nifty_spot * 3.41, 2)
+
+                    # Update active 5-minute candle in real time
+                    cur_interval = (now_ts // 300) * 300
+                    if self.candles_5m and cur_interval > self.candles_5m[-1]["time"]:
+                        prev_c = self.candles_5m[-1]["close"]
+                        self.candles_5m.append({
+                            "time": cur_interval,
+                            "is_prev_day": False,
+                            "open": prev_c,
+                            "high": max(prev_c, self.nifty_spot),
+                            "low": min(prev_c, self.nifty_spot),
+                            "close": self.nifty_spot,
+                            "volume": random.randint(100, 350)
+                        })
+                        if len(self.candles_5m) > 160:
+                            self.candles_5m.pop(0)
+                    elif self.candles_5m:
+                        c = self.candles_5m[-1]
+                        c["close"] = self.nifty_spot
+                        if self.nifty_spot > c["high"]: c["high"] = self.nifty_spot
+                        if self.nifty_spot < c["low"]: c["low"] = self.nifty_spot
+                        c["volume"] += random.randint(20, 80)
+            except Exception:
+                pass
 
     def get_instrument_chart_data(self, symbol, timeframe="5m"):
         is_sensex = "SENSEX" in symbol
@@ -159,7 +222,7 @@ class SimulationState:
 
         return {
             "symbol": symbol, "display_title": display_title, "timeframe": timeframe,
-            "ltp": ltp, "candles": raw_candles, "countdown": "05:00",
+            "ltp": ltp, "candles": raw_candles, "countdown": f"{(300 - (int(time.time()) % 300)) // 60:02d}:{(300 - (int(time.time()) % 300)) % 60:02d}",
             "ema9": ema9_s[-1] if ema9_s else 0, "ema15": ema15_s[-1] if ema15_s else 0,
             "vwap": vwap, "ema9_series": ema9_s, "ema15_series": ema15_s, "greeks": greeks
         }
@@ -220,7 +283,7 @@ class DhanSimHandler(http.server.BaseHTTPRequestHandler):
                 chain_data = state.get_option_chain(symbol, expiry=expiry)
                 resp = {
                     "nifty_spot": state.nifty_spot, "sensex_spot": state.sensex_spot,
-                    "nifty_chg": 24.25, "nifty_pct": 0.10,
+                    "nifty_chg": round(state.nifty_spot - state.prev_close, 2), "nifty_pct": round(((state.nifty_spot - state.prev_close) / state.prev_close) * 100, 2),
                     "chart": chart_data, "chain": chain_data["chain"],
                     "expiries": chain_data["expiries"], "selected_expiry": chain_data["selected_expiry"],
                     "wallet": {**state.wallet, "unrealized_pnl": 0.0, "net_pnl": state.wallet["realized_pnl"]},
