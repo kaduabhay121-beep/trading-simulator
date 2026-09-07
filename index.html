@@ -527,10 +527,13 @@ function getPriceFromY(pixelY) {
   let minP = Math.min(...allCandles.map(c => c.low));
   let maxP = Math.max(...allCandles.map(c => c.high));
 
-  const matchingPos = (typeof findMatchingPosition === 'function') ? findMatchingPosition() : null;
-  if (matchingPos) {
-    minP = Math.min(minP, matchingPos.buy_price);
-    maxP = Math.max(maxP, matchingPos.buy_price);
+    const matchingPos = (typeof findMatchingPosition === 'function') ? findMatchingPosition() : null;
+  if (matchingPos && matchingPos.buy_price > 0) {
+    const avgP = (minP + maxP) / 2;
+    if (Math.abs(matchingPos.buy_price - avgP) / avgP < 0.35) {
+      minP = Math.min(minP, matchingPos.buy_price);
+      maxP = Math.max(maxP, matchingPos.buy_price);
+    }
   }
 
   const midP = (minP + maxP) / 2;
@@ -1274,36 +1277,43 @@ async function saveBracketEdit() {
 
 // Chart Draw Engine with High-DPI Scaling & Stable Scaling
 
+function isCurrentChartIndex() {
+  const sym = (currentChartSymbol || '').toUpperCase();
+  const title = (marketCache && marketCache.chart && marketCache.chart.display_title ? marketCache.chart.display_title : '').toUpperCase();
+  if (sym.includes('CE') || sym.includes('PE') || title.includes('CE') || title.includes('PE')) return false;
+  return sym.includes('NIFTY') || sym.includes('SENSEX') || title.includes('NIFTY') || title.includes('SENSEX');
+}
+
 function findMatchingPosition() {
   if (!marketCache || !marketCache.positions || marketCache.positions.length === 0) return null;
-  const isIndex = (currentChartSymbol === 'NIFTY' || currentChartSymbol === 'SENSEX');
-  const targetTitle = (marketCache.chart && marketCache.chart.display_title) ? marketCache.chart.display_title : '';
+  const onIndex = isCurrentChartIndex();
+  const sym = (currentChartSymbol || '').toUpperCase();
+  const title = (marketCache && marketCache.chart && marketCache.chart.display_title ? marketCache.chart.display_title : '').toUpperCase();
+
+  if (onIndex) {
+    // Index charts strictly reject any option position (CE or PE)
+    return marketCache.positions.find(p => {
+      const ps = (p.symbol || '').toUpperCase();
+      if (ps.includes('CE') || ps.includes('PE')) return false;
+      if (title.includes('SENSEX') || sym.includes('SENSEX')) return ps.includes('SENSEX');
+      return ps.includes('NIFTY');
+    }) || null;
+  }
+
+  // Option charts: strictly match strike number and option type
+  const extractKey = (str) => {
+    if (!str) return '';
+    const mS = str.match(/(\d{4,6})/);
+    const mT = str.match(/\b(CE|PE)\b/i);
+    return (mS && mT) ? (mS[1] + '_' + mT[1].toUpperCase()) : '';
+  };
+
+  const chartKey = extractKey(title) || extractKey(sym);
+  if (!chartKey) return null;
 
   return marketCache.positions.find(p => {
-    if (!p || !p.symbol) return false;
-    const isOptionPos = p.symbol.includes('CE') || p.symbol.includes('PE');
-
-    if (isIndex) {
-      if (isOptionPos) return false;
-      if (currentChartSymbol === 'NIFTY') return p.symbol === 'NIFTY 50' || p.symbol === 'NIFTY';
-      if (currentChartSymbol === 'SENSEX') return p.symbol === 'SENSEX';
-      return false;
-    }
-
-    if (!isOptionPos) return false;
-
-    const extractST = (s) => {
-      const m = s.match(/(\d{4,6})\s*(CE|PE)/i);
-      return m ? (m[1] + m[2].toUpperCase()) : null;
-    };
-
-    const pKey = extractST(p.symbol);
-    const tKey = extractST(targetTitle);
-    const cKey = extractST(currentChartSymbol);
-
-    if (pKey && tKey && pKey === tKey) return true;
-    if (pKey && cKey && pKey === cKey) return true;
-    return false;
+    const pKey = extractKey(p.symbol);
+    return pKey && pKey === chartKey;
   }) || null;
 }
 
@@ -1349,24 +1359,18 @@ function drawChart() {
 
   if (marketCache.pending_orders) {
     
-        // Auto-scale bounds: strictly isolated to the instrument on screen
+          // Auto-scale bounds: strictly isolated to active chart
   if (marketCache && marketCache.positions) {
     const activeChartPos = (typeof findMatchingPosition === 'function') ? findMatchingPosition() : null;
     if (activeChartPos && activeChartPos.buy_price > 0) {
-      targetMinP = Math.min(targetMinP, activeChartPos.buy_price);
-      targetMaxP = Math.max(targetMaxP, activeChartPos.buy_price);
+      const avgCandleP = (targetMinP + targetMaxP) / 2;
+      // Mathematical safeguard: only adjust bounds if price is within 35% of current candles
+      if (Math.abs(activeChartPos.buy_price - avgCandleP) / avgCandleP < 0.35) {
+        targetMinP = Math.min(targetMinP, activeChartPos.buy_price);
+        targetMaxP = Math.max(targetMaxP, activeChartPos.buy_price);
+      }
     }
   }
-
-    marketCache.pending_orders.forEach(po => {
-      let matches = false;
-      if (currentChartSymbol === 'NIFTY' && po.symbol === 'NIFTY 50') matches = true;
-      else if (currentChartSymbol === 'SENSEX' && po.symbol === 'SENSEX') matches = true;
-      else if (po.symbol === marketCache.chart.display_title) matches = true;
-      if (matches) {
-        targetMinP = Math.min(targetMinP, po.limit_price);
-        targetMaxP = Math.max(targetMaxP, po.limit_price);
-      }
     });
   }
 
@@ -1614,8 +1618,7 @@ function drawChart() {
   ctx.fillText(marketCache.chart.countdown || '00:00', chartRight + priceColWidth / 2, yLTP + 8);
 
   const overlayPill = document.getElementById('livePriceOverlayPill');
-  if (matchingPos) {
-    overlayPill.style.display = 'flex';
+  if (matchingPos) { overlayPill.style.display = 'flex';
     const yEntry = toY(matchingPos.buy_price);
     const clampedY = Math.max(chartTop + 10, Math.min(chartBottom - 25, yEntry - 12));
     overlayPill.style.top = `${clampedY}px`;
