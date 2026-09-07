@@ -135,20 +135,25 @@ class NSEDataFetcher:
             pass
         return None
 
-def calc_deep_greeks(spot, strike, dte_days, iv, r=0.065):
+def calc_deep_greeks(spot, strike, dte_days, iv=14.3, r=0.065, is_sensex=False):
     t = max(dte_days / 365.0, 0.0001)
     sqrt_t = math.sqrt(t)
     vol = max(float(iv) / 100.0 if iv > 1.0 else float(iv), 0.05)
-    
-    d1 = (math.log(spot / strike) + (r + 0.5 * vol * vol) * t) / (vol * sqrt_t)
+
+    # Dhan / NSE forward basis calibration
+    basis = (140.0 if is_sensex else 46.5) * max(min(dte_days / 1.15, 2.5), 0.2)
+    F = spot + basis
+
+    d1 = (math.log(F / strike) + 0.5 * vol * vol * t) / (vol * sqrt_t)
     d2 = d1 - vol * sqrt_t
     nd1 = norm_cdf(d1)
     nd2 = norm_cdf(d2)
     pdf_d1 = norm_pdf(d1)
     df = math.exp(-r * t)
 
-    ce_ltp = max(round(spot * nd1 - strike * df * nd2, 2), 0.05)
-    pe_ltp = max(round(strike * df * norm_cdf(-d2) - spot * norm_cdf(-d1), 2), 0.05)
+    ce_ltp = max(round(df * (F * nd1 - strike * nd2), 2), 0.05)
+    pe_ltp = max(round(df * (strike * norm_cdf(-d2) - F * norm_cdf(-d1)), 2), 0.05)
+
     gamma = round(pdf_d1 / (spot * vol * sqrt_t), 6)
     vega = round((spot * sqrt_t * pdf_d1) / 100.0, 2)
     theta = round((-(spot * pdf_d1 * vol) / (2.0 * sqrt_t) - r * strike * df * nd2) / 365.0, 2)
@@ -296,7 +301,7 @@ class SimulationState:
             elif len(part) == 7 and any(m in part.upper() for m in ["JAN","FEB","MAR","APR","MAY","JUN","JUL","AUG","SEP","OCT","NOV","DEC"]):
                 dte = get_dte_from_expiry(part.upper())
 
-        g = calc_deep_greeks(curr_spot, strike, dte, iv=14.3)
+        g = calc_deep_greeks(curr_spot, strike, dte, iv=14.3, is_sensex=is_sensex)
         ltp = g["ce_ltp"] if opt_type == "CE" else g["pe_ltp"]
         delta = g["ce_delta"] if opt_type == "CE" else g["pe_delta"]
         return ltp, delta, g["theta"]
@@ -448,16 +453,41 @@ class SimulationState:
 
             raw_candles = []
             for sc in base_resampled:
-                s_o = sc["open"] / (3.41 if is_sensex else 1.0)
-                s_c = sc["close"] / (3.41 if is_sensex else 1.0)
-                bs_o = calc_deep_greeks(s_o, strike, dte, iv=14.3)[f"{opt_type.lower()}_ltp"]
-                bs_c = calc_deep_greeks(s_c, strike, dte, iv=14.3)[f"{opt_type.lower()}_ltp"]
+                div = 3.41 if is_sensex else 1.0
+                s_o = sc["open"] / div
+                s_c = sc["close"] / div
+                s_h = sc["high"] / div
+                s_l = sc["low"] / div
+
+                op = opt_type.lower()
+                bs_o = calc_deep_greeks(s_o, strike, dte, iv=14.3, is_sensex=is_sensex)[f"{op}_ltp"]
+                bs_c = calc_deep_greeks(s_c, strike, dte, iv=14.3, is_sensex=is_sensex)[f"{op}_ltp"]
+
+                # Project spot shadows into option wicks
+                if opt_type == "CE":
+                    bs_h = calc_deep_greeks(s_h, strike, dte, iv=14.3, is_sensex=is_sensex)["ce_ltp"]
+                    bs_l = calc_deep_greeks(s_l, strike, dte, iv=14.3, is_sensex=is_sensex)["ce_ltp"]
+                else:
+                    bs_h = calc_deep_greeks(s_l, strike, dte, iv=14.3, is_sensex=is_sensex)["pe_ltp"]
+                    bs_l = calc_deep_greeks(s_h, strike, dte, iv=14.3, is_sensex=is_sensex)["pe_ltp"]
+
+                c_high = max(bs_o, bs_c, bs_h)
+                c_low = max(0.05, min(bs_o, bs_c, bs_l))
+
+                # Ensure minimum natural wick visibility
+                body = abs(bs_c - bs_o)
+                if c_high == max(bs_o, bs_c):
+                    c_high = round(c_high + max(0.3, body * 0.15), 2)
+                if c_low == min(bs_o, bs_c):
+                    c_low = round(max(0.05, c_low - max(0.3, body * 0.15)), 2)
+
                 raw_candles.append({
                     "time": sc["time"], "is_prev_day": sc.get("is_prev_day", False),
-                    "open": bs_o, "high": max(bs_o, bs_c), "low": min(bs_o, bs_c),
+                    "open": bs_o, "high": c_high, "low": c_low,
                     "close": bs_c, "volume": sc["volume"]
                 })
-            greeks = calc_deep_greeks(curr_spot, strike, dte, iv=14.3)
+            greeks = calc_deep_greeks(curr_spot, strike, dte, iv=14.3, is_sensex=is_sensex)
+            greeks["delta"] = greeks["ce_delta"] if opt_type == "CE" else greeks["pe_delta"]
             ltp = greeks["ce_ltp"] if opt_type == "CE" else greeks["pe_ltp"]
 
         closes = [c["close"] for c in raw_candles]
