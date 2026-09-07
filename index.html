@@ -643,6 +643,14 @@ viewport.addEventListener('touchmove', e => {
   }
 }, { passive: false });
 
+
+viewport.addEventListener('wheel', e => {
+  e.preventDefault();
+  const zoomFactor = e.deltaY < 0 ? 0.9 : 1.1;
+  visibleCandleCount = Math.round(Math.max(10, Math.min(150, visibleCandleCount * zoomFactor)));
+  drawChart();
+}, { passive: false });
+
 viewport.addEventListener('touchend', () => {
   clearTimeout(longPressTimer);
   dragMode = 'none';
