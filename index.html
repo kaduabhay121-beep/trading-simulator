@@ -932,7 +932,7 @@ function renderWatchlist() {
           <div style="color:var(--text-sub); font-size:10px;">NSE / BSE • Regular</div>
         </div>
         <div style="display:flex; align-items:center; gap:8px;">
-          <div style="font-weight:800; font-size:14px;">₹${ltp.toFixed(2)}</div>
+          <div style="font-weight:800; font-size:14px;">₹${(Number(ltp) || 0).toFixed(2)}</div>
           <button class="pill-action-btn" style="color:var(--blue);" onclick="selectStrike('${item}', '${name}')">Chart</button>
           <button class="pill-close-btn" style="background:#334155;" onclick="toggleWatchlist('${item}')">✕</button>
         </div>
@@ -1091,7 +1091,7 @@ function updateUI(data) {
 
 // Journal Analytics
 function renderJournal() {
-  if (!marketCache) return;
+  if (!marketCache || !marketCache.analytics) return;
   const a = marketCache.analytics;
   document.getElementById('statWinRate').innerText = `${a.win_rate}%`;
   document.getElementById('statProfitFactor').innerText = `${a.profit_factor}`;
