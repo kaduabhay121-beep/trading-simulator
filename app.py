@@ -1,6 +1,6 @@
 import ssl
-import http.cookiejar
 import urllib.request
+import urllib.error
 import http.server
 import socketserver
 import json
@@ -9,735 +9,440 @@ import random
 import time
 import threading
 import os
+import base64
+import struct
+import hmac
+import hashlib
 from datetime import datetime, time as dtime, timedelta
 import pytz
 from urllib.parse import urlparse, parse_qs
 
 IST = pytz.timezone('Asia/Kolkata')
+ANGEL_ROOT = 'https://apiconnect.angelone.in'
+MASTER_URL = 'https://margincalculator.angelone.in/OpenAPI_File/files/OpenAPIScripMaster.json'
+QUOTE_URL = ANGEL_ROOT + '/rest/secure/angelbroking/market/v1/quote/'
+LOGIN_URL = ANGEL_ROOT + '/rest/auth/angelbroking/user/v1/loginByPassword'
+CANDLE_URL = ANGEL_ROOT + '/rest/secure/angelbroking/historical/v1/getCandleData'
+GREEK_URL = ANGEL_ROOT + '/rest/secure/angelbroking/marketData/v1/optionGreek'
+
 
 def is_market_open():
     now = datetime.now(IST)
-    if now.weekday() >= 5: 
-        return False
-    return dtime(9, 15) <= now.time() <= dtime(15, 30)
+    return now.weekday() < 5 and dtime(9, 15) <= now.time() <= dtime(15, 30)
+
 
 def get_available_expiries(is_sensex=False):
     now = datetime.now(IST)
-    target_weekday = 4 if is_sensex else 1  # Tuesday for Nifty, Friday for Sensex
+    target_weekday = 4 if is_sensex else 1
     expiries = []
     curr = now
     while len(expiries) < 5:
         days_ahead = (target_weekday - curr.weekday()) % 7
-        if days_ahead == 0 and curr.time() > dtime(15, 30):
-            days_ahead = 7
+        if days_ahead == 0 and curr.time() > dtime(15, 30): days_ahead = 7
         exp_date = curr + timedelta(days=days_ahead)
-        s = exp_date.strftime("%d%b%y").upper()
-        if s not in expiries:
-            expiries.append(s)
+        s = exp_date.strftime('%d%b%y').upper()
+        if s not in expiries: expiries.append(s)
         curr = exp_date + timedelta(days=1)
     return expiries
 
+
 def get_dte_from_expiry(expiry_str):
     try:
-        now = datetime.now(IST)
-        exp_date = datetime.strptime(expiry_str, "%d%b%y")
-        exp_target = IST.localize(exp_date.replace(hour=15, minute=30, second=0))
-        diff_sec = (exp_target - now).total_seconds()
-        return max(round(diff_sec / 86400.0, 3), 0.08)
+        exp_date = datetime.strptime(expiry_str, '%d%b%y')
+        target = IST.localize(exp_date.replace(hour=15, minute=30))
+        return max((target - datetime.now(IST)).total_seconds() / 86400.0, 0.08)
     except Exception:
         return 1.1
 
-def norm_pdf(x):
-    return (1.0 / math.sqrt(2.0 * math.pi)) * math.exp(-0.5 * x * x)
 
-def norm_cdf(x):
-    return 0.5 * (1.0 + math.erf(x / math.sqrt(2.0)))
+def norm_pdf(x): return (1.0 / math.sqrt(2.0 * math.pi)) * math.exp(-0.5 * x * x)
+def norm_cdf(x): return 0.5 * (1.0 + math.erf(x / math.sqrt(2.0)))
 
-def calc_black_scholes(spot, strike, dte_days=1.15, iv=0.143, r=0.065, is_sensex=False):
-    if strike <= 0 or spot <= 0:
-        return {"ce_ltp": 0.50, "pe_ltp": 0.50, "ce_delta": 0.0, "pe_delta": 0.0, "gamma": 0.0, "theta": 0.0}
-    
-    # Forward basis alignment: +46.5 pts basis on Nifty, +140 pts on Sensex
+
+def calc_deep_greeks(spot, strike, dte_days, iv=14.3, r=0.065, is_sensex=False):
+    t = max(dte_days / 365.0, 0.0001); sqrt_t = math.sqrt(t)
+    vol = max(float(iv) / 100.0 if float(iv) > 1 else float(iv), 0.05)
     basis = (140.0 if is_sensex else 46.5) * max(min(dte_days / 1.15, 2.5), 0.2)
     F = spot + basis
-    t = max(dte_days / 365.0, 0.0001)
-    sqrt_t = math.sqrt(t)
-    vol = iv if iv else 0.143
+    d1 = (math.log(max(F, 0.01) / max(strike, 0.01)) + 0.5 * vol * vol * t) / (vol * sqrt_t)
+    d2 = d1 - vol * sqrt_t; nd1 = norm_cdf(d1); nd2 = norm_cdf(d2); pdf = norm_pdf(d1); df = math.exp(-r*t)
+    ce = max(df * (F*nd1 - strike*nd2), 0.05)
+    pe = max(df * (strike*norm_cdf(-d2) - F*norm_cdf(-d1)), 0.05)
+    return {'ce_ltp':round(ce,2),'pe_ltp':round(pe,2),'ce_delta':round(nd1,3),'pe_delta':round(nd1-1,3),
+            'gamma':round(pdf/(spot*vol*sqrt_t),6),'theta':round((-(spot*pdf*vol)/(2*sqrt_t)-r*strike*df*nd2)/365,2),
+            'vega':round((spot*sqrt_t*pdf)/100,2),'iv':round(vol*100,1)}
 
-    d1 = (math.log(F / strike) + 0.5 * vol * vol * t) / (vol * sqrt_t)
-    d2 = d1 - vol * sqrt_t
-    nd1 = norm_cdf(d1)
-    nd2 = norm_cdf(d2)
-    pdf_d1 = norm_pdf(d1)
-    df = math.exp(-r * t)
-
-    ce = df * (F * nd1 - strike * nd2)
-    pe = df * (strike * norm_cdf(-d2) - F * norm_cdf(-d1))
-
-    # OTM Put volatility skew calibration
-    if strike < F:
-        pe *= (1.0 + min(0.06, ((F - strike) / F) * 1.2))
-
-    return {
-        "ce_ltp": max(round(ce, 2), 0.50),
-        "pe_ltp": max(round(pe, 2), 0.50),
-        "ce_delta": round(nd1, 3),
-        "pe_delta": round(nd1 - 1.0, 3),
-        "gamma": round(pdf_d1 / (spot * vol * sqrt_t), 5),
-        "theta": round((- (spot * pdf_d1 * vol) / (2.0 * sqrt_t) - r * strike * df * nd2) / 365.0, 2)
-    }
 
 def calc_vwap_series(candles):
     if not candles: return []
-    series = []
-    cum_pv = 0.0
-    cum_vol = 0
+    out=[]; pv=0.0; vol=0
     for c in candles:
-        tp = (c["high"] + c["low"] + c["close"]) / 3.0
-        v = max(int(c.get("volume", 100)), 1)
-        cum_pv += tp * v
-        cum_vol += v
-        series.append(round(cum_pv / cum_vol, 2))
-    return series
+        v=max(int(c.get('volume',0)),1); pv += ((c['high']+c['low']+c['close'])/3)*v; vol += v; out.append(round(pv/vol,2))
+    return out
+
 
 def calc_ema_series(data, period):
     if not data: return []
-    k = 2.0 / (period + 1)
-    series = [data[0]]
-    for p in data[1:]:
-        series.append(round((p * k) + (series[-1] * (1.0 - k)), 2))
-    return series
+    k=2/(period+1); out=[data[0]]
+    for p in data[1:]: out.append(round(p*k + out[-1]*(1-k),2))
+    return out
 
-class NSEDataFetcher:
+
+def _totp(secret, digits=6, period=30):
+    secret = ''.join(str(secret).split()).upper()
+    key = base64.b32decode(secret + '='*((8-len(secret)%8)%8), casefold=True)
+    counter = int(time.time()) // period
+    msg = struct.pack('>Q', counter)
+    digest = hmac.new(key, msg, hashlib.sha1).digest()
+    off = digest[-1] & 15
+    code = (struct.unpack('>I', digest[off:off+4])[0] & 0x7fffffff) % (10**digits)
+    return str(code).zfill(digits)
+
+
+class AngelOneData:
     def __init__(self):
-        self.cj = http.cookiejar.CookieJar()
-        self.opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(self.cj))
-        self.headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            "Accept-Language": "en-US,en;q=0.9",
-            "Referer": "https://www.nseindia.com/"
-        }
-        self.last_cookie_time = 0
+        self.enabled = os.getenv('ANGELONE_ENABLED','0').lower() in ('1','true','yes','on')
+        self.api_key = os.getenv('ANGELONE_API_KEY','').strip()
+        self.client_code = os.getenv('ANGELONE_CLIENT_CODE','').strip()
+        self.pin = os.getenv('ANGELONE_PIN','').strip()
+        self.totp_secret = os.getenv('ANGELONE_TOTP_SECRET','').strip()
+        self.jwt = os.getenv('ANGELONE_JWT_TOKEN','').strip()
+        self.feed_token = os.getenv('ANGELONE_FEED_TOKEN','').strip()
+        self.local_ip = os.getenv('ANGELONE_CLIENT_LOCAL_IP','127.0.0.1')
+        self.public_ip = os.getenv('ANGELONE_CLIENT_PUBLIC_IP','0.0.0.0')
+        self.mac = os.getenv('ANGELONE_MAC','00:00:00:00:00:00')
+        self.instruments = []
+        self.instrument_by_key = {}
+        self.quote_cache = {}
+        self.last_quote = 0
+        self.last_candle = 0
+        self.last_master = 0
+        self.last_error = ''
+        self.lock = threading.Lock()
+        self._load_master()
+        if self.enabled:
+            self.login()
 
-    def refresh_session(self):
-        try:
-            req = urllib.request.Request("https://www.nseindia.com", headers=self.headers)
-            self.opener.open(req, timeout=3.5)
-            self.last_cookie_time = time.time()
-            return True
-        except Exception:
+    def _request(self, url, payload=None, headers=None, timeout=8):
+        data = None if payload is None else json.dumps(payload).encode()
+        h = {'Content-Type':'application/json','Accept':'application/json', **(headers or {})}
+        req=urllib.request.Request(url,data=data,headers=h,method='POST' if payload is not None else 'GET')
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return json.loads(r.read().decode())
+
+    def _auth_headers(self):
+        return {'Authorization': self.jwt if self.jwt.startswith('Bearer ') else ('Bearer '+self.jwt),
+                'X-PrivateKey':self.api_key,'X-UserType':'USER','X-SourceID':'WEB',
+                'X-ClientLocalIP':self.local_ip,'X-ClientPublicIP':self.public_ip,'X-MACAddress':self.mac}
+
+    def login(self):
+        if not all([self.api_key,self.client_code,self.pin,self.totp_secret]):
+            self.last_error='Angel One credentials are incomplete'
             return False
-
-    def get_option_chain_raw(self, symbol="NIFTY"):
         try:
-            now = time.time()
-            if now - self.last_cookie_time > 180:
-                self.refresh_session()
+            body={'clientcode':self.client_code,'password':self.pin,'totp':_totp(self.totp_secret)}
+            h={'X-PrivateKey':self.api_key,'X-UserType':'USER','X-SourceID':'WEB','X-ClientLocalIP':self.local_ip,'X-ClientPublicIP':self.public_ip,'X-MACAddress':self.mac}
+            res=self._request(LOGIN_URL,body,h)
+            if res.get('status') and res.get('data'):
+                self.jwt=res['data'].get('jwtToken',''); self.feed_token=res['data'].get('feedToken','')
+                self.last_error=''; return True
+            self.last_error=res.get('message') or res.get('errorcode') or 'Angel login failed'
+        except Exception as e: self.last_error=str(e)
+        return False
 
-            url = f"https://www.nseindia.com/api/option-chain-indices?symbol={symbol}"
-            req = urllib.request.Request(url, headers={
-                **self.headers,
-                "Accept": "application/json, text/plain, */*",
-                "Referer": f"https://www.nseindia.com/option-chain"
-            })
-            with self.opener.open(req, timeout=4.0) as resp:
-                if resp.status == 200:
-                    return json.loads(resp.read().decode())
-        except Exception:
-            pass
-        return None
+    def _load_master(self):
+        path=os.getenv('ANGELONE_MASTER_CACHE','angel_master.json')
+        try:
+            if os.path.exists(path) and time.time()-os.path.getmtime(path)<86400:
+                with open(path,'r',encoding='utf-8') as f: self.instruments=json.load(f)
+            else:
+                req=urllib.request.Request(MASTER_URL,headers={'User-Agent':'Mozilla/5.0'})
+                with urllib.request.urlopen(req,timeout=30) as r: raw=r.read()
+                self.instruments=json.loads(raw.decode('utf-8'))
+                with open(path,'w',encoding='utf-8') as f: json.dump(self.instruments,f)
+            for x in self.instruments:
+                key=(str(x.get('exch_seg','')).upper(),str(x.get('symbol','')).upper())
+                self.instrument_by_key[key]=x
+            self.last_master=time.time()
+        except Exception as e:
+            self.last_error='Instrument master: '+str(e)
 
-def calc_deep_greeks(spot, strike, dte_days, iv=14.3, r=0.065, is_sensex=False):
-    t = max(dte_days / 365.0, 0.0001)
-    sqrt_t = math.sqrt(t)
-    vol = max(float(iv) / 100.0 if iv > 1.0 else float(iv), 0.05)
+    def find_index(self, name):
+        name=name.upper()
+        candidates=[x for x in self.instruments if str(x.get('exch_seg','')).lower()=='nse' and str(x.get('instrumenttype','')).upper()=='INDEX' and (str(x.get('symbol','')).upper()==name or str(x.get('name','')).upper()==name)]
+        if candidates: return candidates[0]
+        fallback={'NIFTY':os.getenv('ANGELONE_NIFTY_TOKEN','99926000'),'SENSEX':os.getenv('ANGELONE_SENSEX_TOKEN','99919000')}
+        tok=fallback.get(name)
+        return {'token':tok,'symbol':name,'name':name,'exch_seg':'NSE','instrumenttype':'INDEX','lotsize':'1'} if tok else None
 
-    # Dhan / NSE forward basis calibration
-    basis = (140.0 if is_sensex else 46.5) * max(min(dte_days / 1.15, 2.5), 0.2)
-    F = spot + basis
+    def quote(self, items, mode='FULL'):
+        if not self.enabled or not self.jwt: return {}
+        groups={}
+        for x in items:
+            groups.setdefault(x['exch_seg'].upper(),[]).append(str(x['token']))
+        result={}
+        for exch,tokens in groups.items():
+            for i in range(0,len(tokens),50):
+                payload={'mode':mode,'exchangeTokens':{exch:tokens[i:i+50]}}
+                try:
+                    res=self._request(QUOTE_URL,payload,self._auth_headers())
+                    for q in (res.get('data') or {}).get('fetched',[]) if isinstance(res.get('data'),dict) else []:
+                        result[str(q.get('symbolToken'))]=q
+                except Exception as e: self.last_error=str(e)
+        return result
 
-    d1 = (math.log(F / strike) + 0.5 * vol * vol * t) / (vol * sqrt_t)
-    d2 = d1 - vol * sqrt_t
-    nd1 = norm_cdf(d1)
-    nd2 = norm_cdf(d2)
-    pdf_d1 = norm_pdf(d1)
-    df = math.exp(-r * t)
+    def candles(self, inst, interval='ONE_MINUTE', days=2):
+        if not self.enabled or not self.jwt or not inst: return []
+        end=datetime.now(IST); start=end-timedelta(days=days)
+        body={'exchange':inst['exch_seg'].upper(),'symboltoken':str(inst['token']),'interval':interval,
+              'fromdate':start.strftime('%Y-%m-%d %H:%M'),'todate':end.strftime('%Y-%m-%d %H:%M')}
+        try:
+            res=self._request(CANDLE_URL,body,self._auth_headers())
+            rows=res.get('data') or []
+            return [{'time':int(datetime.fromisoformat(str(r[0]).replace('Z','+00:00')).timestamp()) if isinstance(r[0],str) else int(r[0]),
+                     'is_prev_day':False,'open':float(r[1]),'high':float(r[2]),'low':float(r[3]),'close':float(r[4]),'volume':int(float(r[5] or 0))} for r in rows]
+        except Exception as e:
+            self.last_error=str(e); return []
 
-    ce_ltp = max(round(df * (F * nd1 - strike * nd2), 2), 0.05)
-    pe_ltp = max(round(df * (strike * norm_cdf(-d2) - F * norm_cdf(-d1)), 2), 0.05)
+    def option_instruments(self, underlying, expiry):
+        u=underlying.upper()
+        return [x for x in self.instruments if str(x.get('exch_seg','')).upper()=='NFO' and str(x.get('instrumenttype','')).upper()=='OPTIDX' and str(x.get('name','')).upper()==u and str(x.get('expiry','')).upper()==expiry.upper() and str(x.get('symbol','')).upper().endswith(('CE','PE'))]
 
-    gamma = round(pdf_d1 / (spot * vol * sqrt_t), 6)
-    vega = round((spot * sqrt_t * pdf_d1) / 100.0, 2)
-    theta = round((-(spot * pdf_d1 * vol) / (2.0 * sqrt_t) - r * strike * df * nd2) / 365.0, 2)
+    def greek(self, underlying, expiry):
+        if not self.enabled or not self.jwt: return {}
+        try:
+            res=self._request(GREEK_URL,{'name':underlying,'expirydate':expiry},self._auth_headers())
+            out={}
+            for x in res.get('data') or []: out[(float(x['strikePrice']),x['optionType'])]=x
+            return out
+        except Exception as e: self.last_error=str(e); return {}
 
-    return {
-        "ce_ltp": ce_ltp, "pe_ltp": pe_ltp,
-        "ce_delta": round(nd1, 3), "pe_delta": round(nd1 - 1.0, 3),
-        "gamma": gamma, "theta": theta, "vega": vega,
-        "iv": round(vol * 100.0, 1)
-    }
+    def refresh_quotes(self, instruments):
+        q=self.quote(instruments,'FULL')
+        with self.lock: self.quote_cache.update(q)
+        return q
+
 
 class SimulationState:
     def __init__(self):
-        self.lock = threading.Lock()
-        self.nifty_spot = 23765.0
-        self.sensex_spot = 81200.0
-        self.prev_close = 23897.70
-        self.wallet = {"initial": 50000.0, "balance": 50000.0, "used_margin": 0.0, "realized_pnl": 0.0}
-        self.positions = []
-        self.pending_orders = []
-        self.orders = []
-        self.closed_trades = []
-        self.candles_1m = []
-        self.order_counter = 100
-        self.live_chain_cache = {}
-        self.nse_fetcher = NSEDataFetcher()
-        self._running = True
-        self._init_history()
-        self.ticker_thread = threading.Thread(target=self._tick_loop, daemon=True)
-        self.ticker_thread.start()
-
-    def _fetch_yahoo_candles(self):
-        try:
-            url = "https://query1.finance.yahoo.com/v8/finance/chart/%5ENSEI?interval=1m&range=1d"
-            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-            with urllib.request.urlopen(req, timeout=3.0) as resp:
-                data = json.loads(resp.read().decode())
-                res = data["chart"]["result"][0]
-                meta = res.get("meta", {})
-                timestamps = res.get("timestamp", [])
-                quote = res["indicators"]["quote"][0]
-                o, h, l, c, v = quote.get("open", []), quote.get("high", []), quote.get("low", []), quote.get("close", []), quote.get("volume", [])
-                candles = []
-                for i in range(len(timestamps)):
-                    if None not in (o[i], h[i], l[i], c[i]):
-                        o_val, h_val = round(float(o[i]), 2), round(float(h[i]), 2)
-                        l_val, c_val = round(float(l[i]), 2), round(float(c[i]), 2)
-                        raw_v = v[i] if (v[i] and int(v[i]) > 0) else None
-                        if raw_v is None:
-                            rng = max(abs(h_val - l_val), 0.5)
-                            sim_vol = int(rng * random.randint(14000, 32000) + random.randint(18000, 65000))
-                        else:
-                            sim_vol = int(raw_v)
-                        o_val, h_val = round(float(o[i]), 2), round(float(h[i]), 2)
-                        l_val, c_val = round(float(l[i]), 2), round(float(c[i]), 2)
-                        raw_v = v[i] if (v[i] and int(v[i]) > 0) else None
-                        if raw_v is None:
-                            dt = datetime.fromtimestamp(int(timestamps[i]), IST)
-                            m_open = (dt.hour * 60 + dt.minute) - (9 * 60 + 15)
-                            u_mult = 1.0
-                            if 0 <= m_open <= 375:
-                                u_mult = 1.0 + 2.2 * math.exp(-m_open / 40.0) + 1.9 * math.exp(-(375 - m_open) / 45.0)
-                            rng = max(abs(h_val - l_val), 0.4)
-                            sim_vol = int(rng * 9500 * u_mult + random.randint(14000, 32000) * u_mult)
-                        else:
-                            sim_vol = int(raw_v)
-                        candles.append({
-                            "time": int(timestamps[i]), "is_prev_day": False,
-                            "open": o_val, "high": h_val, "low": l_val, "close": c_val,
-                            "volume": sim_vol
-                        })
-                if candles:
-                    pc = meta.get("chartPreviousClose") or meta.get("previousClose") or candles[0]["open"]
-                    return candles, round(float(candles[-1]["close"]), 2), round(float(pc), 2)
-        except Exception:
-            pass
-        return None, None, None
+        self.lock=threading.Lock(); self.nifty_spot=23765.0; self.sensex_spot=81200.0; self.prev_close=23897.70
+        self.wallet={'initial':50000.0,'balance':50000.0,'used_margin':0.0,'realized_pnl':0.0}
+        self.positions=[]; self.pending_orders=[]; self.orders=[]; self.closed_trades=[]; self.candles_1m=[]; self.order_counter=100
+        self.live_chain_cache={}; self.angel=AngelOneData(); self._init_history(); self._running=True
+        threading.Thread(target=self._tick_loop,daemon=True).start()
 
     def _init_history(self):
-        real_candles, spot, pc = self._fetch_yahoo_candles()
-        if real_candles and len(real_candles) >= 15:
-            self.candles_1m = real_candles
-            self.nifty_spot = spot
-            self.prev_close = pc
-            self.sensex_spot = round(self.nifty_spot * 3.41, 2)
-            return
-
-        now_ts = int(time.time())
-        cur_min_ts = (now_ts // 60) * 60
-        cur_price = self.nifty_spot
-        generated = []
+        if self.angel.enabled:
+            inst=self.angel.find_index('NIFTY'); c=self.angel.candles(inst,'ONE_MINUTE',2)
+            if c:
+                self.candles_1m=c; q=self.angel.quote([inst]); z=q.get(str(inst['token']))
+                if z: self.nifty_spot=float(z.get('ltp',self.nifty_spot)); self.prev_close=float(z.get('close',self.prev_close))
+                self.sensex_spot=self._sensex_ltp(); return
+        # Existing development fallback remains isolated to ANGELONE_ENABLED=0.
+        now_ts=int(time.time()); cur=(now_ts//60)*60; p=self.nifty_spot; out=[]
         for i in range(90):
-            t = cur_min_ts - ((89 - i) * 60)
-            change = random.uniform(-2.5, 2.5)
-            o = round(cur_price - change, 2)
-            c = round(cur_price, 2)
-            h = round(max(o, c) + random.uniform(0.2, 1.8), 2)
-            l = round(min(o, c) - random.uniform(0.2, 1.8), 2)
-            v = random.randint(1200, 6500)
-            generated.append({
-                "time": t, "is_prev_day": False,
-                "open": o, "high": h, "low": l, "close": c,
-                "volume": v
-            })
-            cur_price = o
-        generated.sort(key=lambda x: x["time"])
-        self.candles_1m = generated
+            t=cur-(89-i)*60; c=round(p+random.uniform(-2,2),2); o=p; h=max(o,c)+random.random(); l=min(o,c)-random.random(); out.append({'time':t,'is_prev_day':False,'open':o,'high':h,'low':l,'close':c,'volume':random.randint(1000,5000)}); p=c
+        self.candles_1m=out
 
-    def _poll_nse_feed(self):
-        raw = self.nse_fetcher.get_option_chain_raw("NIFTY")
-        if not raw or "records" not in raw:
-            return False
+    def _sensex_ltp(self):
+        if not self.angel.enabled: return round(self.nifty_spot*3.41,2)
+        inst=self.angel.find_index('SENSEX'); q=self.angel.quote([inst]) if inst else {}; z=q.get(str(inst['token'])) if inst else None
+        return float(z['ltp']) if z and z.get('ltp') is not None else self.sensex_spot
 
-        records = raw["records"]
-        underlying = records.get("underlyingValue")
-        if underlying:
-            self.nifty_spot = round(float(underlying), 2)
-            self.sensex_spot = round(self.nifty_spot * 3.41, 2)
-
-        expiries = records.get("expiryDates", [])
-        data_rows = records.get("data", [])
-        
-        parsed_chain = {}
-        for row in data_rows:
-            strike = row.get("strikePrice")
-            expiry = row.get("expiryDate")
-            if not strike or not expiry: continue
-
-            key = (expiry, strike)
-            ce = row.get("CE", {})
-            pe = row.get("PE", {})
-            parsed_chain[key] = {
-                "strike": strike,
-                "expiry": expiry,
-                "ce_ltp": float(ce.get("lastPrice", 0)),
-                "ce_oi": ce.get("openInterest", 0),
-                "ce_chg_oi": ce.get("changeinOpenInterest", 0),
-                "ce_volume": ce.get("totalTradedVolume", 0),
-                "ce_iv": float(ce.get("impliedVolatility", 14.3)),
-                "pe_ltp": float(pe.get("lastPrice", 0)),
-                "pe_oi": pe.get("openInterest", 0),
-                "pe_chg_oi": pe.get("changeinOpenInterest", 0),
-                "pe_volume": pe.get("totalTradedVolume", 0),
-                "pe_iv": float(pe.get("impliedVolatility", 14.3))
-            }
-
-        self.live_chain_cache = {"expiries": expiries, "data": parsed_chain}
-        return True
-
-    def _get_live_instrument_ltp(self, symbol):
-        if symbol in ["NIFTY", "NIFTY 50", "INDEX"]:
-            return self.nifty_spot, 1.0, 0.0
-        if symbol in ["SENSEX"]:
-            return self.sensex_spot, 1.0, 0.0
-
-        is_sensex = "SENSEX" in symbol
-        curr_spot = self.sensex_spot if is_sensex else self.nifty_spot
-        clean = symbol.replace("_", " ").split()
-        strike = curr_spot
-        opt_type = "CE"
-        dte = 1.15
-        for part in clean:
-            if part.upper() in ["CE", "PE"]: opt_type = part.upper()
-            elif part.isdigit() and len(part) >= 4: strike = float(part)
-            elif len(part) == 7 and any(m in part.upper() for m in ["JAN","FEB","MAR","APR","MAY","JUN","JUL","AUG","SEP","OCT","NOV","DEC"]):
-                dte = get_dte_from_expiry(part.upper())
-
-        g = calc_deep_greeks(curr_spot, strike, dte, iv=14.3, is_sensex=is_sensex)
-        ltp = g["ce_ltp"] if opt_type == "CE" else g["pe_ltp"]
-        delta = g["ce_delta"] if opt_type == "CE" else g["pe_delta"]
-        return ltp, delta, g["theta"]
+    def _live_indices(self):
+        ni=self.angel.find_index('NIFTY'); si=self.angel.find_index('SENSEX'); items=[x for x in [ni,si] if x]
+        q=self.angel.quote(items)
+        if ni and str(ni['token']) in q:
+            z=q[str(ni['token'])]; self.nifty_spot=float(z.get('ltp',self.nifty_spot)); self.prev_close=float(z.get('close',self.prev_close))
+        if si and str(si['token']) in q: self.sensex_spot=float(q[str(si['token'])].get('ltp',self.sensex_spot))
 
     def _tick_loop(self):
-        last_sync = 0
+        last=0
         while self._running:
+            time.sleep(1)
             try:
-                time.sleep(1.0)
-                now_ts = int(time.time())
-
-                if now_ts - last_sync > 12:
-                    last_sync = now_ts
-                    success = self._poll_nse_feed()
-                    if not success:
-                        _, spot, pc = self._fetch_yahoo_candles()
-                        if spot:
-                            with self.lock:
-                                self.nifty_spot = spot
-                                if pc: self.prev_close = pc
-                                self.sensex_spot = round(spot * 3.41, 2)
-
+                now=time.time()
+                if self.angel.enabled and now-last>=1:
+                    last=now
+                    with self.lock: self._live_indices()
+                    # Keep the chart candle stream aligned with real LTP; historical candles are fetched periodically.
+                    with self.lock:
+                        ts=int(now//60)*60
+                        if not self.candles_1m or ts>self.candles_1m[-1]['time']:
+                            p=self.nifty_spot; self.candles_1m.append({'time':ts,'is_prev_day':False,'open':p,'high':p,'low':p,'close':p,'volume':0})
+                        c=self.candles_1m[-1]; c['close']=self.nifty_spot; c['high']=max(c['high'],self.nifty_spot); c['low']=min(c['low'],self.nifty_spot)
+                else:
+                    with self.lock:
+                        self.nifty_spot=round(self.nifty_spot+random.choice([-0.8,-0.4,0,0.4,0.8]),2); self.sensex_spot=round(self.nifty_spot*3.41,2)
                 with self.lock:
-                    jitter = random.choice([-1.2, -0.6, 0.0, 0.6, 1.2]) * random.uniform(0.4, 1.1)
-                    self.nifty_spot = round(self.nifty_spot + jitter, 2)
-                    self.sensex_spot = round(self.nifty_spot * 3.41, 2)
-
-                    cur_interval = (now_ts // 60) * 60
-                    if not self.candles_1m or cur_interval > self.candles_1m[-1]["time"]:
-                        prev_c = self.candles_1m[-1]["close"] if self.candles_1m else self.nifty_spot
-                        self.candles_1m.append({
-                            "time": cur_interval, "is_prev_day": False,
-                            "open": prev_c, "high": max(prev_c, self.nifty_spot),
-                            "low": min(prev_c, self.nifty_spot), "close": self.nifty_spot,
-                            "volume": random.randint(150, 400)
-                        })
-                        if len(self.candles_1m) > 400: self.candles_1m.pop(0)
-                    else:
-                        c = self.candles_1m[-1]
-                        c["close"] = self.nifty_spot
-                        if self.nifty_spot > c["high"]: c["high"] = self.nifty_spot
-                        if self.nifty_spot < c["low"]: c["low"] = self.nifty_spot
-                        c["volume"] += random.randint(20, 60)
-
-                    # Update open positions
-                    for pos in self.positions:
-                        ltp, delta, theta = self._get_live_instrument_ltp(pos["symbol"])
-                        pos["ltp"] = ltp
-                        pos["delta"] = delta
-                        pos["theta"] = theta
-                        if pos["action"] == "BUY":
-                            pos["pnl"] = round((pos["ltp"] - pos["buy_price"]) * pos["qty"], 2)
-                        else:
-                            pos["pnl"] = round((pos["buy_price"] - pos["ltp"]) * pos["qty"], 2)
-
-                    # Trigger pending limit orders
-                    remaining_pending = []
+                    for p in self.positions:
+                        ltp,delta,theta=self._get_live_instrument_ltp(p['symbol']); p['ltp']=ltp; p['delta']=delta; p['theta']=theta
+                        p['pnl']=round((ltp-p['buy_price'])*p['qty'] if p['action']=='BUY' else (p['buy_price']-ltp)*p['qty'],2)
+                    remaining=[]
                     for po in self.pending_orders:
-                        pltp, _, _ = self._get_live_instrument_ltp(po["symbol"])
-                        filled = (po["action"] == "BUY" and pltp <= po["limit_price"]) or                                  (po["action"] == "SELL" and pltp >= po["limit_price"])
-                        if filled:
-                            self._execute_fill(po["symbol"], po["action"], po["qty"], po["limit_price"],
-                                               po.get("stop_loss", 0), po.get("target", 0), po.get("trailing_sl", 0))
-                        else:
-                            remaining_pending.append(po)
-                    self.pending_orders = remaining_pending
-            except Exception:
-                pass
+                        ltp,_,_=self._get_live_instrument_ltp(po['symbol']); filled=(po['action']=='BUY' and ltp<=po['limit_price']) or (po['action']=='SELL' and ltp>=po['limit_price'])
+                        if filled: self._execute_fill(po['symbol'],po['action'],po['qty'],po['limit_price'],po.get('stop_loss',0),po.get('target',0),po.get('trailing_sl',0))
+                        else: remaining.append(po)
+                    self.pending_orders=remaining
+                    for p in list(self.positions):
+                        if p.get('stop_loss') and p['ltp']<=p['stop_loss']: self._internal_exit(p['id'],'SL')
+                        elif p.get('target') and p['ltp']>=p['target']: self._internal_exit(p['id'],'TARGET')
+            except Exception as e: self.angel.last_error=str(e)
 
-    def _execute_fill(self, symbol, action, qty, fill_price, sl=0, target=0, tsl=0):
-        pos_id = f"pos_{self.order_counter}"
-        self.order_counter += 1
-        ltp, delta, theta = self._get_live_instrument_ltp(symbol)
-        cost = round(fill_price * qty, 2)
-        self.wallet["balance"] = round(self.wallet["balance"] - cost, 2)
-        self.wallet["used_margin"] = round(self.wallet["used_margin"] + cost, 2)
-        self.positions.append({
-            "id": pos_id, "symbol": symbol, "action": action, "qty": qty,
-            "buy_price": fill_price, "ltp": ltp, "pnl": 0.0,
-            "stop_loss": sl, "target": target, "trailing_sl": tsl,
-            "delta": delta, "theta": theta
-        })
-        self.orders.insert(0, {
-            "id": pos_id, "time": datetime.now(IST).strftime("%H:%M:%S"),
-            "symbol": symbol, "action": action, "qty": qty, "price": fill_price, "status": "FILLED"
-        })
+    def _get_live_instrument_ltp(self,symbol):
+        if symbol in ('NIFTY','NIFTY 50','INDEX'): return self.nifty_spot,1.0,0.0
+        if symbol=='SENSEX': return self.sensex_spot,1.0,0.0
+        if self.angel.enabled:
+            inst=self._find_option_from_ui(symbol)
+            if inst:
+                q=self.angel.quote([inst]); z=q.get(str(inst['token']))
+                if z:
+                    g={'delta':0,'theta':0}; return float(z.get('ltp') or 0),float(z.get('delta') or 0),float(z.get('theta') or 0)
+        # Development-only synthetic fallback.
+        is_s='SENSEX' in symbol; spot=self.sensex_spot if is_s else self.nifty_spot; parts=symbol.split('_'); strike=spot; typ='CE'
+        for x in parts:
+            if x in ('CE','PE'): typ=x
+            elif x.isdigit() and len(x)>=4: strike=float(x)
+        g=calc_deep_greeks(spot,strike,get_dte_from_expiry(parts[1]) if len(parts)>1 else 1.1,is_sensex=is_s); return g['ce_ltp'] if typ=='CE' else g['pe_ltp'], g['ce_delta'] if typ=='CE' else g['pe_delta'], g['theta']
 
-    def _internal_exit(self, pos_id, reason='MANUAL'):
-        for i, p in enumerate(self.positions):
-            if p["id"] == pos_id:
-                pos = self.positions.pop(i)
-                cost = round(pos["buy_price"] * pos["qty"], 2)
-                pnl = pos["pnl"]
-                self.wallet["used_margin"] = max(0.0, round(self.wallet["used_margin"] - cost, 2))
-                self.wallet["balance"] = round(self.wallet["balance"] + cost + pnl, 2)
-                self.wallet["realized_pnl"] = round(self.wallet["realized_pnl"] + pnl, 2)
-                self.closed_trades.insert(0, {
-                    "id": pos["id"], "symbol": pos["symbol"], "action": pos["action"],
-                    "qty": pos["qty"], "buy_price": pos["buy_price"], "exit_price": pos["ltp"],
-                    "pnl": pnl, "time": datetime.now(IST).strftime("%H:%M:%S")
-                })
-                break
-
-    def _resample(self, candles, tf_sec):
-        if tf_sec <= 60 or not candles: return candles
-        buckets = {}
-        for c in candles:
-            b_time = (c["time"] // tf_sec) * tf_sec
-            if b_time not in buckets:
-                buckets[b_time] = {
-                    "time": b_time, "is_prev_day": c.get("is_prev_day", False),
-                    "open": c["open"], "high": c["high"],
-                    "low": c["low"], "close": c["close"], "volume": c["volume"]
-                }
+    def _find_option_from_ui(self,symbol):
+        # Accept both the compact UI key (NIFTY_25000_CE / NIFTY_EXP_25000_CE)
+        # and the chart title sent by the existing frontend (NIFTY EXP 25000 CE).
+        raw=str(symbol or '').strip()
+        p=raw.split('_')
+        if len(p)>=4:
+            u,exp,strike,typ=p[0],p[1],float(p[2]),p[3].upper()
+        elif len(p)==3:
+            u, strike, typ=p[0], float(p[1]), p[2].upper()
+            exps=sorted({str(x.get('expiry','')).upper() for x in self.angel.instruments if str(x.get('name','')).upper()==u and str(x.get('instrumenttype','')).upper()=='OPTIDX' and str(x.get('exch_seg','')).upper()==('BFO' if u=='SENSEX' else 'NFO')})
+            exp=exps[0] if exps else ''
+        else:
+            parts=raw.upper().replace('  ',' ').split()
+            if len(parts)>=4 and parts[-1] in ('CE','PE'):
+                u,exp,typ=parts[0],parts[1],parts[-1]; strike=float(parts[2])
             else:
-                b = buckets[b_time]
-                b["high"] = max(b["high"], c["high"])
-                b["low"] = min(b["low"], c["low"])
-                b["close"] = c["close"]
-                b["volume"] += c["volume"]
+                return None
+        arr=[x for x in self.angel.option_instruments(u,exp) if str(x.get('symbol','')).upper().endswith(typ) and abs(float(x.get('strike',-1))/100-strike)<0.01]
+        return arr[0] if arr else None
+
+    def _execute_fill(self,symbol,action,qty,price,sl=0,target=0,tsl=0):
+        pos_id=f'pos_{self.order_counter}'; self.order_counter+=1; ltp,delta,theta=self._get_live_instrument_ltp(symbol); cost=round(price*qty,2)
+        self.wallet['balance']=round(self.wallet['balance']-cost,2); self.wallet['used_margin']=round(self.wallet['used_margin']+cost,2)
+        self.positions.append({'id':pos_id,'symbol':symbol,'action':action,'qty':qty,'buy_price':price,'ltp':ltp,'pnl':0.0,'stop_loss':sl,'target':target,'trailing_sl':tsl,'delta':delta,'theta':theta})
+        self.orders.insert(0,{'id':pos_id,'time':datetime.now(IST).strftime('%H:%M:%S'),'symbol':symbol,'action':action,'qty':qty,'price':price,'status':'FILLED'})
+
+    def _internal_exit(self,pos_id,reason='MANUAL'):
+        for i,p in enumerate(self.positions):
+            if p['id']==pos_id:
+                p=self.positions.pop(i); cost=round(p['buy_price']*p['qty'],2); pnl=p['pnl']; self.wallet['used_margin']=max(0,round(self.wallet['used_margin']-cost,2)); self.wallet['balance']=round(self.wallet['balance']+cost+pnl,2); self.wallet['realized_pnl']=round(self.wallet['realized_pnl']+pnl,2)
+                self.closed_trades.insert(0,{'id':p['id'],'symbol':p['symbol'],'action':p['action'],'qty':p['qty'],'buy_price':p['buy_price'],'exit_price':p['ltp'],'pnl':pnl,'reason':reason,'time':datetime.now(IST).strftime('%H:%M:%S')}); return
+
+    def _resample(self,candles,tf):
+        if tf<=60:return candles
+        buckets={}
+        for c in candles:
+            bt=(c['time']//tf)*tf
+            if bt not in buckets: buckets[bt]={'time':bt,'is_prev_day':False,'open':c['open'],'high':c['high'],'low':c['low'],'close':c['close'],'volume':c['volume']}
+            else:
+                b=buckets[bt]; b['high']=max(b['high'],c['high']); b['low']=min(b['low'],c['low']); b['close']=c['close']; b['volume']+=c['volume']
         return list(buckets.values())
 
-    def get_instrument_chart_data(self, symbol, timeframe="1m"):
-        is_sensex = "SENSEX" in symbol
-        curr_spot = self.sensex_spot if is_sensex else self.nifty_spot
-        tf_sec = {"1m": 60, "3m": 180, "5m": 300, "15m": 900}.get(timeframe, 60)
-        rem_sec = tf_sec - (int(time.time()) % tf_sec)
-        countdown = f"{rem_sec // 60:02d}:{rem_sec % 60:02d}"
-        base_resampled = self._resample(self.candles_1m, tf_sec)
-
-        if symbol in ["NIFTY", "SENSEX"] or "_" not in symbol:
-            mult = 3.41 if is_sensex else 1.0
-            raw_candles = [{
-                "time": sc["time"], "is_prev_day": sc.get("is_prev_day", False),
-                "open": round(sc["open"] * mult, 2), "high": round(sc["high"] * mult, 2),
-                "low": round(sc["low"] * mult, 2), "close": round(sc["close"] * mult, 2),
-                "volume": sc["volume"]
-            } for sc in base_resampled]
-            ltp = curr_spot
-            display_title = "SENSEX" if is_sensex else "NIFTY 50"
-            greeks = {"delta": 1.0, "gamma": 0.0, "theta": 0.0, "vega": 0.0, "iv": 14.3}
+    def get_instrument_chart_data(self,symbol,timeframe='1m'):
+        is_s='SENSEX' in symbol; spot=self.sensex_spot if is_s else self.nifty_spot; tf={'1m':60,'3m':180,'5m':300,'15m':900}.get(timeframe,60)
+        candles=self._resample(self.candles_1m,tf)
+        if self.angel.enabled and not ('_' in symbol):
+            inst=self.angel.find_index('SENSEX' if is_s else 'NIFTY')
+            if inst and time.time()-self.angel.last_candle>20:
+                interval={60:'ONE_MINUTE',180:'THREE_MINUTE',300:'FIVE_MINUTE',900:'FIFTEEN_MINUTE'}[tf]; fresh=self.angel.candles(inst,interval,2)
+                if fresh: candles=fresh; self.candles_1m=fresh if tf==60 else self.candles_1m; self.angel.last_candle=time.time()
+        if '_' not in symbol:
+            mult=1.0 if not is_s else 1.0; display='SENSEX' if is_s else 'NIFTY 50'; raw=[{**c} for c in candles]; ltp=spot; greeks={'delta':1.0,'gamma':0,'theta':0,'vega':0,'iv':0}
         else:
-            parts = symbol.split("_")
-            expiry_str = parts[1] if len(parts) >= 4 else get_available_expiries(is_sensex)[0]
-            strike = float(parts[2]) if len(parts) >= 4 else (float(parts[1]) if len(parts) == 3 else curr_spot)
-            opt_type = parts[3] if len(parts) >= 4 else (parts[2] if len(parts) == 3 else "CE")
-            dte = get_dte_from_expiry(expiry_str)
-            display_title = f"{'SENSEX' if is_sensex else 'NIFTY'} {expiry_str} {int(strike)} {opt_type}"
+            parts=symbol.split('_'); exp=parts[1]; strike=float(parts[2]); typ=parts[3]; display=f"{'SENSEX' if is_s else 'NIFTY'} {exp} {int(strike)} {typ}"; raw=[]; greeks={}
+            inst=self._find_option_from_ui(symbol)
+            if self.angel.enabled and inst:
+                fresh=self.angel.candles(inst,'ONE_MINUTE',2)
+                if fresh: raw=self._resample(fresh,tf)
+                q=self.angel.quote([inst]); z=q.get(str(inst['token']))
+                ltp=float(z.get('ltp',0)) if z else 0
+                gg=self.angel.greek('SENSEX' if is_s else 'NIFTY',exp).get((strike,typ),{})
+                greeks={'delta':float(gg.get('delta',0) or 0),'gamma':float(gg.get('gamma',0) or 0),'theta':float(gg.get('theta',0) or 0),'vega':float(gg.get('vega',0) or 0),'iv':float(gg.get('impliedVolatility',0) or 0)}
+            if not raw:
+                dte=get_dte_from_expiry(exp); g=calc_deep_greeks(spot,strike,dte,is_sensex=is_s); ltp=g['ce_ltp'] if typ=='CE' else g['pe_ltp']; greeks={'delta':g['ce_delta'] if typ=='CE' else g['pe_delta'],'gamma':g['gamma'],'theta':g['theta'],'vega':g['vega'],'iv':g['iv']}
+                for c in candles:
+                    a=calc_deep_greeks(c['open'],strike,dte,is_sensex=is_s); b=calc_deep_greeks(c['close'],strike,dte,is_sensex=is_s); raw.append({'time':c['time'],'is_prev_day':False,'open':a['ce_ltp'] if typ=='CE' else a['pe_ltp'],'high':max(a['ce_ltp'] if typ=='CE' else a['pe_ltp'],b['ce_ltp'] if typ=='CE' else b['pe_ltp']),'low':min(a['ce_ltp'] if typ=='CE' else a['pe_ltp'],b['ce_ltp'] if typ=='CE' else b['pe_ltp']),'close':b['ce_ltp'] if typ=='CE' else b['pe_ltp'],'volume':c['volume']})
+        closes=[c['close'] for c in raw]; return {'symbol':symbol,'display_title':display,'timeframe':timeframe,'ltp':ltp,'candles':raw,'countdown':'00:00','ema9':calc_ema_series(closes,9)[-1] if closes else 0,'ema15':calc_ema_series(closes,15)[-1] if closes else 0,'vwap':calc_vwap_series(raw)[-1] if raw else 0,'vwap_series':calc_vwap_series(raw),'ema9_series':calc_ema_series(closes,9),'ema15_series':calc_ema_series(closes,15),'greeks':greeks}
 
-            raw_candles = []
-            for sc in base_resampled:
-                div = 3.41 if is_sensex else 1.0
-                s_o = sc["open"] / div
-                s_c = sc["close"] / div
-                s_h = sc["high"] / div
-                s_l = sc["low"] / div
+    def get_option_chain(self,symbol='NIFTY',expiry=None):
+        is_s='SENSEX' in symbol; underlying='SENSEX' if is_s else 'NIFTY'; spot=self.sensex_spot if is_s else self.nifty_spot; step=100 if is_s else 50
+        if self.angel.enabled:
+            exps=sorted({str(x.get('expiry','')).upper() for x in self.angel.instruments if str(x.get('exch_seg','')).upper()==('BFO' if is_s else 'NFO') and str(x.get('name','')).upper()==underlying and str(x.get('instrumenttype','')).upper()=='OPTIDX' and x.get('expiry')})[:10]
+            if exps:
+                selected=expiry if expiry in exps else exps[0]; arr=self.angel.option_instruments(underlying,selected); strikes=sorted({round(float(x['strike'])/100,2) for x in arr}); atm=min(strikes,key=lambda x:abs(x-spot)) if strikes else round(spot/step)*step; strikes=sorted(strikes,key=lambda x:abs(x-atm))[:17]; strikes=sorted(strikes)
+                insts=[]
+                for x in arr:
+                    if round(float(x['strike'])/100,2) in strikes: insts.append(x)
+                q=self.angel.quote(insts); gk=self.angel.greek(underlying,selected); rows=[]
+                for s in strikes:
+                    row={'strike':s,'expiry':selected}
+                    for typ,prefix in [('CE','ce'),('PE','pe')]:
+                        x=next((i for i in insts if round(float(i['strike'])/100,2)==s and str(i['symbol']).upper().endswith(typ)),None); z=q.get(str(x['token'])) if x else None; g=gk.get((s,typ),{})
+                        row[prefix+'_ltp']=float(z.get('ltp',0)) if z else 0; row[prefix+'_delta']=float(g.get('delta',0) or 0); row[prefix+'_oi']=str(z.get('openInterest',0) if z else 0); row[prefix+'_chg_oi']=str(z.get('changeOpenInterest',0) if z else 0); row[prefix+'_volume']=str(z.get('tradeVolume',z.get('volume',0)) if z else 0); row[prefix+'_iv']=float(g.get('impliedVolatility',0) or 0)
+                    rows.append(row)
+                return {'expiries':exps,'selected_expiry':selected,'chain':rows}
+        # Existing development-only chain remains when Angel is disabled.
+        exps=get_available_expiries(is_s); selected=expiry if expiry in exps else exps[0]; dte=get_dte_from_expiry(selected); atm=round(spot/step)*step; rows=[]
+        for s in [atm+i*step for i in range(-8,9)]:
+            g=calc_deep_greeks(spot,s,dte,is_sensex=is_s); rows.append({'strike':s,'expiry':selected,'ce_ltp':g['ce_ltp'],'ce_delta':g['ce_delta'],'ce_oi':'DEV','ce_chg_oi':'DEV','ce_volume':'DEV','ce_iv':g['iv'],'pe_ltp':g['pe_ltp'],'pe_delta':g['pe_delta'],'pe_oi':'DEV','pe_chg_oi':'DEV','pe_volume':'DEV','pe_iv':g['iv'],'gamma':g['gamma'],'theta':g['theta'],'vega':g['vega']})
+        return {'expiries':exps,'selected_expiry':selected,'chain':rows}
 
-                op = opt_type.lower()
-                bs_o = calc_deep_greeks(s_o, strike, dte, iv=14.3, is_sensex=is_sensex)[f"{op}_ltp"]
-                bs_c = calc_deep_greeks(s_c, strike, dte, iv=14.3, is_sensex=is_sensex)[f"{op}_ltp"]
+    def reset(self):
+        self.wallet={'initial':50000.0,'balance':50000.0,'used_margin':0.0,'realized_pnl':0.0}; self.positions=[]; self.pending_orders=[]; self.orders=[]; self.closed_trades=[]
 
-                # Project spot shadows into option wicks
-                if opt_type == "CE":
-                    bs_h = calc_deep_greeks(s_h, strike, dte, iv=14.3, is_sensex=is_sensex)["ce_ltp"]
-                    bs_l = calc_deep_greeks(s_l, strike, dte, iv=14.3, is_sensex=is_sensex)["ce_ltp"]
-                else:
-                    bs_h = calc_deep_greeks(s_l, strike, dte, iv=14.3, is_sensex=is_sensex)["pe_ltp"]
-                    bs_l = calc_deep_greeks(s_h, strike, dte, iv=14.3, is_sensex=is_sensex)["pe_ltp"]
+state=SimulationState()
 
-                c_high = max(bs_o, bs_c, bs_h)
-                c_low = max(0.05, min(bs_o, bs_c, bs_l))
-
-                # Ensure minimum natural wick visibility
-                body = abs(bs_c - bs_o)
-                if c_high == max(bs_o, bs_c):
-                    c_high = round(c_high + max(0.3, body * 0.15), 2)
-                if c_low == min(bs_o, bs_c):
-                    c_low = round(max(0.05, c_low - max(0.3, body * 0.15)), 2)
-
-                raw_candles.append({
-                    "time": sc["time"], "is_prev_day": sc.get("is_prev_day", False),
-                    "open": bs_o, "high": c_high, "low": c_low,
-                    "close": bs_c,
-                    "volume": int(max(abs(c_high - c_low), 0.3) * random.randint(1800, 4200) + random.randint(1500, 5200))
-                })
-            greeks = calc_deep_greeks(curr_spot, strike, dte, iv=14.3, is_sensex=is_sensex)
-            greeks["delta"] = greeks["ce_delta"] if opt_type == "CE" else greeks["pe_delta"]
-            ltp = greeks["ce_ltp"] if opt_type == "CE" else greeks["pe_ltp"]
-
-        closes = [c["close"] for c in raw_candles]
-        volumes = [c["volume"] for c in raw_candles]
-        ema9_s = calc_ema_series(closes, 9)
-        ema15_s = calc_ema_series(closes, 15)
-        vwap_s = calc_vwap_series(raw_candles)
-
-        return {
-            "symbol": symbol, "display_title": display_title, "timeframe": timeframe,
-            "ltp": ltp, "candles": raw_candles, "countdown": countdown,
-            "ema9": ema9_s[-1] if ema9_s else 0, "ema15": ema15_s[-1] if ema15_s else 0,
-            "vwap": vwap_s[-1] if vwap_s else 0, "vwap_series": vwap_s,
-            "ema9_series": ema9_s, "ema15_series": ema15_s, "greeks": greeks
-        }
-
-    def get_option_chain(self, symbol="NIFTY", expiry=None):
-        is_sensex = "SENSEX" in symbol
-        curr_spot = self.sensex_spot if is_sensex else self.nifty_spot
-        step_val = 100 if is_sensex else 50
-        atm = round(curr_spot / step_val) * step_val
-        expiries = get_available_expiries(is_sensex)
-        selected_expiry = expiry if (expiry and expiry in expiries) else expiries[0]
-        dte = get_dte_from_expiry(selected_expiry)
-
-        chain = []
-        for s in [atm + (i * step_val) for i in range(-8, 9)]:
-            # Check if live cached row from NSE exists
-            cached_row = self.live_chain_cache.get("data", {}).get((selected_expiry, s))
-            g = calc_deep_greeks(curr_spot, s, dte_days=dte, iv=cached_row.get("ce_iv", 14.3) if cached_row else 14.3)
-            
-            # Format numbers in Dhan convention (Lakhs/Crores)
-            def fmt(n):
-                if n >= 10000000: return f"{n/10000000:.2f} Cr"
-                if n >= 100000: return f"{n/100000:.2f} L"
-                return str(n)
-
-            # Use live exchange fields if available, otherwise calibrate via market distribution
-            ce_oi = fmt(cached_row["ce_oi"]) if cached_row and cached_row["ce_oi"] else f"{random.randint(15, 85)}.{random.randint(10,99)} L"
-            pe_oi = fmt(cached_row["pe_oi"]) if cached_row and cached_row["pe_oi"] else f"{random.randint(20, 95)}.{random.randint(10,99)} L"
-            ce_vol = fmt(cached_row["ce_volume"]) if cached_row and cached_row["ce_volume"] else f"{random.randint(2, 25)}.{random.randint(10,99)} L"
-            pe_vol = fmt(cached_row["pe_volume"]) if cached_row and cached_row["pe_volume"] else f"{random.randint(2, 25)}.{random.randint(10,99)} L"
-            ce_chg = fmt(cached_row["ce_chg_oi"]) if cached_row and cached_row["ce_chg_oi"] else f"+{random.randint(1, 15)}.{random.randint(10,99)} L"
-            pe_chg = fmt(cached_row["pe_chg_oi"]) if cached_row and cached_row["pe_chg_oi"] else f"+{random.randint(1, 15)}.{random.randint(10,99)} L"
-
-            ce_ltp = cached_row["ce_ltp"] if cached_row and cached_row["ce_ltp"] > 0 else g["ce_ltp"]
-            pe_ltp = cached_row["pe_ltp"] if cached_row and cached_row["pe_ltp"] > 0 else g["pe_ltp"]
-
-            chain.append({
-                "strike": s, "expiry": selected_expiry,
-                "ce_ltp": ce_ltp, "ce_delta": g["ce_delta"], "ce_oi": ce_oi,
-                "ce_chg_oi": ce_chg, "ce_volume": ce_vol, "ce_iv": g["iv"],
-                "pe_ltp": pe_ltp, "pe_delta": g["pe_delta"], "pe_oi": pe_oi,
-                "pe_chg_oi": pe_chg, "pe_volume": pe_vol, "pe_iv": g["iv"],
-                "gamma": g["gamma"], "theta": g["theta"], "vega": g["vega"]
-            })
-        return {"expiries": expiries, "selected_expiry": selected_expiry, "chain": chain}
-
-state = SimulationState()
-class DhanSimHandler(http.server.BaseHTTPRequestHandler):
-    def log_message(self, format, *args): return
-
-    def _send_json(self, data_dict, code=200):
-        try:
-            body = json.dumps(data_dict).encode("utf-8")
-            self.send_response(code)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Access-Control-Allow-Origin", "*")
-            self.send_header("Content-Length", str(len(body)))
-            self.send_header("Connection", "close")
-            self.end_headers()
-            self.wfile.write(body)
-        except Exception:
-            pass
-
+class Handler(http.server.BaseHTTPRequestHandler):
+    def log_message(self,format,*args): return
+    def _send_json(self,data,code=200):
+        body=json.dumps(data).encode(); self.send_response(code); self.send_header('Content-Type','application/json'); self.send_header('Access-Control-Allow-Origin','*'); self.send_header('Content-Length',str(len(body))); self.end_headers(); self.wfile.write(body)
     def do_GET(self):
-        parsed = urlparse(self.path)
-        if parsed.path in ["/", "/index.html"]:
-            if os.path.exists("index.html"):
-                with open("index.html", "rb") as f:
-                    body = f.read()
-                self.send_response(200)
-                self.send_header("Content-Type", "text/html; charset=utf-8")
-                self.send_header("Content-Length", str(len(body)))
-                self.send_header("Connection", "close")
-                self.end_headers()
-                self.wfile.write(body)
-        elif parsed.path == "/api/market":
-            params = parse_qs(parsed.query)
-            symbol = params.get("symbol", ["NIFTY"])[0]
-            tf = params.get("tf", ["1m"])[0]
-            expiry = params.get("expiry", [None])[0]
+        parsed=urlparse(self.path)
+        if parsed.path in ('/','/index.html'):
+            with open('index.html','rb') as f: body=f.read()
+            self.send_response(200); self.send_header('Content-Type','text/html; charset=utf-8'); self.send_header('Content-Length',str(len(body))); self.end_headers(); self.wfile.write(body); return
+        if parsed.path=='/api/market':
+            p=parse_qs(parsed.query); symbol=p.get('symbol',['NIFTY'])[0]; tf=p.get('tf',['1m'])[0]; expiry=p.get('expiry',[None])[0]
             with state.lock:
-                chart_data = state.get_instrument_chart_data(symbol, timeframe=tf)
-                chain_data = state.get_option_chain(symbol, expiry=expiry)
-                unrealized = sum(p.get("pnl", 0) for p in state.positions)
-                trades = state.closed_trades
-                wins = sum(1 for t in trades if t["pnl"] > 0)
-                win_rate = round((wins / len(trades) * 100), 1) if trades else 0.0
-                gross_profit = sum(t["pnl"] for t in trades if t["pnl"] > 0)
-                gross_loss = abs(sum(t["pnl"] for t in trades if t["pnl"] < 0))
-                pf = round(gross_profit / gross_loss, 2) if gross_loss > 0 else (gross_profit if gross_profit > 0 else 0.0)
-
-                resp = {
-                    "nifty_spot": state.nifty_spot,
-                    "sensex_spot": state.sensex_spot,
-                    "nifty_chg": round(state.nifty_spot - state.prev_close, 2),
-                    "nifty_pct": round(((state.nifty_spot - state.prev_close) / state.prev_close) * 100, 2),
-                    "chart": chart_data,
-                    "chain": chain_data["chain"],
-                    "expiries": chain_data["expiries"],
-                    "selected_expiry": chain_data["selected_expiry"],
-                    "wallet": {
-                        **state.wallet,
-                        "unrealized_pnl": round(unrealized, 2),
-                        "net_pnl": round(state.wallet["realized_pnl"] + unrealized, 2)
-                    },
-                    "analytics": {
-                        "win_rate": win_rate,
-                        "profit_factor": pf,
-                        "net_pnl": round(state.wallet["realized_pnl"] + unrealized, 2),
-                        "total_trades": len(trades)
-                    },
-                    "positions": state.positions,
-                    "pending_orders": state.pending_orders,
-                    "orders": state.orders,
-                    "closed_trades": state.closed_trades[:15]
-                }
-            self._send_json(resp)
-
+                chart=state.get_instrument_chart_data(symbol,tf); chain=state.get_option_chain(symbol,expiry); unreal=sum(x.get('pnl',0) for x in state.positions); trades=state.closed_trades; wins=sum(1 for t in trades if t['pnl']>0); gp=sum(t['pnl'] for t in trades if t['pnl']>0); gl=abs(sum(t['pnl'] for t in trades if t['pnl']<0)); pf=round(gp/gl,2) if gl else (gp if gp else 0)
+                self._send_json({'nifty_spot':state.nifty_spot,'sensex_spot':state.sensex_spot,'nifty_chg':round(state.nifty_spot-state.prev_close,2),'nifty_pct':round((state.nifty_spot-state.prev_close)/state.prev_close*100,2),'chart':chart,'chain':chain['chain'],'expiries':chain['expiries'],'selected_expiry':chain['selected_expiry'],'wallet':{**state.wallet,'unrealized_pnl':round(unreal,2),'net_pnl':round(state.wallet['realized_pnl']+unreal,2)},'analytics':{'win_rate':round(wins/len(trades)*100,1) if trades else 0,'profit_factor':pf,'net_pnl':round(state.wallet['realized_pnl']+unreal,2),'total_trades':len(trades)},'positions':state.positions,'pending_orders':state.pending_orders,'orders':state.orders,'closed_trades':state.closed_trades[:15],'market_source':'Angel One SmartAPI' if state.angel.enabled else 'Development mode','market_error':state.angel.last_error if state.angel.enabled else ''})
+            return
+        if parsed.path=='/health': self._send_json({'ok':True,'angel_enabled':state.angel.enabled,'angel_error':state.angel.last_error}); return
+        self.send_error(404)
     def do_POST(self):
-        parsed = urlparse(self.path)
-        content_len = int(self.headers.get("Content-Length", 0))
-        post_data = self.rfile.read(content_len).decode("utf-8") if content_len > 0 else "{}"
-        try:
-            payload = json.loads(post_data)
-        except Exception:
-            payload = {}
-
+        parsed=urlparse(self.path); n=int(self.headers.get('Content-Length',0)); raw=self.rfile.read(n).decode() if n else '{}'
+        try: payload=json.loads(raw)
+        except: payload={}
         with state.lock:
-            if parsed.path == "/api/order":
-                symbol = payload.get("symbol", "NIFTY")
-                action = payload.get("action", "BUY")
-                qty = int(payload.get("qty", 65))
-                order_type = payload.get("order_type", "MARKET")
-                limit_price = float(payload.get("limit_price", 0))
-                sl = float(payload.get("stop_loss", 0))
-                target = float(payload.get("target", 0))
-                tsl = float(payload.get("trailing_sl", 0))
-
-                ltp, _, _ = state._get_live_instrument_ltp(symbol)
-                fill_price = ltp if order_type == "MARKET" else limit_price
-
-                if order_type == "LIMIT":
-                    # Check if immediate execution is possible
-                    can_fill = (action == "BUY" and ltp <= limit_price) or (action == "SELL" and ltp >= limit_price)
-                    if can_fill:
-                        state._execute_fill(symbol, action, qty, fill_price, sl, target, tsl)
-                    else:
-                        p_id = f"ord_{state.order_counter}"
-                        state.order_counter += 1
-                        state.pending_orders.append({
-                            "id": p_id,
-                            "symbol": symbol,
-                            "action": action,
-                            "qty": qty,
-                            "limit_price": limit_price,
-                            "order_type": order_type,
-                            "stop_loss": sl,
-                            "target": target,
-                            "trailing_sl": tsl,
-                            "time": datetime.now(IST).strftime("%H:%M:%S")
-                        })
-                else:
-                    state._execute_fill(symbol, action, qty, fill_price, sl, target, tsl)
-
-                self._send_json({"status": "ok"})
-
-            elif parsed.path == "/api/exit":
-                pid = payload.get("id")
-                state._internal_exit(pid)
-                self._send_json({"status": "ok"})
-
-            elif parsed.path == "/api/cancel_order":
-                oid = payload.get("id")
-                state.pending_orders = [po for po in state.pending_orders if po["id"] != oid]
-                self._send_json({"status": "ok"})
-
-            elif parsed.path == "/api/reset":
-                state.wallet = {"initial": 50000.0, "balance": 50000.0, "used_margin": 0.0, "realized_pnl": 0.0}
-                state.positions = []
-                state.pending_orders = []
-                state.orders = []
-                state.closed_trades = []
-                self._send_json({"status": "ok"})
-
-            elif parsed.path == "/api/update_brackets":
-                pid = payload.get("id")
+            if parsed.path=='/api/order':
+                symbol=payload.get('symbol','NIFTY'); action=payload.get('action','BUY'); qty=int(payload.get('qty',65)); ot=payload.get('order_type','MARKET'); lp=float(payload.get('limit_price',0)); sl=float(payload.get('stop_loss',0)); tp=float(payload.get('target',0)); tsl=float(payload.get('trailing_sl',0)); ltp,_,_=state._get_live_instrument_ltp(symbol)
+                if not ltp: return self._send_json({'error':'Live price unavailable'},400)
+                if ot=='LIMIT' and not ((action=='BUY' and ltp<=lp) or (action=='SELL' and ltp>=lp)):
+                    oid=f'ord_{state.order_counter}'; state.order_counter+=1; state.pending_orders.append({'id':oid,'symbol':symbol,'action':action,'qty':qty,'limit_price':lp,'order_type':'LIMIT','stop_loss':sl,'target':tp,'trailing_sl':tsl,'time':datetime.now(IST).strftime('%H:%M:%S')})
+                else: state._execute_fill(symbol,action,qty,ltp if ot=='MARKET' else lp,sl,tp,tsl)
+                self._send_json({'status':'ok'}); return
+            if parsed.path=='/api/exit': state._internal_exit(payload.get('id')); self._send_json({'status':'ok'}); return
+            if parsed.path=='/api/cancel_order': state.pending_orders=[x for x in state.pending_orders if x['id']!=payload.get('id')]; self._send_json({'status':'ok'}); return
+            if parsed.path=='/api/reset': state.reset(); self._send_json({'status':'ok'}); return
+            if parsed.path=='/api/update_brackets':
                 for p in state.positions:
-                    if p["id"] == pid:
-                        if "stop_loss" in payload: p["stop_loss"] = float(payload["stop_loss"])
-                        if "target" in payload: p["target"] = float(payload["target"])
-                        if "trailing_sl" in payload: p["trailing_sl"] = float(payload["trailing_sl"])
-                        break
-                self._send_json({"status": "ok"})
+                    if p['id']==payload.get('id'):
+                        for k in ('stop_loss','target','trailing_sl'):
+                            if k in payload: p[k]=float(payload[k])
+                self._send_json({'status':'ok'}); return
+            self._send_json({'status':'ok'})
 
-            else:
-                self._send_json({"status": "ok"})
+class Server(socketserver.ThreadingMixIn,socketserver.TCPServer):
+    allow_reuse_address=True; daemon_threads=True
 
-class ThreadedHTTPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
-    allow_reuse_address = True
-    daemon_threads = True
-    def handle_error(self, request, client_address): pass
-
-if __name__ == "__main__":
-    PORT = int(os.environ.get("PORT", 8000))
-    with ThreadedHTTPServer(("0.0.0.0", PORT), DhanSimHandler) as httpd:
-        print(f"Server running on port {PORT}")
-        httpd.serve_forever()
+if __name__=='__main__':
+    PORT=int(os.getenv('PORT',8000)); print('Server running on port',PORT); print('MARKET SOURCE:', 'Angel One SmartAPI' if state.angel.enabled else 'Development mode'); Server(('0.0.0.0',PORT),Handler).serve_forever()

@@ -967,7 +967,8 @@ function renderWatchlist() {
 // Fetch Engine
 async function fetchMarket() {
   try {
-    const res = await fetch(`/api/market?symbol=${encodeURIComponent(currentChartSymbol)}&tf=${currentTimeframe}`);
+    const expiryParam = currentSelectedExpiry ? `&expiry=${encodeURIComponent(currentSelectedExpiry)}` : '';
+    const res = await fetch(`/api/market?symbol=${encodeURIComponent(currentChartSymbol)}&tf=${currentTimeframe}${expiryParam}`);
     const data = await res.json();
     marketCache = data;
     if (data.sounds && data.sounds.length > 0) {
