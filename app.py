@@ -479,14 +479,21 @@ def strategy_signal(candles, strategy):
         if last>high20: return 'BUY',0.82,{'breakout':high20}
         if last<low20: return 'SELL',0.82,{'breakout':low20}
     elif strategy=='RBS':
-        # Resistance -> Support: prior resistance is broken, then retested and held.
+        # Resistance -> Support: the previous candle broke the prior 20-bar resistance;
+        # the current candle retests that level and closes back above it.
         level=max(float(c['high']) for c in candles[-21:-1])
+        # Do not include the breakout candle itself in the resistance calculation.
+        if len(candles)>=23:
+            level=max(float(c['high']) for c in candles[-22:-2])
         prev=float(candles[-2]['close']); cur=candles[-1]
         if prev>level and float(cur['low'])<=level*1.001 and float(cur['close'])>level:
             return 'BUY',0.78,{'level':level,'setup':'RBS'}
     elif strategy=='SBR':
-        # Support -> Resistance: prior support is broken, then retested and rejected.
+        # Support -> Resistance: the previous candle broke prior 20-bar support;
+        # the current candle retests that level and closes back below it.
         level=min(float(c['low']) for c in candles[-21:-1])
+        if len(candles)>=23:
+            level=min(float(c['low']) for c in candles[-22:-2])
         prev=float(candles[-2]['close']); cur=candles[-1]
         if prev<level and float(cur['high'])>=level*0.999 and float(cur['close'])<level:
             return 'SELL',0.78,{'level':level,'setup':'SBR'}
@@ -1041,6 +1048,39 @@ class SimulationState:
         countdown_seconds=max(0,int((((int(now)//tf)+1)*tf)-now))
         return {'symbol':symbol,'ltp':round(float(ltp),2),'countdown':f'{countdown_seconds//60:02d}:{countdown_seconds%60:02d}','time':int(now)}
 
+
+def build_strategy_markers(candles):
+    """Generate deterministic BUY/SELL markers for every strategy without trading."""
+    rows=_align_candles(candles)
+    if len(rows)<25: return []
+    closes=[float(c['close']) for c in rows]
+    ema9=calc_ema_series(closes,9); ema15=calc_ema_series(closes,15)
+    out=[]
+    for i in range(24,len(rows)):
+        c=rows[i]; last=closes[i]
+        # EMA cross
+        if ema9[i-1] <= ema15[i-1] and ema9[i] > ema15[i]: out.append({'time':c['time'],'price':last,'signal':'BUY','strategy':'EMA_CROSS','confidence':0.80})
+        elif ema9[i-1] >= ema15[i-1] and ema9[i] < ema15[i]: out.append({'time':c['time'],'price':last,'signal':'SELL','strategy':'EMA_CROSS','confidence':0.80})
+        # RSI mean reversion
+        rsi=calc_rsi(closes[:i+1],14)
+        if rsi<=30 and last>closes[i-1]: out.append({'time':c['time'],'price':last,'signal':'BUY','strategy':'RSI_MEAN_REVERT','confidence':0.75})
+        elif rsi>=70 and last<closes[i-1]: out.append({'time':c['time'],'price':last,'signal':'SELL','strategy':'RSI_MEAN_REVERT','confidence':0.75})
+        # VWAP mean reversion
+        vw=calc_vwap_series(rows[max(0,i-19):i+1])[-1]
+        if last < vw*0.998 and last>closes[i-1]: out.append({'time':c['time'],'price':last,'signal':'BUY','strategy':'VWAP_REVERT','confidence':0.72})
+        elif last > vw*1.002 and last<closes[i-1]: out.append({'time':c['time'],'price':last,'signal':'SELL','strategy':'VWAP_REVERT','confidence':0.72})
+        # 20-candle breakout
+        high20=max(float(x['high']) for x in rows[i-20:i]); low20=min(float(x['low']) for x in rows[i-20:i])
+        if last>high20: out.append({'time':c['time'],'price':last,'signal':'BUY','strategy':'BREAKOUT','confidence':0.82})
+        elif last<low20: out.append({'time':c['time'],'price':last,'signal':'SELL','strategy':'BREAKOUT','confidence':0.82})
+        # RBS / SBR: prior candle breaks a prior 20-bar level; current candle retests it.
+        if i>=22:
+            level=max(float(x['high']) for x in rows[i-21:i-1]); prev=float(rows[i-1]['close'])
+            if prev>level and float(c['low'])<=level*1.001 and last>level: out.append({'time':c['time'],'price':last,'signal':'BUY','strategy':'RBS','confidence':0.78,'level':level})
+            level=min(float(x['low']) for x in rows[i-21:i-1]);
+            if prev<level and float(c['high'])>=level*0.999 and last<level: out.append({'time':c['time'],'price':last,'signal':'SELL','strategy':'SBR','confidence':0.78,'level':level})
+    return out
+
     def get_instrument_chart_data(self,symbol,timeframe='1m'):
         is_s='SENSEX' in symbol.upper(); spot=self.sensex_spot if is_s else self.nifty_spot; tf={'1m':60,'3m':180,'5m':300,'15m':900}.get(timeframe,60)
         is_option='_' in symbol
@@ -1089,7 +1129,7 @@ class SimulationState:
         closes=[c['close'] for c in candles]
         countdown_seconds=max(0, int((((int(now)//tf)+1)*tf)-now))
         countdown=f"{countdown_seconds//60:02d}:{countdown_seconds%60:02d}"
-        return {'symbol':symbol,'display_title':display,'timeframe':timeframe,'ltp':ltp,'candles':candles,'countdown':countdown,'ema9':calc_ema_series(closes,9)[-1] if closes else 0,'ema15':calc_ema_series(closes,15)[-1] if closes else 0,'vwap':calc_vwap_series(candles)[-1] if candles else 0,'vwap_series':calc_vwap_series(candles),'ema9_series':calc_ema_series(closes,9),'ema15_series':calc_ema_series(closes,15),'greeks':greeks}
+        return {'symbol':symbol,'display_title':display,'timeframe':timeframe,'ltp':ltp,'candles':candles,'countdown':countdown,'ema9':calc_ema_series(closes,9)[-1] if closes else 0,'ema15':calc_ema_series(closes,15)[-1] if closes else 0,'vwap':calc_vwap_series(candles)[-1] if candles else 0,'vwap_series':calc_vwap_series(candles),'ema9_series':calc_ema_series(closes,9),'ema15_series':calc_ema_series(closes,15),'strategy_markers':build_strategy_markers(candles),'greeks':greeks}
 
     def get_option_chain(self,symbol='NIFTY',expiry=None):
         is_s='SENSEX' in symbol.upper(); underlying='SENSEX' if is_s else 'NIFTY'; spot=self.sensex_spot if is_s else self.nifty_spot; step=100 if is_s else 50

@@ -159,7 +159,7 @@ canvas { width: 100% !important; height: 100% !important; display: block; }
       <span class="ind-pill" id="pillEMA9" style="color:var(--orange);" onclick="toggleInd('ema9')">9 EMA</span>
       <span class="ind-pill" id="pillEMA15" style="color:var(--purple);" onclick="toggleInd('ema15')">15 EMA</span>
       <span class="ind-pill" id="pillVWAP" style="color:var(--blue);" onclick="toggleInd('vwap')">VWAP</span>
-      <span class="ind-pill" id="pillVol" style="color:var(--green);" onclick="toggleInd('vol')">VOL</span>
+      <span class="ind-pill" id="pillVol" style="color:var(--green);" onclick="toggleInd('vol')">VOL</span><span class="ind-pill" id="pillSignals" style="color:#22c55e;" onclick="toggleInd('signals')">ALL SIGNALS</span>
       <span class="greeks-badge" id="hudDelta">Δ: 1.00</span>
       <span class="greeks-badge" id="hudTheta">Θ: 0.00</span>
       <span class="greeks-badge" id="hudGamma">Γ: 0.00</span>
@@ -347,6 +347,11 @@ canvas { width: 100% !important; height: 100% !important; display: block; }
         <div class="bot-section-head"><div class="bot-card-title" style="margin:0">Research</div><span id="botValidation" class="bot-pill">UNVALIDATED</span></div>
         <div class="bot-row2"><select id="btDays" class="bot-select"><option value="2">2 days</option><option value="5">5 days</option><option value="10" selected>10 days</option><option value="20">20 days</option><option value="30">30 days</option><option value="60">60 days</option></select><button class="bot-small-btn bot-test" onclick="runBotBacktest()">RUN BACKTEST</button></div>
         <div id="btResult" class="bot-reason">No backtest run yet.</div><div id="btMetrics" class="bot-grid4"></div>
+        <button class="bot-small-btn bot-test" style="width:100%;margin-top:6px" onclick="compareBotStrategies()">QUICK VALIDATE ALL 6</button>
+        <div class="bot-card-title" style="margin-top:10px">Full validation matrix</div>
+        <div class="bot-row2"><select id="matrixTradeType" class="bot-select"><option value="INTRADAY">Intraday</option><option value="BTST">BTST</option></select><input id="matrixLots" class="bot-input" value="1,2,5,10" title="Lot multipliers, comma separated" placeholder="Lots: 1,2,5,10"></div>
+        <div class="bot-row2"><input id="matrixTf" class="bot-input" value="60,180,300,600,900,1800,3600" title="Timeframes in seconds" placeholder="TF: 60,180,300,600,900,1800,3600"><button class="bot-small-btn bot-test" style="width:100%" onclick="runResearchMatrix()">VALIDATE ALL × ALL TF</button></div>
+        <div id="matrixResult" class="bot-reason">Runs all 6 strategies across the selected timeframes and lot sizes.</div><div id="matrixTable"></div>
         <button class="bot-small-btn bot-test" style="width:100%;margin-top:6px" onclick="compareBotStrategies()">COMPARE ALL STRATEGIES</button>
         <div id="btCompare" style="margin-top:7px"></div>
         <div class="bot-card-title" style="margin-top:12px">Closed-market replay</div>
@@ -534,7 +539,7 @@ let visibleCandleCount = 35;
 let panOffset = 0;
 let verticalPanOffset = 0;
 
-let configInd = { ema9: true, ema15: true, vwap: true, vol: true };
+let configInd = { ema9: true, ema15: true, vwap: true, vol: true, signals: true };
 let userWatchlist = JSON.parse(localStorage.getItem('sim_watchlist') || '["NIFTY", "BANKNIFTY", "SENSEX"]');
 
 let priceScaleZoomFactor = 1.0;
@@ -921,7 +926,8 @@ function setTradeMode(mode) {
 
 function toggleInd(name) {
   configInd[name] = !configInd[name];
-  const el = document.getElementById(`pill${name.toUpperCase() === 'VOL' ? 'Vol' : name.toUpperCase()}`);
+  const ids={ema9:'pillEMA9',ema15:'pillEMA15',vwap:'pillVWAP',vol:'pillVol',signals:'pillSignals'};
+  const el = document.getElementById(ids[name]);
   if (el) el.classList.toggle('disabled', !configInd[name]);
   drawChart();
 }
@@ -1787,6 +1793,21 @@ function drawChart() {
       ctx.lineTo(chartRight, yVwap);
       ctx.stroke();
     }
+  }
+
+  // 6.5 Strategy BUY/SELL markers — all six strategies share the same candle engine.
+  if (configInd.signals && Array.isArray(marketCache.chart.strategy_markers)) {
+    const markerColors={EMA_CROSS:'#f59e0b',RSI_MEAN_REVERT:'#06b6d4',VWAP_REVERT:'#3b82f6',BREAKOUT:'#22c55e',RBS:'#84cc16',SBR:'#ef4444'};
+    const markerNames={EMA_CROSS:'EMA',RSI_MEAN_REVERT:'RSI',VWAP_REVERT:'VWAP',BREAKOUT:'BO',RBS:'RBS',SBR:'SBR'};
+    const seen={};
+    marketCache.chart.strategy_markers.forEach(m=>{
+      const mi=candles.findIndex(c=>Number(c.time)===Number(m.time)); if(mi<0) return;
+      const x=chartLeft+mi*step+step/2, y=toY(Number(m.price)); const key=mi+'_'+m.signal; const n=seen[key]||0; seen[key]=n+1;
+      const yy=y+(m.signal==='BUY' ? 12+n*12 : -12-n*12); const col=markerColors[m.strategy]||'#94a3b8';
+      ctx.fillStyle=col; ctx.strokeStyle=col; ctx.lineWidth=1; ctx.beginPath();
+      if(m.signal==='BUY'){ctx.moveTo(x,yy-5);ctx.lineTo(x-5,yy+4);ctx.lineTo(x+5,yy+4);}else{ctx.moveTo(x,yy+5);ctx.lineTo(x-5,yy-4);ctx.lineTo(x+5,yy-4);} ctx.closePath();ctx.fill();
+      ctx.font='bold 8px sans-serif'; ctx.textAlign='center'; ctx.fillText(markerNames[m.strategy]+' '+m.signal,x,yy+(m.signal==='BUY'?14:-10));
+    });
   }
 
   // 7. Entry, SL, TP Lines
