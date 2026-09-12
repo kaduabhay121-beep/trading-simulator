@@ -351,7 +351,7 @@ canvas { width: 100% !important; height: 100% !important; display: block; }
         <div class="bot-card-title" style="margin-top:10px">Full validation matrix</div>
         <div class="bot-row2"><select id="matrixTradeType" class="bot-select"><option value="INTRADAY">Intraday</option><option value="BTST">BTST</option></select><input id="matrixLots" class="bot-input" value="1,2,5,10" title="Lot multipliers, comma separated" placeholder="Lots: 1,2,5,10"></div>
         <div class="bot-row2"><input id="matrixTf" class="bot-input" value="60,180,300,600,900,1800,3600" title="Timeframes in seconds" placeholder="TF: 60,180,300,600,900,1800,3600"><button class="bot-small-btn bot-test" style="width:100%" onclick="runResearchMatrix()">VALIDATE ALL × ALL TF</button></div>
-        <div id="matrixResult" class="bot-reason">Runs all 6 strategies across the selected timeframes and lot sizes.</div><div id="matrixTable"></div>
+        <div id="matrixResult" class="bot-reason">Fast matrix: each historical dataset is fetched once, strategies are reused locally, and lot sizes are scaled without rerunning signals.</div><div id="matrixTable"></div>
         <button class="bot-small-btn bot-test" style="width:100%;margin-top:6px" onclick="compareBotStrategies()">COMPARE ALL STRATEGIES</button>
         <div id="btCompare" style="margin-top:7px"></div>
         <div class="bot-card-title" style="margin-top:12px">Closed-market replay</div>
@@ -2034,7 +2034,7 @@ async function runResearchMatrix(){
       const sr=await fetch(`/api/research/matrix_status?job_id=${encodeURIComponent(job)}`,{cache:'no-store'});
       let sd; try{sd=await sr.json()}catch(_){throw new Error(`Matrix status server returned HTTP ${sr.status}`)}
       if(!sr.ok||!sd.ok)throw new Error(sd.error||'Matrix status failed');
-      if(out)out.innerText=`Validating… ${sd.progress||0}/${total} (${sd.percent||0}%) · ${sd.results?.length||0} completed`;
+      if(out)out.innerText=`Validating… ${sd.progress||0}/${total} (${sd.percent||0}%) · ${sd.results?.length||0} completed${sd.eta ? ` · ETA ${sd.eta}s` : ''}`;
       if(sd.status==='done'){finished=true; renderMatrixResults({count:sd.results.length,results:sd.results,errors:sd.errors||[]},out,table);}
       if(sd.status==='failed'){throw new Error(sd.error||'Matrix worker failed')}
     }

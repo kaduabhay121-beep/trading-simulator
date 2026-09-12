@@ -19,3 +19,11 @@
 - The UI has Research history filters, per-run trade logs, and CSV exports for runs and all trades.
 - For Render, configure a Persistent Disk and set `SIM_DB_PATH=/data/simulator_state.db` so the 30-day journal survives deploys/restarts. Without persistent storage, SQLite data can be lost when the instance filesystem is replaced.
 - Local/Termux can keep the default `simulator_state.db` beside `app.py`.
+
+## v2.7.2 Fast Validation Engine
+- Historical candle responses are cached for 5 minutes and reused across research calls.
+- Matrix prefetches each selected timeframe once.
+- Each strategy is evaluated once per timeframe; requested lot multipliers are scaled locally from the same deterministic trade path.
+- Option replay reuses prefetched underlying candles and cached option series.
+- Matrix status reports elapsed time and ETA.
+- Angel One is used for market data only; no real order placement is implemented.

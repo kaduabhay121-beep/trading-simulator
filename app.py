@@ -121,6 +121,8 @@ class AngelOneData:
         self.greek_cache_ts = {}
         self.last_quote = 0
         self.last_candle = 0
+        self.candle_cache = {}
+        self.candle_cache_ttl = 300.0
         self.last_master = 0
         self.last_error = ''
         self.lock = threading.Lock()
@@ -246,24 +248,20 @@ class AngelOneData:
 
     def candles(self, inst, interval='ONE_MINUTE', days=2):
         if not self.enabled or not self.jwt or not inst: return []
-        # SmartAPI documents a 30-day maximum window for ONE_MINUTE candles.
         max_days={'ONE_MINUTE':30,'THREE_MINUTE':60,'FIVE_MINUTE':100,'TEN_MINUTE':100,'FIFTEEN_MINUTE':200,'THIRTY_MINUTE':200,'ONE_HOUR':400,'ONE_DAY':2000}.get(interval,30)
-        days=max(1,min(int(days),max_days))
-        end=self._last_market_close(); start=end-timedelta(days=days)
-        body={'exchange':str(inst.get('exch_seg','NSE')).upper(),'symboltoken':str(inst['token']),'interval':interval,
-              'fromdate':start.strftime('%Y-%m-%d %H:%M'),'todate':end.strftime('%Y-%m-%d %H:%M')}
+        days=max(1,min(int(days),max_days)); end=self._last_market_close(); start=end-timedelta(days=days)
+        key=(str(inst.get('exch_seg','NSE')).upper(),str(inst.get('token')),interval,days,end.strftime('%Y-%m-%d %H:%M'))
+        now=time.time(); cached=self.candle_cache.get(key)
+        if cached and now-cached.get('ts',0)<self.candle_cache_ttl: return [dict(x) for x in cached['rows']]
+        body={'exchange':str(inst.get('exch_seg','NSE')).upper(),'symboltoken':str(inst['token']),'interval':interval,'fromdate':start.strftime('%Y-%m-%d %H:%M'),'todate':end.strftime('%Y-%m-%d %H:%M')}
         try:
-            # Keep historical requests comfortably below the documented rate limit.
             with self.lock:
-                wait=max(0.0,0.45-(time.time()-self.last_candle));
+                wait=max(0.0,0.45-(time.time()-self.last_candle))
                 if wait: time.sleep(wait)
                 res=self._request(CANDLE_URL,body,self._auth_headers()); self.last_candle=time.time()
-            if not res.get('status',True):
-                msg=res.get('message') or res.get('errorcode') or 'Historical candle request failed'
-                raise RuntimeError(msg)
-            rows=res.get('data') or []
+            if not res.get('status',True): raise RuntimeError(res.get('message') or res.get('errorcode') or 'Historical candle request failed')
             out=[]
-            for r in rows:
+            for r in (res.get('data') or []):
                 if len(r)<6: continue
                 ts=r[0]
                 if isinstance(ts,str):
@@ -272,11 +270,12 @@ class AngelOneData:
                     ts=int(dt.timestamp())
                 else: ts=int(ts)
                 out.append({'time':ts,'is_prev_day':False,'open':float(r[1]),'high':float(r[2]),'low':float(r[3]),'close':float(r[4]),'volume':int(float(r[5] or 0))})
-            if not out:
-                raise RuntimeError(f'No historical candles returned for {body["exchange"]} token {body["symboltoken"]} ({body["fromdate"]} → {body["todate"]})')
-            self.last_error=''; return out
+            if not out: raise RuntimeError(f'No historical candles returned for {body["exchange"]} token {body["symboltoken"]} ({body["fromdate"]} → {body["todate"]})')
+            self.candle_cache[key]={'ts':time.time(),'rows':[dict(x) for x in out]}; self.last_error=''; return out
         except Exception as e:
-            self.last_error=str(e); return []
+            self.last_error=str(e)
+            if cached and cached.get('rows'): return [dict(x) for x in cached['rows']]
+            return []
 
     def option_instruments(self, underlying, expiry):
         u=underlying.upper(); segment='BFO' if u=='SENSEX' else 'NFO'
@@ -559,9 +558,9 @@ def backtest_strategy(candles, strategy, sl_pct=0.6, tp_pct=1.2, starting_balanc
 def _align_candles(rows):
     return sorted([dict(x) for x in (rows or [])], key=lambda x:int(x.get('time',0)))
 
-def _option_backtest(strategy, underlying, option_mode, days, sl_pct, tp_pct, starting_balance, angel, timeframe=60, lot_multiplier=1, trade_type='INTRADAY', shared_cache=None):
+def _option_backtest(strategy, underlying, option_mode, days, sl_pct, tp_pct, starting_balance, angel, timeframe=60, lot_multiplier=1, trade_type='INTRADAY', shared_cache=None, base_override=None):
     inst=angel.find_index(underlying); interval=TF_INTERVALS.get(int(timeframe),'ONE_MINUTE')
-    base=angel.candles(inst,interval,days) if inst else []; base=_align_candles(base)
+    base=_align_candles(base_override if base_override is not None else (angel.candles(inst,interval,days) if inst else []))
     if len(base)<40: return {'ok':False,'error':'Not enough historical underlying candles for replay'}
     balance=float(starting_balance); peak=balance; max_dd=0.0; trades=[]; position=None; wins=losses=0; cache=shared_cache if shared_cache is not None else {}
     def contract_for(spot, ts):
@@ -676,6 +675,20 @@ def build_strategy_markers(candles):
             if prev<level and float(c['high'])>=level*0.999 and last<level: out.append({'time':c['time'],'price':last,'signal':'SELL','strategy':'SBR','confidence':0.78,'level':level})
     return out
 
+
+def _scale_research_result(base_result, lot_multiplier):
+    lm=max(1,int(lot_multiplier)); r=dict(base_result); r['lot_multiplier']=lm
+    if lm==1: return r
+    for k in ('net_pnl','max_drawdown'):
+        if k in r: r[k]=round(float(r[k])*lm,2)
+    td=[]
+    for t in r.get('trades_detail',[]) or []:
+        x=dict(t)
+        if 'qty' in x: x['qty']=int(x['qty'])*lm
+        if 'pnl' in x: x['pnl']=round(float(x['pnl'])*lm,2)
+        x['lots']=lm; td.append(x)
+    r['trades_detail']=td
+    return r
 
 MATRIX_JOBS = {}
 MATRIX_JOBS_LOCK = threading.Lock()
@@ -1295,41 +1308,38 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     return self._send_json({'ok':False,'error':'A research matrix is already running. Please wait for it to finish.','running':True},409)
                 MATRIX_JOBS[job_id]={'status':'running','created':now,'progress':0,'total':len(tfs)*len(STRATEGIES)*len(lots),'results':[],'errors':[],'params':{'days':days,'underlying':under,'mode':mode,'trade_type':trade_type,'tfs':tfs,'lots':lots}}
             def run_matrix():
-                results=[]; errors=[]; shared={}
-                total=len(tfs)*len(STRATEGIES)*len(lots); done=0
+                results=[]; errors=[]; shared={}; base_by_tf={}; total=len(tfs)*len(STRATEGIES)*len(lots); started=time.time()
                 try:
+                    # Prefetch each underlying timeframe once; strategy and lot work is local.
                     for tf in tfs:
                         interval=TF_INTERVALS[tf]; inst=state.angel.find_index(under); candles=state.angel.candles(inst,interval,days) if inst else []
-                        if not candles:
-                            errors.append(f'{tf/60:g}m: no historical candles returned')
-                            done += len(STRATEGIES)*len(lots)
-                            with MATRIX_JOBS_LOCK: MATRIX_JOBS[job_id]['progress']=done
-                            continue
+                        if candles: base_by_tf[tf]=candles
+                        else: errors.append(f'{tf/60:g}m: no historical candles returned')
+                    done=0
+                    with MATRIX_JOBS_LOCK: MATRIX_JOBS[job_id]['progress']=0; MATRIX_JOBS[job_id]['prefetch']=True
+                    for tf in tfs:
+                        candles=base_by_tf.get(tf)
+                        if not candles: done += len(STRATEGIES)*len(lots); continue
                         for stg in STRATEGIES:
-                            for lm in lots:
-                                try:
-                                    if mode=='INDEX':
-                                        r=backtest_strategy(candles,stg,sl,tp,state.bot.get('initial_balance',1000000.0),qty=lm,trade_type=trade_type)
-                                        r.update({'underlying':under,'mode':'INDEX','timeframe':tf,'lot_multiplier':lm})
-                                    else:
-                                        r=_option_backtest(stg,under,mode,days,sl,tp,state.bot.get('initial_balance',1000000.0),state.angel,tf,lm,trade_type,shared)
-                                    if r.get('ok'):
-                                        state._store_research('MATRIX',r,days,sl,tp,lm)
-                                        results.append({k:r.get(k) for k in ('strategy','underlying','mode','timeframe','trade_type','lot_multiplier','trades','win_rate','net_pnl','profit_factor','max_drawdown','rr_ratio')})
-                                    else:
-                                        errors.append(f'{stg} {tf/60:g}m × {lm}: {r.get("error","failed")}')
-                                except Exception as e:
-                                    errors.append(f'{stg} {tf/60:g}m × {lm}: {e}')
-                                done += 1
-                                with MATRIX_JOBS_LOCK:
-                                    MATRIX_JOBS[job_id]['progress']=done
-                                    MATRIX_JOBS[job_id]['results']=results[-200:]
-                                    MATRIX_JOBS[job_id]['errors']=errors[-50:]
-                    with MATRIX_JOBS_LOCK:
-                        MATRIX_JOBS[job_id].update({'status':'done','progress':total,'results':results,'errors':errors,'finished':time.time()})
+                            try:
+                                bal=state.bot.get('initial_balance',1000000.0)
+                                if mode=='INDEX': one=backtest_strategy(candles,stg,sl,tp,bal,qty=1,trade_type=trade_type); one.update({'underlying':under,'mode':'INDEX','timeframe':tf,'lot_multiplier':1})
+                                else: one=_option_backtest(stg,under,mode,days,sl,tp,bal,state.angel,tf,1,trade_type,shared,base_override=candles)
+                                if not one.get('ok'): raise RuntimeError(one.get('error','failed'))
+                                for lm in lots:
+                                    r=_scale_research_result(one,lm); r.update({'underlying':under,'mode':mode,'timeframe':tf,'lot_multiplier':lm})
+                                    state._store_research('MATRIX',r,days,sl,tp,lm)
+                                    results.append({k:r.get(k) for k in ('strategy','underlying','mode','timeframe','trade_type','lot_multiplier','trades','win_rate','net_pnl','profit_factor','max_drawdown','rr_ratio')})
+                                    done+=1
+                                    with MATRIX_JOBS_LOCK:
+                                        elapsed=max(time.time()-started,.001); rate=done/elapsed
+                                        MATRIX_JOBS[job_id].update({'progress':done,'results':results[-200:],'errors':errors[-50:],'elapsed':round(elapsed,1),'eta':round(max(total-done,0)/rate,1)})
+                            except Exception as e:
+                                errors.append(f'{stg} {tf/60:g}m: {e}'); done+=len(lots)
+                                with MATRIX_JOBS_LOCK: MATRIX_JOBS[job_id].update({'progress':done,'results':results[-200:],'errors':errors[-50:]})
+                    with MATRIX_JOBS_LOCK: MATRIX_JOBS[job_id].update({'status':'done','progress':total,'results':results,'errors':errors,'finished':time.time(),'elapsed':round(time.time()-started,1),'eta':0})
                 except Exception as e:
-                    with MATRIX_JOBS_LOCK:
-                        MATRIX_JOBS[job_id].update({'status':'failed','error':str(e),'results':results,'errors':errors,'finished':time.time()})
+                    with MATRIX_JOBS_LOCK: MATRIX_JOBS[job_id].update({'status':'failed','error':str(e),'results':results,'errors':errors,'finished':time.time()})
             threading.Thread(target=run_matrix,daemon=True,name='research-matrix').start()
             return self._send_json({'ok':True,'async':True,'job_id':job_id,'status':'running','total':len(tfs)*len(STRATEGIES)*len(lots),'days':days,'underlying':under,'mode':mode,'trade_type':trade_type,'starting_balance':state.bot.get('initial_balance',1000000.0),'retention_days':30,'note':'Matrix runs in the background to avoid HTTP/Render timeout. Research is paper-only; no Angel One orders are sent.'})
         if parsed.path=='/api/research/matrix_status':
