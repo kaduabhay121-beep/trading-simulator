@@ -335,9 +335,9 @@ canvas { width: 100% !important; height: 100% !important; display: block; }
       <div class="bot-card">
         <div class="bot-card-title">Risk & limits</div>
         <div class="bot-risk-grid">
-          <label>Qty<input id="botQty" type="number" min="1" value="1" class="bot-input" oninput="updateBotRiskPreview()"></label><label>Risk / trade %<input id="botRiskTrade" type="number" step="0.1" min="0.1" value="1" class="bot-input" oninput="updateBotRiskPreview()"></label><label>Stop %<input id="botSL" type="number" step="0.1" min="0.1" value="0.6" class="bot-input" oninput="updateBotRiskPreview()"></label><label>Target %<input id="botTP" type="number" step="0.1" min="0.1" value="1.2" class="bot-input" oninput="updateBotRiskPreview()"></label>
+          <label>Qty<input id="botQty" type="number" min="1" value="1" class="bot-input" onchange="saveBotConfig()" onblur="saveBotConfig()"></label><label>Risk / trade %<input id="botRiskTrade" type="number" step="0.1" min="0.1" value="1" class="bot-input" onchange="saveBotConfig()" onblur="saveBotConfig()"></label><label>Stop %<input id="botSL" type="number" step="0.1" min="0.1" value="0.6" class="bot-input" onchange="saveBotConfig()" onblur="saveBotConfig()"></label><label>Target %<input id="botTP" type="number" step="0.1" min="0.1" value="1.2" class="bot-input" onchange="saveBotConfig()" onblur="saveBotConfig()"></label>
         </div>
-        <div class="bot-row2"><label style="font-size:8px;color:#64748b">Daily loss %<input id="botDailyLoss" type="number" step="0.1" min="0.1" value="2" class="bot-input" oninput="updateBotRiskPreview()"></label><label style="font-size:8px;color:#64748b">Max trades/day<input id="botMaxTrades" type="number" min="1" value="5" class="bot-input" oninput="updateBotRiskPreview()"></label></div><div class="bot-row2" style="margin-top:6px"><div class="bot-mini">Risk : Reward <b id="botRR">1 : 2.00</b></div><div class="bot-mini">Paper capital <b>₹10,00,000</b></div></div><button class="bot-small-btn bot-test" style="width:100%;margin-top:6px" onclick="saveBotConfig(true)">💾 SAVE RISK & LIMITS</button><div id="botConfigSaved" class="bot-reason" style="padding:4px 0">Edit the fields above, then save.</div>
+        <div class="bot-row2"><label style="font-size:8px;color:#64748b">Daily loss %<input id="botDailyLoss" type="number" step="0.1" min="0.1" value="2" class="bot-input" onchange="saveBotConfig()" onblur="saveBotConfig()"></label><label style="font-size:8px;color:#64748b">Max trades/day<input id="botMaxTrades" type="number" min="1" value="5" class="bot-input" onchange="saveBotConfig()" onblur="saveBotConfig()"></label></div><div class="bot-row2" style="margin-top:6px"><div class="bot-mini">Risk : Reward <b id="botRR">1 : 2.00</b></div><div class="bot-mini">Paper capital <b>₹10,00,000</b></div></div>
       </div>
 
       <div class="bot-actions"><button class="bot-test" onclick="testBotSignal()">TEST SIGNAL</button><button class="bot-start" onclick="botControl('START')">START</button><button class="bot-stop" onclick="botControl('STOP')">STOP</button></div>
@@ -350,7 +350,7 @@ canvas { width: 100% !important; height: 100% !important; display: block; }
         <button class="bot-small-btn bot-test" style="width:100%;margin-top:6px" onclick="compareBotStrategies()">QUICK VALIDATE ALL 6</button>
         <div class="bot-card-title" style="margin-top:10px">Full validation matrix</div>
         <div class="bot-row2"><select id="matrixTradeType" class="bot-select"><option value="INTRADAY">Intraday</option><option value="BTST">BTST</option></select><input id="matrixLots" class="bot-input" value="1,2,5,10" title="Lot multipliers, comma separated" placeholder="Lots: 1,2,5,10"></div>
-        <div class="bot-row2"><input id="matrixTf" class="bot-input" value="60,180,300,600,900,1800,3600" title="Timeframes in seconds" placeholder="TF: 60,180,300,600,900,1800,3600"><div class="bot-row2"><button class="bot-small-btn bot-test" style="width:100%" onclick="runResearchMatrix()">VALIDATE ALL × ALL TF</button><button id="matrixCancelBtn" class="bot-small-btn" style="width:100%" onclick="cancelResearchMatrix()" disabled>CANCEL</button></div></div>
+        <div class="bot-row2"><input id="matrixTf" class="bot-input" value="60,180,300,600,900,1800,3600" title="Timeframes in seconds" placeholder="TF: 60,180,300,600,900,1800,3600"><button class="bot-small-btn bot-test" style="width:100%" onclick="runResearchMatrix()">VALIDATE ALL × ALL TF</button></div>
         <div id="matrixResult" class="bot-reason">Fast matrix: each historical dataset is fetched once, strategies are reused locally, and lot sizes are scaled without rerunning signals.</div><div id="matrixTable"></div>
         <button class="bot-small-btn bot-test" style="width:100%;margin-top:6px" onclick="compareBotStrategies()">COMPARE ALL STRATEGIES</button>
         <div id="btCompare" style="margin-top:7px"></div>
@@ -1973,23 +1973,11 @@ async function botControl(action) {
   try{ const r=await fetch('/api/bot/control',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action})}); const d=await r.json(); if(!r.ok||!d.ok) throw new Error(d.error||'Bot control failed'); updateBotUI(d.bot); }
   catch(e){ console.error(e); alert(e.message||e); }
 }
-async function saveBotConfig(showMessage=false) {
+async function saveBotConfig() {
   try{
     const payload={action:'CONFIG',strategy:document.getElementById('botStrategy').value,underlying:document.getElementById('botUnderlying').value,instrument_mode:document.getElementById('botMode').value,qty:+document.getElementById('botQty').value,risk_per_trade:+document.getElementById('botRiskTrade').value,stop_loss_pct:+document.getElementById('botSL').value,target_pct:+document.getElementById('botTP').value,max_daily_loss:+document.getElementById('botDailyLoss').value,max_trades_per_day:+document.getElementById('botMaxTrades').value};
-    const r=await fetch('/api/bot/control',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)}); const d=await r.json(); if(!r.ok||!d.ok)throw new Error(d.error||'Config save failed'); if(d.bot) updateBotUI(d.bot);
-    const msg=document.getElementById('botConfigSaved'); if(msg)msg.innerText=showMessage?'✓ Risk & limits saved.':'Edit the fields above, then save.';
-    return d.bot;
-  }catch(e){const msg=document.getElementById('botConfigSaved');if(msg)msg.innerText='⚠ '+(e.message||'Save failed');console.error(e);return null}
-}
-function updateBotRiskPreview(){
-  const sl=Number(document.getElementById('botSL')?.value||0),tp=Number(document.getElementById('botTP')?.value||0);
-  const rr=document.getElementById('botRR'); if(rr) rr.innerText='1 : '+(tp/Math.max(sl,0.1)).toFixed(2);
-  const msg=document.getElementById('botConfigSaved'); if(msg)msg.innerText='Unsaved changes — tap SAVE RISK & LIMITS.';
-}
-async function cancelResearchMatrix(){
-  const job=window.activeMatrixJob; if(!job)return;
-  try{const r=await fetch('/api/research/matrix_cancel',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({job_id:job})});const d=await r.json();if(!r.ok||!d.ok)throw new Error(d.error||'Cancel failed');const out=document.getElementById('matrixResult');if(out)out.innerText='Cancelling research matrix…';}
-  catch(e){const out=document.getElementById('matrixResult');if(out)out.innerText=e.message||'Cancel failed';}
+    const r=await fetch('/api/bot/control',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)}); const d=await r.json(); if(d.bot) updateBotUI(d.bot);
+  }catch(e){console.error(e)}
 }
 async function testBotSignal(){ try{await saveBotConfig();const r=await fetch('/api/bot/test');const d=await r.json();if(!r.ok||!d.ok)throw new Error(d.error||'Signal test failed');updateBotUI(d.bot);}catch(e){alert(e.message||e)} }
 function money(v){return '₹'+Number(v||0).toLocaleString('en-IN',{maximumFractionDigits:0});}
@@ -2039,7 +2027,7 @@ async function runResearchMatrix(){
     let d; try{d=await r.json()}catch(_){throw new Error(`Matrix server returned HTTP ${r.status}`)}
     if(!r.ok||!d.ok)throw new Error(d.error||`Matrix failed (HTTP ${r.status})`);
     if(!d.async){ return renderMatrixResults(d,out,table); }
-    const job=d.job_id,total=d.total||1; window.activeMatrixJob=job; const cb=document.getElementById('matrixCancelBtn'); if(cb)cb.disabled=false;
+    const job=d.job_id,total=d.total||1;
     let finished=false;
     while(!finished){
       await new Promise(resolve=>setTimeout(resolve,900));
@@ -2047,11 +2035,10 @@ async function runResearchMatrix(){
       let sd; try{sd=await sr.json()}catch(_){throw new Error(`Matrix status server returned HTTP ${sr.status}`)}
       if(!sr.ok||!sd.ok)throw new Error(sd.error||'Matrix status failed');
       if(out)out.innerText=`Validating… ${sd.progress||0}/${total} (${sd.percent||0}%) · ${sd.results?.length||0} completed${sd.eta ? ` · ETA ${sd.eta}s` : ''}`;
-      if(sd.status==='done'||sd.status==='cancelled'){finished=true; renderMatrixResults({count:sd.results.length,results:sd.results,errors:sd.errors||[]},out,table);}
+      if(sd.status==='done'){finished=true; renderMatrixResults({count:sd.results.length,results:sd.results,errors:sd.errors||[]},out,table);}
       if(sd.status==='failed'){throw new Error(sd.error||'Matrix worker failed')}
     }
-    window.activeMatrixJob=null; const cb2=document.getElementById('matrixCancelBtn'); if(cb2)cb2.disabled=true;
-  }catch(e){window.activeMatrixJob=null; const cb=document.getElementById('matrixCancelBtn'); if(cb)cb.disabled=true; if(out)out.innerText=e.message||'Matrix unavailable'}
+  }catch(e){if(out)out.innerText=e.message||'Matrix unavailable'}
 }
 function renderMatrixResults(d,out,table){
   const names={EMA_CROSS:'EMA',RSI_MEAN_REVERT:'RSI',VWAP_REVERT:'VWAP',BREAKOUT:'Breakout',RBS:'RBS',SBR:'SBR'};

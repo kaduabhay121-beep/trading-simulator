@@ -1318,21 +1318,15 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     done=0
                     with MATRIX_JOBS_LOCK: MATRIX_JOBS[job_id]['progress']=0; MATRIX_JOBS[job_id]['prefetch']=True
                     for tf in tfs:
-                        with MATRIX_JOBS_LOCK:
-                            if MATRIX_JOBS.get(job_id,{}).get('cancel_requested'): break
                         candles=base_by_tf.get(tf)
                         if not candles: done += len(STRATEGIES)*len(lots); continue
                         for stg in STRATEGIES:
-                            with MATRIX_JOBS_LOCK:
-                                if MATRIX_JOBS.get(job_id,{}).get('cancel_requested'): break
                             try:
                                 bal=state.bot.get('initial_balance',1000000.0)
                                 if mode=='INDEX': one=backtest_strategy(candles,stg,sl,tp,bal,qty=1,trade_type=trade_type); one.update({'underlying':under,'mode':'INDEX','timeframe':tf,'lot_multiplier':1})
                                 else: one=_option_backtest(stg,under,mode,days,sl,tp,bal,state.angel,tf,1,trade_type,shared,base_override=candles)
                                 if not one.get('ok'): raise RuntimeError(one.get('error','failed'))
                                 for lm in lots:
-                                    with MATRIX_JOBS_LOCK:
-                                        if MATRIX_JOBS.get(job_id,{}).get('cancel_requested'): break
                                     r=_scale_research_result(one,lm); r.update({'underlying':under,'mode':mode,'timeframe':tf,'lot_multiplier':lm})
                                     state._store_research('MATRIX',r,days,sl,tp,lm)
                                     results.append({k:r.get(k) for k in ('strategy','underlying','mode','timeframe','trade_type','lot_multiplier','trades','win_rate','net_pnl','profit_factor','max_drawdown','rr_ratio')})
@@ -1343,9 +1337,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                             except Exception as e:
                                 errors.append(f'{stg} {tf/60:g}m: {e}'); done+=len(lots)
                                 with MATRIX_JOBS_LOCK: MATRIX_JOBS[job_id].update({'progress':done,'results':results[-200:],'errors':errors[-50:]})
-                    with MATRIX_JOBS_LOCK:
-                        cancelled=bool(MATRIX_JOBS[job_id].get('cancel_requested'))
-                        MATRIX_JOBS[job_id].update({'status':'cancelled' if cancelled else 'done','progress':done if cancelled else total,'results':results,'errors':errors,'finished':time.time(),'elapsed':round(time.time()-started,1),'eta':0})
+                    with MATRIX_JOBS_LOCK: MATRIX_JOBS[job_id].update({'status':'done','progress':total,'results':results,'errors':errors,'finished':time.time(),'elapsed':round(time.time()-started,1),'eta':0})
                 except Exception as e:
                     with MATRIX_JOBS_LOCK: MATRIX_JOBS[job_id].update({'status':'failed','error':str(e),'results':results,'errors':errors,'finished':time.time()})
             threading.Thread(target=run_matrix,daemon=True,name='research-matrix').start()
@@ -1489,15 +1481,6 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 before=len(state.positions); state._internal_exit(payload.get('id')); invalidate_market_cache();
                 self._send_json({'status':'ok' if len(state.positions)<before else 'not_found'}, 200 if len(state.positions)<before else 404); return
             if parsed.path=='/api/cancel_order': state.pending_orders=[x for x in state.pending_orders if x['id']!=payload.get('id')]; state._save_state(); invalidate_market_cache(); self._send_json({'status':'ok'}); return
-            if parsed.path=='/api/research/matrix_cancel':
-                job_id=str(payload.get('job_id',''))
-                with MATRIX_JOBS_LOCK:
-                    job=MATRIX_JOBS.get(job_id)
-                    if not job: return self._send_json({'ok':False,'error':'Matrix job not found or expired.'},404)
-                    if job.get('status') not in ('running','cancelling'): return self._send_json({'ok':True,'status':job.get('status'),'job_id':job_id})
-                    job['cancel_requested']=True
-                    job['status']='cancelling'
-                return self._send_json({'ok':True,'job_id':job_id,'status':'cancelling'})
             if parsed.path=='/api/reset': state.reset(); invalidate_market_cache(); self._send_json({'status':'ok'}); return
             if parsed.path=='/api/update_brackets':
                 for p in state.positions:

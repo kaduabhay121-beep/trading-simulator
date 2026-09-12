@@ -27,3 +27,9 @@
 - Option replay reuses prefetched underlying candles and cached option series.
 - Matrix status reports elapsed time and ETA.
 - Angel One is used for market data only; no real order placement is implemented.
+
+## Final QA / Risk controls
+- Risk & Limits are explicitly saved with **SAVE RISK & LIMITS** so live market polling cannot overwrite values while editing.
+- Research Matrix supports a **CANCEL** action for an active background validation job.
+- `/api/order` and `/api/exit` are simulator-only endpoints; no Angel One order-placement API is called.
+- Paper bot starts stopped after restart and remains paper-only.
