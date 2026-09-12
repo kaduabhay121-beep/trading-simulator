@@ -644,6 +644,39 @@ def _option_backtest(strategy, underlying, option_mode, days, sl_pct, tp_pct, st
     net=balance-starting_balance; gp=sum(max(0,t['pnl']) for t in trades); gl=sum(-min(0,t['pnl']) for t in trades); pf=gp/gl if gl else (999.0 if gp else 0.0)
     return {'ok':True,'mode':option_mode,'underlying':underlying,'strategy':strategy,'timeframe':timeframe,'trade_type':trade_type,'lot_multiplier':lot_multiplier,'candles':len(base),'trades':len(trades),'wins':int(wins),'losses':int(losses),'win_rate':round(wins/len(trades)*100,1) if trades else 0.0,'net_pnl':round(net,2),'return_pct':round(net/starting_balance*100,2),'profit_factor':round(pf,2),'max_drawdown':round(max_dd,2),'rr_ratio':_rr_ratio(sl_pct,tp_pct),'trades_detail':trades,'data_note':'Historical option candles; research only; no Angel One orders are sent.'}
 
+def build_strategy_markers(candles):
+    """Generate deterministic BUY/SELL markers for every strategy without trading."""
+    rows=_align_candles(candles)
+    if len(rows)<25: return []
+    closes=[float(c['close']) for c in rows]
+    ema9=calc_ema_series(closes,9); ema15=calc_ema_series(closes,15)
+    out=[]
+    for i in range(24,len(rows)):
+        c=rows[i]; last=closes[i]
+        # EMA cross
+        if ema9[i-1] <= ema15[i-1] and ema9[i] > ema15[i]: out.append({'time':c['time'],'price':last,'signal':'BUY','strategy':'EMA_CROSS','confidence':0.80})
+        elif ema9[i-1] >= ema15[i-1] and ema9[i] < ema15[i]: out.append({'time':c['time'],'price':last,'signal':'SELL','strategy':'EMA_CROSS','confidence':0.80})
+        # RSI mean reversion
+        rsi=calc_rsi(closes[:i+1],14)
+        if rsi<=30 and last>closes[i-1]: out.append({'time':c['time'],'price':last,'signal':'BUY','strategy':'RSI_MEAN_REVERT','confidence':0.75})
+        elif rsi>=70 and last<closes[i-1]: out.append({'time':c['time'],'price':last,'signal':'SELL','strategy':'RSI_MEAN_REVERT','confidence':0.75})
+        # VWAP mean reversion
+        vw=calc_vwap_series(rows[max(0,i-19):i+1])[-1]
+        if last < vw*0.998 and last>closes[i-1]: out.append({'time':c['time'],'price':last,'signal':'BUY','strategy':'VWAP_REVERT','confidence':0.72})
+        elif last > vw*1.002 and last<closes[i-1]: out.append({'time':c['time'],'price':last,'signal':'SELL','strategy':'VWAP_REVERT','confidence':0.72})
+        # 20-candle breakout
+        high20=max(float(x['high']) for x in rows[i-20:i]); low20=min(float(x['low']) for x in rows[i-20:i])
+        if last>high20: out.append({'time':c['time'],'price':last,'signal':'BUY','strategy':'BREAKOUT','confidence':0.82})
+        elif last<low20: out.append({'time':c['time'],'price':last,'signal':'SELL','strategy':'BREAKOUT','confidence':0.82})
+        # RBS / SBR: prior candle breaks a prior 20-bar level; current candle retests it.
+        if i>=22:
+            level=max(float(x['high']) for x in rows[i-21:i-1]); prev=float(rows[i-1]['close'])
+            if prev>level and float(c['low'])<=level*1.001 and last>level: out.append({'time':c['time'],'price':last,'signal':'BUY','strategy':'RBS','confidence':0.78,'level':level})
+            level=min(float(x['low']) for x in rows[i-21:i-1]);
+            if prev<level and float(c['high'])>=level*0.999 and last<level: out.append({'time':c['time'],'price':last,'signal':'SELL','strategy':'SBR','confidence':0.78,'level':level})
+    return out
+
+
 class SimulationState:
     def __init__(self):
         self.lock=threading.Lock(); self.nifty_spot=23765.0; self.sensex_spot=81200.0; self.prev_close=23897.70; self.sensex_prev_close=0.0
@@ -1049,38 +1082,6 @@ class SimulationState:
         return {'symbol':symbol,'ltp':round(float(ltp),2),'countdown':f'{countdown_seconds//60:02d}:{countdown_seconds%60:02d}','time':int(now)}
 
 
-def build_strategy_markers(candles):
-    """Generate deterministic BUY/SELL markers for every strategy without trading."""
-    rows=_align_candles(candles)
-    if len(rows)<25: return []
-    closes=[float(c['close']) for c in rows]
-    ema9=calc_ema_series(closes,9); ema15=calc_ema_series(closes,15)
-    out=[]
-    for i in range(24,len(rows)):
-        c=rows[i]; last=closes[i]
-        # EMA cross
-        if ema9[i-1] <= ema15[i-1] and ema9[i] > ema15[i]: out.append({'time':c['time'],'price':last,'signal':'BUY','strategy':'EMA_CROSS','confidence':0.80})
-        elif ema9[i-1] >= ema15[i-1] and ema9[i] < ema15[i]: out.append({'time':c['time'],'price':last,'signal':'SELL','strategy':'EMA_CROSS','confidence':0.80})
-        # RSI mean reversion
-        rsi=calc_rsi(closes[:i+1],14)
-        if rsi<=30 and last>closes[i-1]: out.append({'time':c['time'],'price':last,'signal':'BUY','strategy':'RSI_MEAN_REVERT','confidence':0.75})
-        elif rsi>=70 and last<closes[i-1]: out.append({'time':c['time'],'price':last,'signal':'SELL','strategy':'RSI_MEAN_REVERT','confidence':0.75})
-        # VWAP mean reversion
-        vw=calc_vwap_series(rows[max(0,i-19):i+1])[-1]
-        if last < vw*0.998 and last>closes[i-1]: out.append({'time':c['time'],'price':last,'signal':'BUY','strategy':'VWAP_REVERT','confidence':0.72})
-        elif last > vw*1.002 and last<closes[i-1]: out.append({'time':c['time'],'price':last,'signal':'SELL','strategy':'VWAP_REVERT','confidence':0.72})
-        # 20-candle breakout
-        high20=max(float(x['high']) for x in rows[i-20:i]); low20=min(float(x['low']) for x in rows[i-20:i])
-        if last>high20: out.append({'time':c['time'],'price':last,'signal':'BUY','strategy':'BREAKOUT','confidence':0.82})
-        elif last<low20: out.append({'time':c['time'],'price':last,'signal':'SELL','strategy':'BREAKOUT','confidence':0.82})
-        # RBS / SBR: prior candle breaks a prior 20-bar level; current candle retests it.
-        if i>=22:
-            level=max(float(x['high']) for x in rows[i-21:i-1]); prev=float(rows[i-1]['close'])
-            if prev>level and float(c['low'])<=level*1.001 and last>level: out.append({'time':c['time'],'price':last,'signal':'BUY','strategy':'RBS','confidence':0.78,'level':level})
-            level=min(float(x['low']) for x in rows[i-21:i-1]);
-            if prev<level and float(c['high'])>=level*0.999 and last<level: out.append({'time':c['time'],'price':last,'signal':'SELL','strategy':'SBR','confidence':0.78,'level':level})
-    return out
-
     def get_instrument_chart_data(self,symbol,timeframe='1m'):
         is_s='SENSEX' in symbol.upper(); spot=self.sensex_spot if is_s else self.nifty_spot; tf={'1m':60,'3m':180,'5m':300,'10m':600,'15m':900,'30m':1800,'1h':3600}.get(timeframe,60)
         is_option='_' in symbol
@@ -1197,7 +1198,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 try:
                     chart=state.get_instrument_chart_data(symbol,tf)
                 except Exception as e:
-                    chart=state.chart_cache.get((symbol,tf),{}).get('candles',[]) if isinstance(state.chart_cache.get((symbol,tf),{}),dict) else []
+                    chart=state.chart_cache.get((symbol,tf)) if isinstance(state.chart_cache.get((symbol,tf)),dict) else None
+                    if not chart: chart={'symbol':symbol,'display_title':symbol,'timeframe':tf,'ltp':state.sensex_spot if 'SENSEX' in symbol.upper() else state.nifty_spot,'candles':[],'countdown':'00:00','ema9':0,'ema15':0,'vwap':0,'vwap_series':[],'ema9_series':[],'ema15_series':[],'strategy_markers':[],'greeks':{'delta':1.0,'gamma':0,'theta':0,'vega':0,'iv':0}}
                     market_errors.append('Chart: '+str(e))
                 try:
                     chain=state.get_option_chain(symbol,expiry)

@@ -1576,7 +1576,7 @@ function drawChart() {
   const logicalH = canvas.height / (window.devicePixelRatio || 1);
   ctx.clearRect(0, 0, logicalW, logicalH);
 
-  const allCandles = marketCache.chart.candles;
+  const allCandles = Array.isArray(marketCache.chart.candles) ? marketCache.chart.candles : [];
   const total = allCandles.length;
   if (total === 0) return;
 
