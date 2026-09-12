@@ -1282,6 +1282,54 @@ class Handler(http.server.BaseHTTPRequestHandler):
                         if r.get('ok'):
                             state._store_research('MATRIX',r,days,sl,tp,lm); results.append({k:r.get(k) for k in ('strategy','underlying','mode','timeframe','trade_type','lot_multiplier','trades','win_rate','net_pnl','profit_factor','max_drawdown','rr_ratio')})
             return self._send_json({'ok':True,'days':days,'underlying':under,'mode':mode,'trade_type':trade_type,'starting_balance':state.bot.get('initial_balance',1000000.0),'results':results,'count':len(results),'retention_days':30,'note':'Research matrix is paper-only. GIFT Nifty/pre-open/CAS context is stored when available; historical external context is not fabricated.'})
+        if parsed.path=='/api/research/intelligence':
+            p=parse_qs(parsed.query)
+            try: limit=max(20,min(500,int(p.get('limit',['500'])[0])))
+            except Exception: limit=500
+            try:
+                db=state._db()
+                rows=db.execute("SELECT id,created_at,strategy,underlying,mode,timeframe,trade_type,lot_multiplier,result_json FROM research_runs WHERE kind='MATRIX' ORDER BY id DESC LIMIT ?",(limit,)).fetchall()
+                db.close()
+                groups={}
+                for row in rows:
+                    try: r=json.loads(row[8] or '{}')
+                    except Exception: r={}
+                    trades=int(r.get('trades') or 0); pnl=float(r.get('net_pnl') or 0); pf=float(r.get('profit_factor') or 0); dd=float(r.get('max_drawdown') or 0); wr=float(r.get('win_rate') or 0); ret=float(r.get('return_pct') or 0); avg_r=float(r.get('avg_r') or 0)
+                    if trades<=0: continue
+                    key=(row[2],row[3],row[4],int(row[5] or 0),row[6],int(row[7] or 1))
+                    g=groups.setdefault(key,{'strategy':row[2],'underlying':row[3],'mode':row[4],'timeframe':int(row[5] or 0),'trade_type':row[6],'lot_multiplier':int(row[7] or 1),'runs':0,'trades':0,'wins':0,'pnl':0.0,'dd':0.0,'pf_sum':0.0,'wr_sum':0.0,'avg_r_sum':0.0,'best_pnl':None,'worst_pnl':None})
+                    g['runs']+=1; g['trades']+=trades; g['wins']+=int(r.get('wins') or 0); g['pnl']+=pnl; g['dd']=max(g['dd'],dd); g['pf_sum']+=pf; g['wr_sum']+=wr; g['avg_r_sum']+=avg_r; g['best_pnl']=pnl if g['best_pnl'] is None else max(g['best_pnl'],pnl); g['worst_pnl']=pnl if g['worst_pnl'] is None else min(g['worst_pnl'],pnl)
+                ranked=[]
+                for g in groups.values():
+                    wr=g['wins']/g['trades']*100 if g['trades'] else 0; pf=g['pf_sum']/g['runs'] if g['runs'] else 0; avg_r=g['avg_r_sum']/g['runs'] if g['runs'] else 0
+                    consistency=max(0.0,min(1.0,1-(abs(g['best_pnl']-g['worst_pnl'])/(abs(g['pnl'])+abs(g['dd'])+1)))) if g['runs']>1 else 0.5
+                    sample=min(1.0,g['trades']/30.0)
+                    profit=max(0.0,min(1.0,(g['pnl']/(abs(g['dd'])+1)+1)/3))
+                    pf_score=max(0.0,min(1.0,pf/2.5))
+                    dd_score=max(0.0,1-min(1.0,g['dd']/(abs(g['pnl'])+abs(g['dd'])+1)))
+                    score=100*(0.30*profit+0.25*pf_score+0.20*(wr/100)+0.15*dd_score+0.10*sample*consistency)
+                    g.update({'win_rate':round(wr,1),'profit_factor':round(pf,2),'avg_r':round(avg_r,3),'score':round(score,1),'consistency':round(consistency*100,1),'sample_score':round(sample*100,1),'max_drawdown':round(g['dd'],2),'net_pnl':round(g['pnl'],2),'return_pct':round(g['pnl']/state.bot.get('initial_balance',1000000.0)*100,2)})
+                    ranked.append(g)
+                ranked.sort(key=lambda x:(x['score'],x['net_pnl'],x['profit_factor']),reverse=True)
+                consensus={}
+                for g in ranked:
+                    k=g['strategy']; c=consensus.setdefault(k,{'strategy':k,'tests':0,'positive':0,'trades':0,'pnl':0.0}); c['tests']+=g['runs']; c['positive']+=1 if g['net_pnl']>0 else 0; c['trades']+=g['trades']; c['pnl']+=g['net_pnl']
+                for c in consensus.values(): c['positive_rate']=round(c['positive']/c['tests']*100,1) if c['tests'] else 0; c['pnl']=round(c['pnl'],2)
+                return self._send_json({'ok':True,'count':len(ranked),'ranked':ranked[:100],'strategy_summary':sorted(consensus.values(),key=lambda x:(x['positive_rate'],x['pnl']),reverse=True),'note':'Ranking uses stored MATRIX research only; it is a research score, not a profitability guarantee. More trades and out-of-sample validation are preferred.'})
+            except Exception as e:
+                return self._send_json({'ok':False,'error':'Intelligence failed: '+str(e)},500)
+        if parsed.path=='/api/research/walkforward':
+            p=parse_qs(parsed.query); strategy=p.get('strategy',['EMA_CROSS'])[0]; under=p.get('underlying',[state.bot.get('underlying','NIFTY')])[0]; mode=p.get('mode',['INDEX'])[0]
+            try: days=max(5,min(60,int(p.get('days',['30'])[0]))); tf=max(60,min(3600,int(p.get('tf',['300'])[0]))); sl=max(0.1,min(20,float(p.get('sl',['0.6'])[0]))); tp=max(0.1,min(50,float(p.get('tp',['1.2'])[0]))); lots=max(1,min(20,int(p.get('lots',['1'])[0])))
+            except Exception: days,tf,sl,tp,lots=30,300,0.6,1.2,1
+            if not state.angel.enabled: return self._send_json({'ok':False,'error':'Walk-forward validation needs Angel One historical market data.'},400)
+            inst=state.angel.find_index(under); interval=TF_INTERVALS.get(tf,'FIVE_MINUTE'); candles=state.angel.candles(inst,interval,days) if inst else []
+            candles=_align_candles(candles)
+            if len(candles)<80: return self._send_json({'ok':False,'error':'Not enough candles for train/test split.'},400)
+            split=int(len(candles)*0.70); train=candles[:split]; test=candles[split:]
+            tr=backtest_strategy(train,strategy,sl,tp,state.bot.get('initial_balance',1000000.0),qty=lots,trade_type='INTRADAY')
+            te=backtest_strategy(test,strategy,sl,tp,state.bot.get('initial_balance',1000000.0),qty=lots,trade_type='INTRADAY')
+            return self._send_json({'ok':True,'strategy':strategy,'underlying':under,'mode':mode,'timeframe':tf,'lots':lots,'candles':len(candles),'split':split,'train':{k:tr.get(k) for k in ('candles','trades','wins','losses','win_rate','net_pnl','return_pct','profit_factor','max_drawdown','avg_r')},'test':{k:te.get(k) for k in ('candles','trades','wins','losses','win_rate','net_pnl','return_pct','profit_factor','max_drawdown','avg_r')},'note':'70% chronological train / 30% out-of-sample test. No future candles are used to create the test result.'})
         if parsed.path=='/api/research/history':
             p=parse_qs(parsed.query)
             try: limit=max(1,min(500,int(p.get('limit',['200'])[0])))
