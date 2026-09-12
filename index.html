@@ -132,6 +132,8 @@ canvas { width: 100% !important; height: 100% !important; display: block; }
   .bot-reason{padding:8px 2px;font-size:9px;color:#8a96a8;line-height:1.45;min-height:15px}.bot-safe{font-size:8px;color:#64748b;padding:8px 2px;border-top:1px solid #141b26}.bot-note{font-size:8px;line-height:1.45;color:#556070;padding:7px 2px}.bot-section-head{display:flex;justify-content:space-between;align-items:center}.bot-pill{font-size:7px;font-weight:900;padding:3px 6px;border-radius:999px;background:#111722;color:#7f8da3}.bot-grid4{display:grid;grid-template-columns:repeat(4,1fr);gap:5px}.bot-result{background:#090c12;border:1px solid #17202d;border-radius:7px;padding:7px;text-align:center}.bot-result span{display:block;font-size:7px;color:#64748b;margin-bottom:3px}.bot-result b{font-size:10px}.bot-table{width:100%;border-collapse:collapse;font-size:8px}.bot-table th,.bot-table td{padding:6px 4px;border-bottom:1px solid #17202d;text-align:right}.bot-table th:first-child,.bot-table td:first-child{text-align:left}.bot-good{color:#86efac}.bot-bad{color:#fca5a5}.bot-muted{color:#64748b}
   @media(max-width:430px){.bot-risk-grid{grid-template-columns:1fr 1fr}.bot-metrics{grid-template-columns:repeat(4,1fr)}.bot-signal{font-size:28px}}
 
+
+  .replay-log-btn{width:100%;margin-top:7px}.replay-log-overlay{position:fixed;inset:0;background:rgba(0,0,0,.82);z-index:99999;display:none;padding:0}.replay-log-overlay.open{display:flex}.replay-log-window{width:100%;height:100%;background:#080b10;color:#e5e7eb;display:flex;flex-direction:column;overflow:hidden}.replay-log-head{flex:0 0 auto;padding:12px;border-bottom:1px solid #1a2230;background:#0d1117;display:flex;align-items:center;justify-content:space-between;gap:8px}.replay-log-title{font-size:12px;font-weight:900;letter-spacing:.6px}.replay-log-sub{font-size:8px;color:#64748b;margin-top:3px}.replay-log-close{border:1px solid #273142;background:#111722;color:#e5e7eb;border-radius:7px;padding:7px 10px;font-weight:900}.replay-log-summary{flex:0 0 auto;padding:8px 10px;border-bottom:1px solid #141b26;display:grid;grid-template-columns:repeat(4,1fr);gap:5px}.replay-log-body{flex:1;overflow:auto;padding:8px 10px}.replay-log-table{width:100%;border-collapse:collapse;font-size:9px;min-width:700px}.replay-log-table th,.replay-log-table td{padding:7px 5px;border-bottom:1px solid #17202d;text-align:right;white-space:nowrap}.replay-log-table th:first-child,.replay-log-table td:first-child,.replay-log-table td:nth-child(3){text-align:left}.replay-log-empty{padding:25px;text-align:center;color:#64748b;font-size:10px}.replay-log-note{padding:8px 10px;border-top:1px solid #141b26;color:#64748b;font-size:8px}
 </style>
 </head>
 <body>
@@ -351,10 +353,23 @@ canvas { width: 100% !important; height: 100% !important; display: block; }
         <div class="bot-row2"><select id="replayDays" class="bot-select"><option value="2">2 days</option><option value="5" selected>5 days</option><option value="10">10 days</option><option value="20">20 days</option><option value="30">30 days</option></select><button class="bot-small-btn bot-test" onclick="runBotReplay()">REPLAY</button></div>
         <div id="replayResult" class="bot-reason">Replay runs the same strategy engine on historical candles. It never changes your live paper account.</div>
         <div id="replayMetrics" class="bot-grid4"></div>
+        <button id="replayLogBtn" class="bot-small-btn bot-test replay-log-btn" style="display:none" onclick="openReplayTradeLog()">VIEW TRADE LOG</button>
       </div>
 
       <div class="bot-card"><div class="bot-card-title">Engine</div><div class="bot-safe" style="border:0;padding:0">Fast WebSocket market feed · 500ms strategy evaluation · long-only paper execution · ATM/ITM/OTM options · automatic SL/target · daily risk lock · session reset · persistent journal · closed-market replay.</div></div>
       <div class="bot-note"><b>Paper-only:</b> Angel One is used for market data only. This bot never sends real order-placement requests.</div>
+    </div>
+  </div>
+
+  <div id="replayLogOverlay" class="replay-log-overlay" aria-hidden="true" onclick="if(event.target===this)closeReplayTradeLog()">
+    <div class="replay-log-window">
+      <div class="replay-log-head">
+        <div><div class="replay-log-title">REPLAY TRADE LOG</div><div id="replayLogSub" class="replay-log-sub">No replay loaded</div></div>
+        <button class="replay-log-close" onclick="closeReplayTradeLog()">CLOSE ✕</button>
+      </div>
+      <div id="replayLogSummary" class="replay-log-summary"></div>
+      <div id="replayLogBody" class="replay-log-body"><div class="replay-log-empty">Run a replay to view trades.</div></div>
+      <div class="replay-log-note">Research only · historical candles · no Angel One order placement · does not change the live paper account.</div>
     </div>
   </div>
 
@@ -1961,16 +1976,45 @@ async function compareBotStrategies(){
 }
 
 async function runBotReplay(){
-  const result=document.getElementById('replayResult'),metrics=document.getElementById('replayMetrics'); if(result)result.innerText='Loading historical candles…'; if(metrics)metrics.innerHTML='';
+  const result=document.getElementById('replayResult'),metrics=document.getElementById('replayMetrics'),logBtn=document.getElementById('replayLogBtn'); if(result)result.innerText='Loading historical candles…'; if(metrics)metrics.innerHTML=''; if(logBtn)logBtn.style.display='none'; window.lastReplayData=null;
   try{
     await saveBotConfig();
     const strategy=document.getElementById('botStrategy').value,days=document.getElementById('replayDays').value,sl=document.getElementById('botSL').value,tp=document.getElementById('botTP').value,under=document.getElementById('botUnderlying').value,mode=document.getElementById('botMode').value;
     const r=await fetch(`/api/bot/replay?strategy=${encodeURIComponent(strategy)}&days=${days}&sl=${sl}&tp=${tp}&underlying=${under}&mode=${encodeURIComponent(mode)}`,{cache:'no-store'});
     const d=await r.json(); if(!r.ok||!d.ok)throw new Error(d.error||'Replay failed');
+    window.lastReplayData=d;
     if(result)result.innerText=`${d.candles} underlying candles · ${d.trades} trades · ${d.data_note||'Replay complete.'}`;
     if(metrics)metrics.innerHTML=[['P&L',money(d.net_pnl)],['Win %',d.win_rate+'%'],['PF',d.profit_factor],['DD',money(d.max_drawdown)]].map(x=>`<div class="bot-result"><span>${x[0]}</span><b>${x[1]}</b></div>`).join('');
+    if(logBtn)logBtn.style.display=(Array.isArray(d.trades_detail)&&d.trades_detail.length)?'block':'none';
   }catch(e){if(result)result.innerText=e.message||'Replay unavailable'}
 }
+
+function replayLogTime(v){
+  if(v===undefined||v===null||v==='') return '—';
+  const n=Number(v); if(!Number.isFinite(n)) return String(v);
+  const ms=n<100000000000? n*1000 : n;
+  const d=new Date(ms); if(Number.isNaN(d.getTime())) return String(v);
+  return d.toLocaleString('en-IN',{day:'2-digit',month:'short',year:'numeric',hour:'2-digit',minute:'2-digit',hour12:false,timeZone:'Asia/Kolkata'});
+}
+function openReplayTradeLog(){
+  const d=window.lastReplayData||{},trades=Array.isArray(d.trades_detail)?d.trades_detail:[];
+  const overlay=document.getElementById('replayLogOverlay'),sub=document.getElementById('replayLogSub'),summary=document.getElementById('replayLogSummary'),body=document.getElementById('replayLogBody');
+  if(!overlay)return;
+  const names={EMA_CROSS:'EMA 9/15',RSI_MEAN_REVERT:'RSI',VWAP_REVERT:'VWAP',BREAKOUT:'Breakout'};
+  if(sub)sub.innerText=`${names[d.strategy]||d.strategy||'Strategy'} · ${d.underlying||''} · ${d.mode||'INDEX'} · ${d.trades||trades.length} trades`;
+  if(summary)summary.innerHTML=[['P&L',money(d.net_pnl)],['Win %',(d.win_rate??0)+'%'],['PF',d.profit_factor??'—'],['DD',money(d.max_drawdown??0)]].map(x=>`<div class="bot-result"><span>${x[0]}</span><b>${x[1]}</b></div>`).join('');
+  if(body){
+    if(!trades.length){body.innerHTML='<div class="replay-log-empty">No trade details were returned for this replay.</div>';}
+    else{
+      body.innerHTML='<table class="replay-log-table"><thead><tr><th>#</th><th>Symbol</th><th>Entry Time</th><th>Entry ₹</th><th>Exit Time</th><th>Exit ₹</th><th>Qty</th><th>Reason</th><th>P&L</th></tr></thead><tbody>'+trades.map((t,i)=>`<tr><td>${i+1}</td><td>${t.symbol||'INDEX'}</td><td>${replayLogTime(t.entry_time)}</td><td>₹${Number(t.entry||0).toFixed(2)}</td><td>${replayLogTime(t.exit_time)}</td><td>₹${Number(t.exit||0).toFixed(2)}</td><td>${t.qty??1}</td><td>${t.reason||'—'}</td><td class="${Number(t.pnl)>=0?'bot-good':'bot-bad'}">₹${Number(t.pnl||0).toFixed(2)}</td></tr>`).join('')+'</tbody></table>';
+    }
+  }
+  overlay.classList.add('open'); overlay.setAttribute('aria-hidden','false'); document.body.style.overflow='hidden';
+}
+function closeReplayTradeLog(){
+  const overlay=document.getElementById('replayLogOverlay'); if(overlay){overlay.classList.remove('open');overlay.setAttribute('aria-hidden','true');} document.body.style.overflow='';
+}
+document.addEventListener('keydown',e=>{if(e.key==='Escape')closeReplayTradeLog()});
 
 async function resetAccount() {
   await fetch('/api/reset', { method: 'POST' });
