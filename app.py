@@ -478,75 +478,107 @@ def strategy_signal(candles, strategy):
     elif strategy=='BREAKOUT':
         if last>high20: return 'BUY',0.82,{'breakout':high20}
         if last<low20: return 'SELL',0.82,{'breakout':low20}
+    elif strategy=='RBS':
+        # Resistance -> Support: prior resistance is broken, then retested and held.
+        level=max(float(c['high']) for c in candles[-21:-1])
+        prev=float(candles[-2]['close']); cur=candles[-1]
+        if prev>level and float(cur['low'])<=level*1.001 and float(cur['close'])>level:
+            return 'BUY',0.78,{'level':level,'setup':'RBS'}
+    elif strategy=='SBR':
+        # Support -> Resistance: prior support is broken, then retested and rejected.
+        level=min(float(c['low']) for c in candles[-21:-1])
+        prev=float(candles[-2]['close']); cur=candles[-1]
+        if prev<level and float(cur['high'])>=level*0.999 and float(cur['close'])<level:
+            return 'SELL',0.78,{'level':level,'setup':'SBR'}
     return 'HOLD',0.0,{'rsi':rsi,'ema9':ema9,'ema15':ema15,'vwap':vwap}
 
 
-def backtest_strategy(candles, strategy, sl_pct=0.6, tp_pct=1.2, starting_balance=100000.0):
-    """Fast deterministic long-only candle backtest. Signals are generated on a closed candle and entries occur next candle open."""
+STRATEGIES=('EMA_CROSS','RSI_MEAN_REVERT','VWAP_REVERT','BREAKOUT','RBS','SBR')
+TF_INTERVALS={60:'ONE_MINUTE',180:'THREE_MINUTE',300:'FIVE_MINUTE',600:'TEN_MINUTE',900:'FIFTEEN_MINUTE',1800:'THIRTY_MINUTE',3600:'ONE_HOUR'}
+
+def _rr_ratio(sl_pct,tp_pct):
+    try: return round(float(tp_pct)/max(float(sl_pct),0.0001),2)
+    except Exception: return 0.0
+
+def _session_date(ts):
+    return datetime.fromtimestamp(int(ts),IST).date()
+
+def _is_cas_window(ts):
+    dt=datetime.fromtimestamp(int(ts),IST)
+    return dt.weekday()<5 and dtime(15,15)<=dt.time()<dtime(15,35)
+
+def _is_preopen_window(ts):
+    dt=datetime.fromtimestamp(int(ts),IST)
+    return dt.weekday()<5 and dtime(9,0)<=dt.time()<dtime(9,15)
+
+
+def backtest_strategy(candles, strategy, sl_pct=0.6, tp_pct=1.2, starting_balance=1000000.0, qty=1, trade_type='INTRADAY'):
+    """Deterministic long-only candle backtest. Intraday never carries overnight; BTST does."""
+    candles=_align_candles(candles)
     if len(candles) < 40:
         return {'ok':False,'error':'Need at least 40 candles'}
-    balance=float(starting_balance); equity=balance; peak=balance; max_dd=0.0
-    trades=[]; position=None; wins=losses=0
+    balance=float(starting_balance); peak=balance; max_dd=0.0; trades=[]; position=None; wins=losses=0
     for i in range(30, len(candles)-1):
         c=candles[i]; nxt=candles[i+1]
         if position:
-            hit_sl=float(nxt['low']) <= position['sl']
-            hit_tp=float(nxt['high']) >= position['tp']
-            # Conservative rule when both are touched in one candle: assume SL first.
-            if hit_sl or hit_tp:
-                exit_price=position['sl'] if hit_sl else position['tp']
-                pnl=(exit_price-position['entry'])*position['qty']
-                balance += pnl; trades.append({'entry_time':position['time'],'exit_time':nxt['time'],'entry':round(position['entry'],2),'exit':round(exit_price,2),'qty':position['qty'],'pnl':round(pnl,2),'reason':'SL' if hit_sl else 'TARGET'})
-                wins += pnl>0; losses += pnl<=0; position=None
-                equity=balance; peak=max(peak,equity); max_dd=max(max_dd,peak-equity)
+            if _session_date(int(nxt['time']))!=position['session']:
+                if trade_type=='INTRADAY':
+                    exitc=c; exitp=float(exitc['close']); reason='EOD'
+                else:
+                    exitc=c; exitp=float(c['open']); reason='BTST/NEXT_OPEN'
+                pnl=(exitp-position['entry'])*position['qty']; balance+=pnl
+                trades.append({'entry_time':position['time'],'exit_time':exitc['time'],'entry':round(position['entry'],2),'exit':round(exitp,2),'qty':position['qty'],'pnl':round(pnl,2),'reason':reason,'rr':_rr_ratio(sl_pct,tp_pct),'session':trade_type})
+                wins += pnl>0; losses += pnl<=0; position=None; peak=max(peak,balance); max_dd=max(max_dd,peak-balance)
                 continue
-        signal,conf,meta=strategy_signal(candles[:i+1],strategy)
+            hit_sl=float(nxt['low']) <= position['sl']; hit_tp=float(nxt['high']) >= position['tp']
+            if hit_sl or hit_tp:
+                exit_price=position['sl'] if hit_sl else position['tp']; pnl=(exit_price-position['entry'])*position['qty']
+                balance += pnl; trades.append({'entry_time':position['time'],'exit_time':nxt['time'],'entry':round(position['entry'],2),'exit':round(exit_price,2),'qty':position['qty'],'pnl':round(pnl,2),'reason':'SL' if hit_sl else 'TARGET','rr':_rr_ratio(sl_pct,tp_pct),'session':trade_type})
+                wins += pnl>0; losses += pnl<=0; position=None; peak=max(peak,balance); max_dd=max(max_dd,peak-balance); continue
+        signal,conf,_=strategy_signal(candles[:i+1],strategy)
         if position is None and signal=='BUY' and conf>=0.70:
-            entry=float(nxt['open']); position={'time':nxt['time'],'entry':entry,'sl':entry*(1-sl_pct/100),'tp':entry*(1+tp_pct/100),'qty':1}
+            if trade_type=='INTRADAY' and _session_date(int(nxt['time']))!=_session_date(int(c['time'])): continue
+            if trade_type=='BTST' and datetime.fromtimestamp(int(c['time']),IST).time() < dtime(15,0): continue
+            entry=float(nxt['open']); position={'time':nxt['time'],'entry':entry,'sl':entry*(1-sl_pct/100),'tp':entry*(1+tp_pct/100),'qty':qty,'session':_session_date(int(nxt['time']))}
     if position:
-        exit_price=float(candles[-1]['close']); pnl=(exit_price-position['entry'])*position['qty']; balance += pnl
-        trades.append({'entry_time':position['time'],'exit_time':candles[-1]['time'],'entry':round(position['entry'],2),'exit':round(exit_price,2),'qty':1,'pnl':round(pnl,2),'reason':'EOD'})
-        wins += pnl>0; losses += pnl<=0; equity=balance; peak=max(peak,equity); max_dd=max(max_dd,peak-equity)
-    net=balance-starting_balance
-    gross_profit=sum(max(0,t['pnl']) for t in trades); gross_loss=sum(-min(0,t['pnl']) for t in trades)
+        exitc=candles[-1]; exit_price=float(exitc['close']); pnl=(exit_price-position['entry'])*position['qty']; balance+=pnl
+        trades.append({'entry_time':position['time'],'exit_time':exitc['time'],'entry':round(position['entry'],2),'exit':round(exit_price,2),'qty':position['qty'],'pnl':round(pnl,2),'reason':'EOD' if trade_type=='INTRADAY' else 'BTST/EOD','rr':_rr_ratio(sl_pct,tp_pct),'session':trade_type})
+        wins += pnl>0; losses += pnl<=0; peak=max(peak,balance); max_dd=max(max_dd,peak-balance)
+    net=balance-starting_balance; gross_profit=sum(max(0,t['pnl']) for t in trades); gross_loss=sum(-min(0,t['pnl']) for t in trades)
     pf=(gross_profit/gross_loss) if gross_loss else (999.0 if gross_profit else 0.0)
-    return {'ok':True,'strategy':strategy,'candles':len(candles),'trades':len(trades),'wins':int(wins),'losses':int(losses),'win_rate':round((wins/len(trades)*100),1) if trades else 0.0,'net_pnl':round(net,2),'return_pct':round(net/starting_balance*100,2),'profit_factor':round(pf,2),'max_drawdown':round(max_dd,2),'trades_detail':trades[-50:]}
+    avg_r=sum((t['pnl']/(max(sl_pct/100*max(t['entry']*t['qty'],1),0.01))) for t in trades)/len(trades) if trades else 0.0
+    return {'ok':True,'strategy':strategy,'trade_type':trade_type,'candles':len(candles),'trades':len(trades),'wins':int(wins),'losses':int(losses),'win_rate':round((wins/len(trades)*100),1) if trades else 0.0,'net_pnl':round(net,2),'return_pct':round(net/starting_balance*100,2),'profit_factor':round(pf,2),'max_drawdown':round(max_dd,2),'rr_ratio':_rr_ratio(sl_pct,tp_pct),'avg_r':round(avg_r,3),'qty':qty,'trades_detail':trades[-50:]}
 
 def _align_candles(rows):
     return sorted([dict(x) for x in (rows or [])], key=lambda x:int(x.get('time',0)))
 
-def _option_backtest(strategy, underlying, option_mode, days, sl_pct, tp_pct, starting_balance, angel):
-    inst=angel.find_index(underlying)
-    base=angel.candles(inst,'ONE_MINUTE',days) if inst else []
-    base=_align_candles(base)
+def _option_backtest(strategy, underlying, option_mode, days, sl_pct, tp_pct, starting_balance, angel, timeframe=60, lot_multiplier=1, trade_type='INTRADAY', shared_cache=None):
+    inst=angel.find_index(underlying); interval=TF_INTERVALS.get(int(timeframe),'ONE_MINUTE')
+    base=angel.candles(inst,interval,days) if inst else []; base=_align_candles(base)
     if len(base)<40: return {'ok':False,'error':'Not enough historical underlying candles for replay'}
-    # We use the real historical option contract selected at each signal.
-    balance=float(starting_balance); peak=balance; max_dd=0.0; trades=[]; position=None; wins=losses=0; cache={}
-    expiry=angel.option_instruments(underlying, get_available_expiries(underlying=='SENSEX')[0]) if False else None
+    balance=float(starting_balance); peak=balance; max_dd=0.0; trades=[]; position=None; wins=losses=0; cache=shared_cache if shared_cache is not None else {}
     def contract_for(spot, ts):
-        exps=[]
-        seg='BFO' if underlying=='SENSEX' else 'NFO'
+        exps=[]; seg='BFO' if underlying=='SENSEX' else 'NFO'; day=_session_date(ts)
         for x in angel.instruments:
             if str(x.get('exch_seg','')).upper()==seg and str(x.get('name','')).upper()==underlying and str(x.get('instrumenttype','')).upper()=='OPTIDX' and x.get('expiry'):
                 e=str(x.get('expiry')).upper()
                 try:
                     dt=datetime.strptime(e,'%d%b%Y') if len(e)==9 else datetime.strptime(e,'%d%b%y')
-                    if dt.timestamp()>=ts-86400: exps.append((dt,e))
+                    if dt.date()>=day: exps.append((dt,e))
                 except: pass
         if not exps: return None
-        exps.sort(); exp=exps[0][1]
-        step=100 if underlying=='SENSEX' else 50; atm=round(float(spot)/step)*step
+        exps.sort(); exp=exps[0][1]; step=100 if underlying=='SENSEX' else 50; atm=round(float(spot)/step)*step
         import re
         mm=re.match(r'^(ITM|OTM)_(\d+)$',str(option_mode))
         if mm:
             n=max(1,min(int(mm.group(2)),5)); atm += step*n if mm.group(1)=='OTM' else -step*n
         arr=angel.option_instruments(underlying,exp)
-        x=next((i for i in arr if abs(float(i.get('strike',0))/100-atm)<0.01 and str(i.get('symbol','')).upper().endswith('CE')),None)
-        return x
-    def option_series(inst):
-        tok=str(inst.get('token'));
-        if tok not in cache: cache[tok]=_align_candles(angel.candles(inst,'ONE_MINUTE',days))
-        return cache[tok]
+        candidates=[i for i in arr if str(i.get('symbol','')).upper().endswith('CE')]
+        return min(candidates,key=lambda i:abs(float(i.get('strike',0))/100-atm),default=None)
+    def option_series(inst2):
+        tok=str(inst2.get('token')); key=(tok,int(timeframe))
+        if key not in cache: cache[key]=_align_candles(angel.candles(inst2,interval,days))
+        return cache[key]
     def at_or_after(series, ts):
         lo,hi=0,len(series)-1; ans=None
         while lo<=hi:
@@ -555,36 +587,62 @@ def _option_backtest(strategy, underlying, option_mode, days, sl_pct, tp_pct, st
             else: lo=mid+1
         return ans
     for i in range(30,len(base)-1):
-        c=base[i]
+        c=base[i]; nxt=base[i+1]
         if position:
-            oc=at_or_after(position['series'],int(base[i+1]['time']))
-            if oc:
-                hit_sl=float(oc['low'])<=position['sl']; hit_tp=float(oc['high'])>=position['tp']
-                if hit_sl or hit_tp:
-                    exitp=position['sl'] if hit_sl else position['tp']; pnl=(exitp-position['entry'])*position['qty']; balance+=pnl
-                    trades.append({'entry_time':position['time'],'exit_time':oc['time'],'entry':round(position['entry'],2),'exit':round(exitp,2),'qty':1,'pnl':round(pnl,2),'reason':'SL' if hit_sl else 'TARGET','symbol':position['symbol']})
+            if _session_date(int(c['time']))!=position['session']:
+                if trade_type=='INTRADAY':
+                    prev=at_or_after(position['series'],int(position['eod_ts']))
+                    if not prev: prev=position['series'][-1] if position['series'] else None
+                    reason='EOD'; exitp=float(prev['close']) if prev else position['entry']; exit_ts=prev['time'] if prev else c['time']
+                else:
+                    prev=at_or_after(position['series'],int(c['time']))
+                    reason='BTST/NEXT_OPEN'; exitp=float(prev['open']) if prev else position['entry']; exit_ts=prev['time'] if prev else c['time']
+                pnl=(exitp-position['entry'])*position['qty']; balance+=pnl
+                trades.append({'signal_time':position['signal_time'],'entry_time':position['time'],'exit_time':exit_ts,'entry':round(position['entry'],2),'exit':round(exitp,2),'qty':position['qty'],'lots':lot_multiplier,'pnl':round(pnl,2),'reason':reason,'symbol':position['symbol'],'rr':_rr_ratio(sl_pct,tp_pct),'session':trade_type,'underlying_spot':position['spot'],'atm_strike':position['atm']})
+                wins += pnl>0; losses += pnl<=0; position=None; peak=max(peak,balance); max_dd=max(max_dd,peak-balance)
+                continue
+            elif int(c['time'])>=position['eod_ts'] and trade_type=='INTRADAY':
+                oc=at_or_after(position['series'],int(c['time'])) or (position['series'][-1] if position['series'] else None)
+                if oc:
+                    exitp=float(oc['close']); pnl=(exitp-position['entry'])*position['qty']; balance+=pnl
+                    trades.append({'signal_time':position['signal_time'],'entry_time':position['time'],'exit_time':oc['time'],'entry':round(position['entry'],2),'exit':round(exitp,2),'qty':position['qty'],'lots':lot_multiplier,'pnl':round(pnl,2),'reason':'EOD','symbol':position['symbol'],'rr':_rr_ratio(sl_pct,tp_pct),'session':'INTRADAY','underlying_spot':position['spot'],'atm_strike':position['atm']})
                     wins += pnl>0; losses += pnl<=0; position=None; peak=max(peak,balance); max_dd=max(max_dd,peak-balance); continue
+            if position:
+                oc=at_or_after(position['series'],int(nxt['time']))
+                if oc:
+                    hit_sl=float(oc['low'])<=position['sl']; hit_tp=float(oc['high'])>=position['tp']
+                    if hit_sl or hit_tp:
+                        exitp=position['sl'] if hit_sl else position['tp']; pnl=(exitp-position['entry'])*position['qty']; balance+=pnl
+                        trades.append({'signal_time':position['signal_time'],'entry_time':position['time'],'exit_time':oc['time'],'entry':round(position['entry'],2),'exit':round(exitp,2),'qty':position['qty'],'lots':lot_multiplier,'pnl':round(pnl,2),'reason':'SL' if hit_sl else 'TARGET','symbol':position['symbol'],'rr':_rr_ratio(sl_pct,tp_pct),'session':trade_type,'underlying_spot':position['spot'],'atm_strike':position['atm']})
+                        wins += pnl>0; losses += pnl<=0; position=None; peak=max(peak,balance); max_dd=max(max_dd,peak-balance); continue
         signal,conf,_=strategy_signal(base[:i+1],strategy)
         if position is None and signal=='BUY' and conf>=0.70:
+            if trade_type=='INTRADAY' and _session_date(int(nxt['time']))!=_session_date(int(c['time'])): continue
+            if trade_type=='BTST' and datetime.fromtimestamp(int(c['time']),IST).time() < dtime(15,0): continue
             inst2=contract_for(float(c['close']),int(c['time']));
             if not inst2: continue
-            series=option_series(inst2); oc=at_or_after(series,int(base[i+1]['time']))
+            series=option_series(inst2); oc=at_or_after(series,int(nxt['time']))
             if not oc: continue
             entry=float(oc['open']);
             if entry<=0: continue
-            position={'time':oc['time'],'entry':entry,'sl':entry*(1-sl_pct/100),'tp':entry*(1+tp_pct/100),'series':series,'symbol':str(inst2.get('symbol','')),'qty':1}
+            base_qty=max(1,int(lot_multiplier))*int(float(inst2.get('lotsize') or inst2.get('lot_size') or 1))
+            eod_dt=IST.localize(datetime.combine(_session_date(int(nxt['time'])),dtime(15,29)))
+            position={'signal_time':c['time'],'time':oc['time'],'entry':entry,'sl':entry*(1-sl_pct/100),'tp':entry*(1+tp_pct/100),'series':series,'symbol':str(inst2.get('symbol','')),'qty':base_qty,'session':_session_date(int(nxt['time'])),'eod_ts':int(eod_dt.timestamp()),'spot':float(c['close']),'atm':round(float(c['close'])/(100 if underlying=='SENSEX' else 50))*(100 if underlying=='SENSEX' else 50)}
     if position:
-        oc=position['series'][-1] if position['series'] else base[-1]; exitp=float(oc['close']); pnl=(exitp-position['entry']); balance+=pnl
-        trades.append({'entry_time':position['time'],'exit_time':oc['time'],'entry':round(position['entry'],2),'exit':round(exitp,2),'qty':1,'pnl':round(pnl,2),'reason':'EOD','symbol':position['symbol']}); wins += pnl>0; losses += pnl<=0
+        oc=position['series'][-1] if position['series'] else None
+        if oc:
+            exitp=float(oc['close']); pnl=(exitp-position['entry'])*position['qty']; balance+=pnl
+            trades.append({'signal_time':position['signal_time'],'entry_time':position['time'],'exit_time':oc['time'],'entry':round(position['entry'],2),'exit':round(exitp,2),'qty':position['qty'],'lots':lot_multiplier,'pnl':round(pnl,2),'reason':'BTST/EOD' if trade_type=='BTST' else 'EOD','symbol':position['symbol'],'rr':_rr_ratio(sl_pct,tp_pct),'session':trade_type,'underlying_spot':position['spot'],'atm_strike':position['atm']}); wins += pnl>0; losses += pnl<=0
+        peak=max(peak,balance); max_dd=max(max_dd,peak-balance)
     net=balance-starting_balance; gp=sum(max(0,t['pnl']) for t in trades); gl=sum(-min(0,t['pnl']) for t in trades); pf=gp/gl if gl else (999.0 if gp else 0.0)
-    return {'ok':True,'mode':option_mode,'underlying':underlying,'strategy':strategy,'candles':len(base),'trades':len(trades),'wins':int(wins),'losses':int(losses),'win_rate':round(wins/len(trades)*100,1) if trades else 0.0,'net_pnl':round(net,2),'return_pct':round(net/starting_balance*100,2),'profit_factor':round(pf,2),'max_drawdown':round(max_dd,2),'trades_detail':trades[-50:],'data_note':'Uses real historical option candles for contracts selected at each signal; no orders are sent.'}
+    return {'ok':True,'mode':option_mode,'underlying':underlying,'strategy':strategy,'timeframe':timeframe,'trade_type':trade_type,'lot_multiplier':lot_multiplier,'candles':len(base),'trades':len(trades),'wins':int(wins),'losses':int(losses),'win_rate':round(wins/len(trades)*100,1) if trades else 0.0,'net_pnl':round(net,2),'return_pct':round(net/starting_balance*100,2),'profit_factor':round(pf,2),'max_drawdown':round(max_dd,2),'rr_ratio':_rr_ratio(sl_pct,tp_pct),'trades_detail':trades[-50:],'data_note':'Historical option candles; research only; no Angel One orders are sent.'}
 
 class SimulationState:
     def __init__(self):
         self.lock=threading.Lock(); self.nifty_spot=23765.0; self.sensex_spot=81200.0; self.prev_close=23897.70; self.sensex_prev_close=0.0
-        self.wallet={'initial':100000.0,'balance':100000.0,'used_margin':0.0,'realized_pnl':0.0}
+        self.wallet={'initial':1000000.0,'balance':1000000.0,'used_margin':0.0,'realized_pnl':0.0}
         self.positions=[]; self.pending_orders=[]; self.orders=[]; self.closed_trades=[]; self.candles_1m=[]; self.order_counter=100
-        self.live_chain_cache={}; self.chart_cache={}; self.market_cache={}; self.market_cache_ts=0; self.angel=AngelOneData(); self.bot={'enabled':False,'strategy':'EMA_CROSS','underlying':'NIFTY','instrument_mode':'INDEX','qty':1,'risk_per_trade':1.0,'max_daily_loss':2.0,'stop_loss_pct':0.6,'target_pct':1.2,'last_signal':'HOLD','last_confidence':0,'last_reason':'Waiting for signal…','trades_today':0,'daily_pnl':0.0,'last_trade_ts':0,'last_eval_ts':0,'risk_lock':False,'risk_lock_reason':'','last_entry_price':0.0,'max_trades_per_day':5,'max_open_positions':1,'cooldown_sec':60,'trade_count_today':0,'session_date':datetime.now(IST).strftime('%Y-%m-%d'),'last_signal_change_ts':0,'strategy_stats':{k:{'trades':0,'wins':0,'loss':0,'pnl':0.0,'status':'UNVALIDATED'} for k in ['EMA_CROSS','RSI_MEAN_REVERT','VWAP_REVERT','BREAKOUT']},'initial_balance':100000.0}; self._load_state(); self._init_history(); self.bot['enabled']=False; self._running=True
+        self.live_chain_cache={}; self.chart_cache={}; self.market_cache={}; self.market_cache_ts=0; self.angel=AngelOneData(); self.bot={'enabled':False,'strategy':'EMA_CROSS','underlying':'NIFTY','instrument_mode':'INDEX','qty':1,'risk_per_trade':1.0,'max_daily_loss':2.0,'stop_loss_pct':0.6,'target_pct':1.2,'last_signal':'HOLD','last_confidence':0,'last_reason':'Waiting for signal…','trades_today':0,'daily_pnl':0.0,'last_trade_ts':0,'last_eval_ts':0,'risk_lock':False,'risk_lock_reason':'','last_entry_price':0.0,'max_trades_per_day':5,'max_open_positions':1,'cooldown_sec':60,'trade_count_today':0,'session_date':datetime.now(IST).strftime('%Y-%m-%d'),'last_signal_change_ts':0,'strategy_stats':{k:{'trades':0,'wins':0,'loss':0,'pnl':0.0,'status':'UNVALIDATED'} for k in STRATEGIES},'initial_balance':1000000.0}; self._load_state(); self._init_history(); self.bot['enabled']=False; self._running=True
         threading.Thread(target=self._tick_loop,daemon=True).start()
 
     DB_PATH=os.path.join(os.path.dirname(os.path.abspath(__file__)), 'simulator_state.db')
@@ -592,7 +650,27 @@ class SimulationState:
     def _db(self):
         db=sqlite3.connect(self.DB_PATH, timeout=5)
         db.execute("CREATE TABLE IF NOT EXISTS simulator_state (id INTEGER PRIMARY KEY CHECK(id=1), data TEXT NOT NULL)")
+        db.execute("CREATE TABLE IF NOT EXISTS research_runs (id INTEGER PRIMARY KEY AUTOINCREMENT, created_at INTEGER NOT NULL, kind TEXT, strategy TEXT, underlying TEXT, mode TEXT, timeframe INTEGER, trade_type TEXT, days INTEGER, sl REAL, tp REAL, rr REAL, lot_multiplier INTEGER, result_json TEXT)")
+        db.execute("CREATE TABLE IF NOT EXISTS research_trades (id INTEGER PRIMARY KEY AUTOINCREMENT, run_id INTEGER, created_at INTEGER NOT NULL, trade_json TEXT NOT NULL)")
+        db.execute("CREATE TABLE IF NOT EXISTS paper_trade_journal (id INTEGER PRIMARY KEY AUTOINCREMENT, created_at INTEGER NOT NULL, trade_json TEXT NOT NULL)")
+        cutoff=int(time.time())-30*86400
+        for table in ('research_runs','research_trades','paper_trade_journal'):
+            db.execute(f"DELETE FROM {table} WHERE created_at < ?",(cutoff,))
         return db
+
+    def _store_research(self, kind, result, days=0, sl=0.6, tp=1.2, lot_multiplier=1):
+        try:
+            db=self._db(); now=int(time.time());
+            cur=db.execute("INSERT INTO research_runs(created_at,kind,strategy,underlying,mode,timeframe,trade_type,days,sl,tp,rr,lot_multiplier,result_json) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",(now,kind,result.get('strategy'),result.get('underlying'),result.get('mode'),result.get('timeframe'),result.get('trade_type','INTRADAY'),days,sl,tp,_rr_ratio(sl,tp),lot_multiplier,json.dumps(result,separators=(',',':'))))
+            rid=cur.lastrowid
+            for t in result.get('trades_detail',[]): db.execute("INSERT INTO research_trades(run_id,created_at,trade_json) VALUES(?,?,?)",(rid,now,json.dumps(t,separators=(',',':'))))
+            db.commit(); db.close(); return rid
+        except Exception: return None
+
+    def _journal_paper_trade(self, trade):
+        try:
+            db=self._db(); db.execute("INSERT INTO paper_trade_journal(created_at,trade_json) VALUES(?,?)",(int(time.time()),json.dumps(trade,separators=(',',':')))); db.commit(); db.close()
+        except Exception: pass
 
     def _save_state(self):
         try:
@@ -609,6 +687,12 @@ class SimulationState:
             saved=d.get('bot',{})
             for k in ('strategy','underlying','instrument_mode','qty','risk_per_trade','max_daily_loss','stop_loss_pct','target_pct','trades_today','daily_pnl','last_trade_ts','risk_lock','risk_lock_reason','last_entry_price','max_trades_per_day','max_open_positions','cooldown_sec','trade_count_today','session_date'):
                 if k in saved: self.bot[k]=saved[k]
+            # Capital migration: v2.x used ₹1,00,000. New paper wallet is ₹10,00,000.
+            if float(self.wallet.get('initial',1000000.0) or 0) < 1000000.0:
+                pnl=float(self.wallet.get('realized_pnl',0.0) or 0.0)
+                self.wallet['initial']=1000000.0
+                self.wallet['balance']=round(1000000.0 + pnl,2)
+            self.bot['initial_balance']=1000000.0
             self.bot['enabled']=False
         except Exception:
             pass
@@ -800,7 +884,7 @@ class SimulationState:
         qty=max(1,int(b['qty']))
         sl=round(ltp*(1-float(b['stop_loss_pct'])/100),2); target=round(ltp*(1+float(b['target_pct'])/100),2)
         risk_per_unit=max(ltp-sl,0.01)
-        risk_budget=max(float(b.get('risk_per_trade',1.0))/100.0*float(self.wallet.get('initial',100000)), risk_per_unit)
+        risk_budget=max(float(b.get('risk_per_trade',1.0))/100.0*float(self.wallet.get('initial',1000000)), risk_per_unit)
         risk_qty=max(1,int(risk_budget/risk_per_unit))
         qty=min(qty,risk_qty)
         cost=round(ltp*qty,2)
@@ -913,7 +997,7 @@ class SimulationState:
         for i,p in enumerate(self.positions):
             if p['id']==pos_id:
                 p=self.positions.pop(i); cost=round(p['buy_price']*p['qty'],2); pnl=p['pnl']; self.wallet['used_margin']=max(0,round(self.wallet['used_margin']-cost,2)); self.wallet['balance']=round(self.wallet['balance']+cost+pnl,2); self.wallet['realized_pnl']=round(self.wallet['realized_pnl']+pnl,2); self.bot['daily_pnl']=round(self.bot.get('daily_pnl',0)+pnl,2) if p.get('bot_tag') else self.bot.get('daily_pnl',0)
-                self.closed_trades.insert(0,{'id':p['id'],'symbol':p['symbol'],'action':p['action'],'qty':p['qty'],'buy_price':p['buy_price'],'exit_price':p['ltp'],'pnl':pnl,'reason':reason,'time':datetime.now(IST).strftime('%H:%M:%S'),'bot_tag':bool(p.get('bot_tag'))}); self._save_state(); return
+                trade={'id':p['id'],'symbol':p['symbol'],'action':p['action'],'qty':p['qty'],'buy_price':p['buy_price'],'exit_price':p['ltp'],'pnl':pnl,'reason':reason,'time':datetime.now(IST).isoformat(),'bot_tag':bool(p.get('bot_tag'))}; self.closed_trades.insert(0,trade); self._journal_paper_trade(trade); self._save_state(); return
 
     def _resample(self,candles,tf):
         if tf<=60:return candles
@@ -1045,7 +1129,7 @@ class SimulationState:
         return {'expiries':exps,'selected_expiry':selected,'chain':rows}
 
     def reset(self):
-        self.wallet={'initial':100000.0,'balance':100000.0,'used_margin':0.0,'realized_pnl':0.0}; self.positions=[]; self.pending_orders=[]; self.orders=[]; self.closed_trades=[]; self.bot['daily_pnl']=0.0; self.bot['trades_today']=0; self.bot['risk_lock']=False; self.bot['risk_lock_reason']=''; self.bot['last_entry_price']=0.0; self.bot['last_trade_ts']=0; self.bot['last_signal']='HOLD'; self.bot['last_confidence']=0; self.bot['last_reason']='Reset'; self._save_state()
+        self.wallet={'initial':1000000.0,'balance':1000000.0,'used_margin':0.0,'realized_pnl':0.0}; self.positions=[]; self.pending_orders=[]; self.orders=[]; self.closed_trades=[]; self.bot['daily_pnl']=0.0; self.bot['trades_today']=0; self.bot['risk_lock']=False; self.bot['risk_lock_reason']=''; self.bot['last_entry_price']=0.0; self.bot['last_trade_ts']=0; self.bot['last_signal']='HOLD'; self.bot['last_confidence']=0; self.bot['last_reason']='Reset'; self._save_state()
 
 state=SimulationState()
 
@@ -1085,12 +1169,16 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 days=max(1,min(30,int(p.get('days',['5'])[0]))); sl=max(0.1,min(20,float(p.get('sl',[state.bot.get('stop_loss_pct',0.6)])[0]))); tp=max(0.1,min(50,float(p.get('tp',[state.bot.get('target_pct',1.2)])[0])))
             except Exception: days,sl,tp=5,0.6,1.2
             strategy=p.get('strategy',[state.bot.get('strategy','EMA_CROSS')])[0]; under=p.get('underlying',[state.bot.get('underlying','NIFTY')])[0]; mode=p.get('mode',[state.bot.get('instrument_mode','ATM_OPTIONS')])[0]
+            try: timeframe=max(60,min(3600,int(p.get('tf',['60'])[0]))); lot_multiplier=max(1,min(20,int(p.get('lots',['1'])[0])))
+            except Exception: timeframe,lot_multiplier=60,1
+            trade_type=p.get('trade_type',['INTRADAY'])[0].upper(); trade_type='BTST' if trade_type=='BTST' else 'INTRADAY'
             if not state.angel.enabled: return self._send_json({'ok':False,'error':'Replay needs Angel One historical market data. Enable ANGELONE_ENABLED.'},400)
             if mode=='INDEX':
-                inst=state.angel.find_index(under); candles=state.angel.candles(inst,'ONE_MINUTE',days) if inst else []
-                r=backtest_strategy(candles,strategy,sl,tp,state.bot.get('initial_balance',100000.0)); r['replay']=True; r['data_note']='Historical underlying candles; simulated long-only index execution.'
+                interval=TF_INTERVALS.get(timeframe,'ONE_MINUTE'); inst=state.angel.find_index(under); candles=state.angel.candles(inst,interval,days) if inst else []
+                r=backtest_strategy(candles,strategy,sl,tp,state.bot.get('initial_balance',1000000.0),qty=lot_multiplier,trade_type=trade_type); r['replay']=True; r['underlying']=under; r['mode']='INDEX'; r['data_note']='Historical underlying candles; paper research only.'
             else:
-                r=_option_backtest(strategy,under,mode,days,sl,tp,state.bot.get('initial_balance',100000.0),state.angel); r['replay']=True
+                r=_option_backtest(strategy,under,mode,days,sl,tp,state.bot.get('initial_balance',1000000.0),state.angel,timeframe,lot_multiplier,trade_type); r['replay']=True
+            if r.get('ok'): state._store_research('REPLAY',r,days,sl,tp,lot_multiplier)
             return self._send_json(r,200 if r.get('ok') else 400)
         if parsed.path=='/api/backtest':
             p=parse_qs(parsed.query); strategy=p.get('strategy',[state.bot.get('strategy','EMA_CROSS')])[0]
@@ -1100,7 +1188,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if state.angel.enabled:
                 inst=state.angel.find_index(state.bot.get('underlying','NIFTY')); fresh=state.angel.candles(inst,'ONE_MINUTE',days) if inst else []
                 if fresh: candles=fresh
-            result=backtest_strategy(candles,strategy,sl,tp,state.bot.get('initial_balance',100000.0))
+            result=backtest_strategy(candles,strategy,sl,tp,state.bot.get('initial_balance',1000000.0))
             return self._send_json(result,200 if result.get('ok') else 400)
         if parsed.path=='/api/bot/compare':
             p=parse_qs(parsed.query)
@@ -1112,13 +1200,50 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 inst=state.angel.find_index(under); fresh=state.angel.candles(inst,'ONE_MINUTE',days) if inst else []
                 if fresh: candles=fresh
             results=[]
-            for stg in ('EMA_CROSS','RSI_MEAN_REVERT','VWAP_REVERT','BREAKOUT'):
-                r=backtest_strategy(candles,stg,sl,tp,state.bot.get('initial_balance',100000.0))
+            for stg in STRATEGIES:
+                r=backtest_strategy(candles,stg,sl,tp,state.bot.get('initial_balance',1000000.0))
                 if r.get('ok'):
                     state.bot['strategy_stats'][stg]={'trades':r.get('trades',0),'wins':r.get('wins',0),'loss':r.get('losses',0),'pnl':r.get('net_pnl',0),'status':'TESTED'}
                 results.append({k:r.get(k) for k in ('strategy','trades','wins','losses','win_rate','net_pnl','return_pct','profit_factor','max_drawdown')})
             state._save_state()
             return self._send_json({'ok':True,'days':days,'underlying':under,'results':results})
+        if parsed.path=='/api/research/matrix':
+            p=parse_qs(parsed.query)
+            try: days=max(1,min(30,int(p.get('days',['5'])[0]))); sl=max(0.1,min(20,float(p.get('sl',['0.6'])[0]))); tp=max(0.1,min(50,float(p.get('tp',['1.2'])[0])))
+            except Exception: days,sl,tp=5,0.6,1.2
+            under=p.get('underlying',[state.bot.get('underlying','NIFTY')])[0]; mode=p.get('mode',[state.bot.get('instrument_mode','ATM_OPTIONS')])[0]; trade_type=p.get('trade_type',['INTRADAY'])[0].upper(); trade_type='BTST' if trade_type=='BTST' else 'INTRADAY'
+            tfs=[int(x) for x in p.get('tfs',['60,180,300,600,900,1800,3600'])[0].split(',') if int(x) in TF_INTERVALS]
+            lots=[max(1,min(20,int(x))) for x in p.get('lots',['1,2,5,10'])[0].split(',')]
+            if not state.angel.enabled: return self._send_json({'ok':False,'error':'Research matrix needs Angel One historical market data.'},400)
+            results=[]; shared={}
+            for tf in tfs:
+                interval=TF_INTERVALS[tf]; inst=state.angel.find_index(under); candles=state.angel.candles(inst,interval,days) if inst else []
+                if not candles: continue
+                for stg in STRATEGIES:
+                    for lm in lots:
+                        if mode=='INDEX': r=backtest_strategy(candles,stg,sl,tp,state.bot.get('initial_balance',1000000.0),qty=lm,trade_type=trade_type); r.update({'underlying':under,'mode':'INDEX','timeframe':tf,'lot_multiplier':lm})
+                        else: r=_option_backtest(stg,under,mode,days,sl,tp,state.bot.get('initial_balance',1000000.0),state.angel,tf,lm,trade_type,shared)
+                        if r.get('ok'):
+                            state._store_research('MATRIX',r,days,sl,tp,lm); results.append({k:r.get(k) for k in ('strategy','underlying','mode','timeframe','trade_type','lot_multiplier','trades','win_rate','net_pnl','profit_factor','max_drawdown','rr_ratio')})
+            return self._send_json({'ok':True,'days':days,'underlying':under,'mode':mode,'trade_type':trade_type,'starting_balance':state.bot.get('initial_balance',1000000.0),'results':results,'count':len(results),'retention_days':30,'note':'Research matrix is paper-only. GIFT Nifty/pre-open/CAS context is stored when available; historical external context is not fabricated.'})
+        if parsed.path=='/api/research/history':
+            p=parse_qs(parsed.query)
+            try: limit=max(1,min(200,int(p.get('limit',['50'])[0])))
+            except Exception: limit=50
+            try:
+                db=state._db(); rows=db.execute("SELECT id,created_at,kind,strategy,underlying,mode,timeframe,trade_type,days,sl,tp,rr,lot_multiplier,result_json FROM research_runs ORDER BY id DESC LIMIT ?",(limit,)).fetchall(); db.close()
+                out=[]
+                for row in rows:
+                    out.append({'id':row[0],'created_at':row[1],'kind':row[2],'strategy':row[3],'underlying':row[4],'mode':row[5],'timeframe':row[6],'trade_type':row[7],'days':row[8],'sl':row[9],'tp':row[10],'rr':row[11],'lot_multiplier':row[12],'result':json.loads(row[13]) if row[13] else {}})
+                return self._send_json({'ok':True,'runs':out,'retention_days':30})
+            except Exception as e: return self._send_json({'ok':False,'error':str(e)},500)
+        if parsed.path=='/api/research/trades':
+            p=parse_qs(parsed.query)
+            try: run_id=int(p.get('run_id',['0'])[0])
+            except Exception: run_id=0
+            try:
+                db=state._db(); rows=db.execute("SELECT id,created_at,trade_json FROM research_trades WHERE run_id=? ORDER BY id",(run_id,)).fetchall(); db.close(); return self._send_json({'ok':True,'run_id':run_id,'trades':[{'id':r[0],'created_at':r[1],'trade':json.loads(r[2])} for r in rows]})
+            except Exception as e: return self._send_json({'ok':False,'error':str(e)},500)
         if parsed.path=='/api/tick':
             p=parse_qs(parsed.query); symbol=p.get('symbol',['NIFTY'])[0]; tf=p.get('tf',['1m'])[0]
             try:

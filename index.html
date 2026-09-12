@@ -328,7 +328,7 @@ canvas { width: 100% !important; height: 100% !important; display: block; }
 
       <div class="bot-card">
         <div class="bot-card-title">Setup</div>
-        <select id="botStrategy" class="bot-select" onchange="saveBotConfig()"><option value="EMA_CROSS">EMA 9/15 · Trend</option><option value="RSI_MEAN_REVERT">RSI · Mean Reversion</option><option value="VWAP_REVERT">VWAP · Mean Reversion</option><option value="BREAKOUT">20-Candle · Breakout</option></select>
+        <select id="botStrategy" class="bot-select" onchange="saveBotConfig()"><option value="EMA_CROSS">EMA 9/15 · Trend</option><option value="RSI_MEAN_REVERT">RSI · Mean Reversion</option><option value="VWAP_REVERT">VWAP · Mean Reversion</option><option value="BREAKOUT">20-Candle · Breakout</option><option value="RBS">RBS · Resistance → Support</option><option value="SBR">SBR · Support → Resistance</option></select>
         <div class="bot-row2"><select id="botUnderlying" class="bot-select" onchange="saveBotConfig()"><option value="NIFTY">NIFTY</option><option value="SENSEX">SENSEX</option></select><select id="botMode" class="bot-select" onchange="saveBotConfig()"><option value="INDEX">Index</option><option value="ATM_OPTIONS">ATM Options</option><option value="ITM_1">ITM 1</option><option value="ITM_2">ITM 2</option><option value="ITM_3">ITM 3</option><option value="OTM_1">OTM 1</option><option value="OTM_2">OTM 2</option><option value="OTM_3">OTM 3</option></select></div>
       </div>
 
@@ -337,7 +337,7 @@ canvas { width: 100% !important; height: 100% !important; display: block; }
         <div class="bot-risk-grid">
           <label>Qty<input id="botQty" type="number" min="1" value="1" class="bot-input"></label><label>Risk / trade %<input id="botRiskTrade" type="number" step="0.1" min="0.1" value="1" class="bot-input"></label><label>Stop %<input id="botSL" type="number" step="0.1" min="0.1" value="0.6" class="bot-input"></label><label>Target %<input id="botTP" type="number" step="0.1" min="0.1" value="1.2" class="bot-input"></label>
         </div>
-        <div class="bot-row2"><label style="font-size:8px;color:#64748b">Daily loss %<input id="botDailyLoss" type="number" step="0.1" min="0.1" value="2" class="bot-input"></label><label style="font-size:8px;color:#64748b">Max trades/day<input id="botMaxTrades" type="number" min="1" value="5" class="bot-input"></label></div>
+        <div class="bot-row2"><label style="font-size:8px;color:#64748b">Daily loss %<input id="botDailyLoss" type="number" step="0.1" min="0.1" value="2" class="bot-input"></label><label style="font-size:8px;color:#64748b">Max trades/day<input id="botMaxTrades" type="number" min="1" value="5" class="bot-input"></label></div><div class="bot-row2" style="margin-top:6px"><div class="bot-mini">Risk : Reward <b id="botRR">1 : 2.00</b></div><div class="bot-mini">Paper capital <b>₹10,00,000</b></div></div>
       </div>
 
       <div class="bot-actions"><button class="bot-test" onclick="testBotSignal()">TEST SIGNAL</button><button class="bot-start" onclick="botControl('START')">START</button><button class="bot-stop" onclick="botControl('STOP')">STOP</button></div>
@@ -356,7 +356,7 @@ canvas { width: 100% !important; height: 100% !important; display: block; }
         <button id="replayLogBtn" class="bot-small-btn bot-test replay-log-btn" style="display:none" onclick="openReplayTradeLog()">VIEW TRADE LOG</button>
       </div>
 
-      <div class="bot-card"><div class="bot-card-title">Engine</div><div class="bot-safe" style="border:0;padding:0">Fast WebSocket market feed · 500ms strategy evaluation · long-only paper execution · ATM/ITM/OTM options · automatic SL/target · daily risk lock · session reset · persistent journal · closed-market replay.</div></div>
+      <div class="bot-card"><div class="bot-card-title">Engine</div><div class="bot-safe" style="border:0;padding:0">Fast WebSocket market feed · multi-strategy research · multi-timeframe testing · RBS/SBR setups · BTST research · ATM/ITM/OTM options · automatic SL/target · risk/reward tracking · persistent 30-day research journal. CAS closing context + settled pre-open information + GIFT Nifty/NIFTY futures are treated as market context, never as fabricated historical data.</div></div>
       <div class="bot-note"><b>Paper-only:</b> Angel One is used for market data only. This bot never sends real order-placement requests.</div>
     </div>
   </div>
@@ -1955,7 +1955,7 @@ function updateBotUI(b) {
   if(!b)return;
   const st=document.getElementById('botStatus'); if(st){st.innerText=b.risk_lock?'LOCKED':(b.enabled?'RUNNING':'STOPPED');st.className='bot-status '+(b.risk_lock?'locked':(b.enabled?'running':'stopped'));}
   const set=(id,v)=>{const e=document.getElementById(id);if(e)e.value=v};
-  set('botStrategy',b.strategy);set('botUnderlying',b.underlying);set('botMode',b.instrument_mode);set('botQty',b.qty);set('botRiskTrade',b.risk_per_trade);set('botSL',b.stop_loss_pct);set('botTP',b.target_pct);set('botDailyLoss',b.max_daily_loss);set('botMaxTrades',b.max_trades_per_day||5);
+  set('botStrategy',b.strategy);set('botUnderlying',b.underlying);set('botMode',b.instrument_mode);set('botQty',b.qty);set('botRiskTrade',b.risk_per_trade);set('botSL',b.stop_loss_pct);set('botTP',b.target_pct);set('botDailyLoss',b.max_daily_loss);set('botMaxTrades',b.max_trades_per_day||5); const rr=document.getElementById('botRR');if(rr)rr.innerText='1 : '+(Number(b.target_pct||0)/Math.max(Number(b.stop_loss_pct||1),0.1)).toFixed(2);
   const sig=document.getElementById('botSignal');if(sig){sig.innerText=b.last_signal||'HOLD';sig.className='bot-signal '+String(b.last_signal||'HOLD').toLowerCase()}
   const cf=document.getElementById('botConfidence');if(cf)cf.innerText=((b.last_confidence||0)*100).toFixed(0)+'%';
   const tr=document.getElementById('botTrades');if(tr)tr.innerText=(b.trades_today||0)+' / '+(b.max_trades_per_day||5);
@@ -1968,11 +1968,11 @@ function updateBotUI(b) {
 }
 async function runBotBacktest(){
   const result=document.getElementById('btResult'),metrics=document.getElementById('btMetrics'); if(result)result.innerText='Running…';if(metrics)metrics.innerHTML='';
-  try{const strategy=document.getElementById('botStrategy').value,days=document.getElementById('btDays').value,sl=document.getElementById('botSL').value,tp=document.getElementById('botTP').value,under=document.getElementById('botUnderlying').value;const r=await fetch(`/api/backtest?strategy=${encodeURIComponent(strategy)}&days=${days}&sl=${sl}&tp=${tp}&underlying=${under}`,{cache:'no-store'});const d=await r.json();if(!r.ok||!d.ok)throw new Error(d.error||'Backtest failed');if(result)result.innerText=`${d.candles} candles · ${d.trades} trades`;if(metrics)metrics.innerHTML=[['P&L',money(d.net_pnl)],['Win %',d.win_rate+'%'],['PF',d.profit_factor],['DD',money(d.max_drawdown)]].map(x=>`<div class="bot-result"><span>${x[0]}</span><b>${x[1]}</b></div>`).join('')}catch(e){if(result)result.innerText=e.message||'Backtest unavailable'}
+  try{const strategy=document.getElementById('botStrategy').value,days=document.getElementById('btDays').value,sl=document.getElementById('botSL').value,tp=document.getElementById('botTP').value,under=document.getElementById('botUnderlying').value;const r=await fetch(`/api/backtest?strategy=${encodeURIComponent(strategy)}&days=${days}&sl=${sl}&tp=${tp}&underlying=${under}`,{cache:'no-store'});const d=await r.json();if(!r.ok||!d.ok)throw new Error(d.error||'Backtest failed');if(result)result.innerText=`${d.candles} candles · ${d.trades} trades`;if(metrics)metrics.innerHTML=[['P&L',money(d.net_pnl)],['Win %',d.win_rate+'%'],['PF',d.profit_factor],['R:R','1 : '+(d.rr_ratio||0)]].map(x=>`<div class="bot-result"><span>${x[0]}</span><b>${x[1]}</b></div>`).join('')}catch(e){if(result)result.innerText=e.message||'Backtest unavailable'}
 }
 async function compareBotStrategies(){
   const el=document.getElementById('btCompare');if(el)el.innerHTML='<div class="bot-muted" style="padding:5px">Comparing…</div>';
-  try{const days=document.getElementById('btDays').value,sl=document.getElementById('botSL').value,tp=document.getElementById('botTP').value,under=document.getElementById('botUnderlying').value;const r=await fetch(`/api/bot/compare?days=${days}&sl=${sl}&tp=${tp}&underlying=${under}`,{cache:'no-store'});const d=await r.json();if(!r.ok||!d.ok)throw new Error(d.error||'Comparison failed');const names={EMA_CROSS:'EMA 9/15',RSI_MEAN_REVERT:'RSI',VWAP_REVERT:'VWAP',BREAKOUT:'Breakout'};el.innerHTML='<table class="bot-table"><thead><tr><th>Strategy</th><th>Trades</th><th>Win</th><th>P&L</th><th>PF</th><th>DD</th></tr></thead><tbody>'+d.results.map(x=>`<tr><td>${names[x.strategy]||x.strategy}</td><td>${x.trades}</td><td>${x.win_rate}%</td><td class="${x.net_pnl>=0?'bot-good':'bot-bad'}">${money(x.net_pnl)}</td><td>${x.profit_factor}</td><td>${money(x.max_drawdown)}</td></tr>`).join('')+'</tbody></table>'}catch(e){if(el)el.innerHTML='<div class="bot-bad" style="padding:5px">'+(e.message||'Comparison unavailable')+'</div>'}
+  try{const days=document.getElementById('btDays').value,sl=document.getElementById('botSL').value,tp=document.getElementById('botTP').value,under=document.getElementById('botUnderlying').value;const r=await fetch(`/api/bot/compare?days=${days}&sl=${sl}&tp=${tp}&underlying=${under}`,{cache:'no-store'});const d=await r.json();if(!r.ok||!d.ok)throw new Error(d.error||'Comparison failed');const names={EMA_CROSS:'EMA 9/15',RSI_MEAN_REVERT:'RSI',VWAP_REVERT:'VWAP',BREAKOUT:'Breakout',RBS:'RBS',SBR:'SBR'};el.innerHTML='<table class="bot-table"><thead><tr><th>Strategy</th><th>Trades</th><th>Win</th><th>P&L</th><th>PF</th><th>DD</th></tr></thead><tbody>'+d.results.map(x=>`<tr><td>${names[x.strategy]||x.strategy}</td><td>${x.trades}</td><td>${x.win_rate}%</td><td class="${x.net_pnl>=0?'bot-good':'bot-bad'}">${money(x.net_pnl)}</td><td>${x.profit_factor}</td><td>${money(x.max_drawdown)}</td></tr>`).join('')+'</tbody></table>'}catch(e){if(el)el.innerHTML='<div class="bot-bad" style="padding:5px">'+(e.message||'Comparison unavailable')+'</div>'}
 }
 
 async function runBotReplay(){
@@ -1980,13 +1980,22 @@ async function runBotReplay(){
   try{
     await saveBotConfig();
     const strategy=document.getElementById('botStrategy').value,days=document.getElementById('replayDays').value,sl=document.getElementById('botSL').value,tp=document.getElementById('botTP').value,under=document.getElementById('botUnderlying').value,mode=document.getElementById('botMode').value;
-    const r=await fetch(`/api/bot/replay?strategy=${encodeURIComponent(strategy)}&days=${days}&sl=${sl}&tp=${tp}&underlying=${under}&mode=${encodeURIComponent(mode)}`,{cache:'no-store'});
+    const r=await fetch(`/api/bot/replay?strategy=${encodeURIComponent(strategy)}&days=${days}&sl=${sl}&tp=${tp}&underlying=${under}&mode=${encodeURIComponent(mode)}&tf=60&lots=1&trade_type=INTRADAY`,{cache:'no-store'});
     const d=await r.json(); if(!r.ok||!d.ok)throw new Error(d.error||'Replay failed');
     window.lastReplayData=d;
     if(result)result.innerText=`${d.candles} underlying candles · ${d.trades} trades · ${d.data_note||'Replay complete.'}`;
-    if(metrics)metrics.innerHTML=[['P&L',money(d.net_pnl)],['Win %',d.win_rate+'%'],['PF',d.profit_factor],['DD',money(d.max_drawdown)]].map(x=>`<div class="bot-result"><span>${x[0]}</span><b>${x[1]}</b></div>`).join('');
+    if(metrics)metrics.innerHTML=[['P&L',money(d.net_pnl)],['Win %',d.win_rate+'%'],['PF',d.profit_factor],['R:R','1 : '+(d.rr_ratio||0)]].map(x=>`<div class="bot-result"><span>${x[0]}</span><b>${x[1]}</b></div>`).join('');
     if(logBtn)logBtn.style.display=(Array.isArray(d.trades_detail)&&d.trades_detail.length)?'block':'none';
   }catch(e){if(result)result.innerText=e.message||'Replay unavailable'}
+}
+
+async function runResearchMatrix(){
+  const out=document.getElementById('matrixResult'),table=document.getElementById('matrixTable'); if(out)out.innerText='Running research matrix…'; if(table)table.innerHTML='';
+  try{const days=document.getElementById('btDays').value,sl=document.getElementById('botSL').value,tp=document.getElementById('botTP').value,under=document.getElementById('botUnderlying').value,mode=document.getElementById('botMode').value,tradeType=document.getElementById('matrixTradeType').value,lots=document.getElementById('matrixLots').value,tfs=document.getElementById('matrixTf').value; const r=await fetch(`/api/research/matrix?days=${days}&sl=${sl}&tp=${tp}&underlying=${under}&mode=${encodeURIComponent(mode)}&trade_type=${tradeType}&lots=${lots}&tfs=${tfs}`,{cache:'no-store'}); const d=await r.json(); if(!r.ok||!d.ok)throw new Error(d.error||'Matrix failed'); if(out)out.innerText=`${d.count} tests stored · ₹10,00,000 starting capital · 30-day retention`; const names={EMA_CROSS:'EMA',RSI_MEAN_REVERT:'RSI',VWAP_REVERT:'VWAP',BREAKOUT:'Breakout',RBS:'RBS',SBR:'SBR'}; if(table)table.innerHTML='<div style="overflow:auto"><table class="bot-table"><thead><tr><th>Setup</th><th>TF</th><th>Lots</th><th>Trades</th><th>Win</th><th>PF</th><th>R:R</th><th>P&L</th><th>DD</th></tr></thead><tbody>'+d.results.map(x=>`<tr><td>${names[x.strategy]||x.strategy}</td><td>${x.timeframe/60}m</td><td>${x.lot_multiplier}</td><td>${x.trades}</td><td>${x.win_rate}%</td><td>${x.profit_factor}</td><td>1:${x.rr_ratio}</td><td class="${x.net_pnl>=0?'bot-good':'bot-bad'}">${money(x.net_pnl)}</td><td>${money(x.max_drawdown)}</td></tr>`).join('')+'</tbody></table></div>';}catch(e){if(out)out.innerText=e.message||'Matrix unavailable'}
+}
+async function loadResearchHistory(){
+  const el=document.getElementById('researchHistory'); if(el)el.innerHTML='<div class="bot-muted" style="padding:5px">Loading stored research…</div>';
+  try{const r=await fetch('/api/research/history?limit=40',{cache:'no-store'});const d=await r.json();if(!r.ok||!d.ok)throw new Error(d.error||'History unavailable'); if(el)el.innerHTML='<div class="bot-muted" style="margin-bottom:5px">'+d.runs.length+' stored test runs · retention '+d.retention_days+' days</div><div style="overflow:auto"><table class="bot-table"><thead><tr><th>ID</th><th>Type</th><th>Setup</th><th>TF</th><th>Lots</th><th>P&L</th><th>PF</th></tr></thead><tbody>'+d.runs.map(x=>`<tr><td>${x.id}</td><td>${x.kind}</td><td>${x.strategy||'—'}</td><td>${x.timeframe?x.timeframe/60+'m':'—'}</td><td>${x.lot_multiplier||1}</td><td class="${Number(x.result.net_pnl)>=0?'bot-good':'bot-bad'}">${money(x.result.net_pnl)}</td><td>${x.result.profit_factor??'—'}</td></tr>`).join('')+'</tbody></table></div>';}catch(e){if(el)el.innerHTML='<div class="bot-bad" style="padding:5px">'+(e.message||'History unavailable')+'</div>'}
 }
 
 function replayLogTime(v){
@@ -2000,13 +2009,13 @@ function openReplayTradeLog(){
   const d=window.lastReplayData||{},trades=Array.isArray(d.trades_detail)?d.trades_detail:[];
   const overlay=document.getElementById('replayLogOverlay'),sub=document.getElementById('replayLogSub'),summary=document.getElementById('replayLogSummary'),body=document.getElementById('replayLogBody');
   if(!overlay)return;
-  const names={EMA_CROSS:'EMA 9/15',RSI_MEAN_REVERT:'RSI',VWAP_REVERT:'VWAP',BREAKOUT:'Breakout'};
+  const names={EMA_CROSS:'EMA 9/15',RSI_MEAN_REVERT:'RSI',VWAP_REVERT:'VWAP',BREAKOUT:'Breakout',RBS:'RBS',SBR:'SBR'};
   if(sub)sub.innerText=`${names[d.strategy]||d.strategy||'Strategy'} · ${d.underlying||''} · ${d.mode||'INDEX'} · ${d.trades||trades.length} trades`;
   if(summary)summary.innerHTML=[['P&L',money(d.net_pnl)],['Win %',(d.win_rate??0)+'%'],['PF',d.profit_factor??'—'],['DD',money(d.max_drawdown??0)]].map(x=>`<div class="bot-result"><span>${x[0]}</span><b>${x[1]}</b></div>`).join('');
   if(body){
     if(!trades.length){body.innerHTML='<div class="replay-log-empty">No trade details were returned for this replay.</div>';}
     else{
-      body.innerHTML='<table class="replay-log-table"><thead><tr><th>#</th><th>Symbol</th><th>Entry Time</th><th>Entry ₹</th><th>Exit Time</th><th>Exit ₹</th><th>Qty</th><th>Reason</th><th>P&L</th></tr></thead><tbody>'+trades.map((t,i)=>`<tr><td>${i+1}</td><td>${t.symbol||'INDEX'}</td><td>${replayLogTime(t.entry_time)}</td><td>₹${Number(t.entry||0).toFixed(2)}</td><td>${replayLogTime(t.exit_time)}</td><td>₹${Number(t.exit||0).toFixed(2)}</td><td>${t.qty??1}</td><td>${t.reason||'—'}</td><td class="${Number(t.pnl)>=0?'bot-good':'bot-bad'}">₹${Number(t.pnl||0).toFixed(2)}</td></tr>`).join('')+'</tbody></table>';
+      body.innerHTML='<table class="replay-log-table"><thead><tr><th>#</th><th>Symbol</th><th>Entry Time</th><th>Entry ₹</th><th>Exit Time</th><th>Exit ₹</th><th>Qty</th><th>R:R</th><th>Reason</th><th>P&L</th></tr></thead><tbody>'+trades.map((t,i)=>`<tr><td>${i+1}</td><td>${t.symbol||'INDEX'}</td><td>${replayLogTime(t.entry_time)}</td><td>₹${Number(t.entry||0).toFixed(2)}</td><td>${replayLogTime(t.exit_time)}</td><td>₹${Number(t.exit||0).toFixed(2)}</td><td>${t.qty??1}</td><td>1:${t.rr??'—'}</td><td>${t.reason||'—'}</td><td class="${Number(t.pnl)>=0?'bot-good':'bot-bad'}">₹${Number(t.pnl||0).toFixed(2)}</td></tr>`).join('')+'</tbody></table>';
     }
   }
   overlay.classList.add('open'); overlay.setAttribute('aria-hidden','false'); document.body.style.overflow='hidden';
