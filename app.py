@@ -200,7 +200,7 @@ class AngelOneData:
         exch = 'BSE' if name == 'SENSEX' else 'NSE'
         candidates=[x for x in self.instruments
                     if str(x.get('exch_seg','')).upper()==exch
-                    and str(x.get('instrumenttype','')).upper() in ('INDEX','')
+                    and str(x.get('instrumenttype','')).upper() in ('INDEX','AMXIDX','')
                     and (str(x.get('symbol','')).upper()==name or str(x.get('name','')).upper()==name or
                          str(x.get('symbol','')).upper().startswith(name))]
         if candidates:
@@ -613,13 +613,47 @@ class SimulationState:
         except Exception:
             pass
 
+    def _market_open_now(self):
+        now=datetime.now(IST)
+        return now.weekday() < 5 and dtime(9,15) <= now.time() <= dtime(15,30)
+
+    def _accept_index_ltp(self, name, ltp, reference=None):
+        try:
+            value=float(ltp)
+        except Exception:
+            return False
+        if value <= 0:
+            return False
+        # Guard against malformed/stale index packets. Angel's index LTPs are
+        # normal rupee prices (e.g. NIFTY ~25k, SENSEX ~80k), not 2-digit values.
+        floor=1000.0 if name=='NIFTY' else 10000.0
+        if value < floor:
+            return False
+        if reference and reference > 0 and abs(value-reference)/reference > 0.20:
+            return False
+        return True
+
     def _init_history(self):
         if self.angel.enabled:
             inst=self.angel.find_index('NIFTY'); c=self.angel.candles(inst,'ONE_MINUTE',2)
             if c:
-                self.candles_1m=c; q=self.angel.quote([inst]); z=q.get(str(inst['token']))
-                if z: self.nifty_spot=float(z.get('ltp',self.nifty_spot)); self.prev_close=float(z.get('close',self.prev_close))
-                self.sensex_spot=self._sensex_ltp(); self.sensex_prev_close=self.sensex_spot; return
+                self.candles_1m=c
+                # Historical close is the authoritative seed outside market hours.
+                # This prevents a malformed/stale WebSocket/quote value from
+                # turning NIFTY into something like ₹260 and selecting bad strikes.
+                hist_nifty=float(c[-1].get('close') or self.nifty_spot)
+                if self._accept_index_ltp('NIFTY', hist_nifty):
+                    self.nifty_spot=hist_nifty
+                self.prev_close=float(c[-1].get('close') or self.prev_close)
+                if self._market_open_now():
+                    q=self.angel.quote([inst]); z=q.get(str(inst['token']))
+                    if z and self._accept_index_ltp('NIFTY', z.get('ltp'), self.nifty_spot):
+                        self.nifty_spot=float(z['ltp'])
+                    if z and z.get('close') is not None:
+                        self.prev_close=float(z['close'])
+                self.sensex_spot=self._sensex_ltp()
+                self.sensex_prev_close=self.sensex_spot
+                return
         # Existing development fallback remains isolated to ANGELONE_ENABLED=0.
         now_ts=int(time.time()); cur=(now_ts//60)*60; p=self.nifty_spot; out=[]
         for i in range(90):
@@ -628,8 +662,22 @@ class SimulationState:
 
     def _sensex_ltp(self):
         if not self.angel.enabled: return round(self.nifty_spot*3.41,2)
-        inst=self.angel.find_index('SENSEX'); q=self.angel.quote([inst]) if inst else {}; z=q.get(str(inst['token'])) if inst else None
-        return float(z['ltp']) if z and z.get('ltp') is not None else self.sensex_spot
+        inst=self.angel.find_index('SENSEX')
+        # Use recent historical candles as the seed when the market is closed.
+        hist=0.0
+        if inst:
+            try:
+                hc=self.angel.candles(inst,'ONE_MINUTE',2)
+                if hc: hist=float(hc[-1].get('close') or 0)
+            except Exception:
+                hist=0.0
+        base=hist if self._accept_index_ltp('SENSEX',hist) else self.sensex_spot
+        if self._market_open_now() and inst:
+            q=self.angel.quote([inst]); z=q.get(str(inst['token']))
+            if z and self._accept_index_ltp('SENSEX', z.get('ltp'), base):
+                return float(z['ltp'])
+            if base: return base
+        return base or self.sensex_spot
 
     def _live_indices(self):
         ni=self.angel.find_index('NIFTY'); si=self.angel.find_index('SENSEX')
@@ -643,7 +691,21 @@ class SimulationState:
                 if z:
                     if attr=='nifty_spot': self.prev_close=float(z.get('close',self.prev_close))
                     if attr=='sensex_spot': self.sensex_prev_close=float(z.get('close',self.sensex_prev_close or self.sensex_spot))
-            if ltp is not None: setattr(self,attr,float(ltp))
+            reference=float(getattr(self,attr) or 0)
+            name='SENSEX' if attr=='sensex_spot' else 'NIFTY'
+            if ltp is not None and self._accept_index_ltp(name, ltp, reference):
+                setattr(self,attr,float(ltp))
+            elif not self._market_open_now() and inst:
+                # Outside market hours, keep the last valid/historical close and
+                # never replace it with a malformed reference/stale packet.
+                try:
+                    hc=self.angel.candles(inst,'ONE_MINUTE',1)
+                    if hc:
+                        close=float(hc[-1].get('close') or 0)
+                        if self._accept_index_ltp(name, close, reference if reference else None):
+                            setattr(self,attr,close)
+                except Exception:
+                    pass
 
     def _bot_underlying_candles(self, underlying):
         if underlying=='NIFTY':
