@@ -1020,7 +1020,7 @@ class SimulationState:
 
     def get_tick_data(self, symbol, timeframe='1m'):
         """Return only the current streamed price and candle timing. No REST/network calls."""
-        now=time.time(); is_s='SENSEX' in str(symbol).upper(); tf={'1m':60,'3m':180,'5m':300,'15m':900}.get(timeframe,60)
+        now=time.time(); is_s='SENSEX' in str(symbol).upper(); tf={'1m':60,'3m':180,'5m':300,'10m':600,'15m':900,'30m':1800,'1h':3600}.get(timeframe,60)
         is_option='_' in str(symbol)
         ltp=0.0; inst=None
         if is_option:
@@ -1082,7 +1082,7 @@ def build_strategy_markers(candles):
     return out
 
     def get_instrument_chart_data(self,symbol,timeframe='1m'):
-        is_s='SENSEX' in symbol.upper(); spot=self.sensex_spot if is_s else self.nifty_spot; tf={'1m':60,'3m':180,'5m':300,'15m':900}.get(timeframe,60)
+        is_s='SENSEX' in symbol.upper(); spot=self.sensex_spot if is_s else self.nifty_spot; tf={'1m':60,'3m':180,'5m':300,'10m':600,'15m':900,'30m':1800,'1h':3600}.get(timeframe,60)
         is_option='_' in symbol
         cache_key=(symbol,timeframe)
         cached=self.chart_cache.get(cache_key)
@@ -1095,7 +1095,7 @@ def build_strategy_markers(candles):
                 inst = self._find_option_from_ui(symbol) if is_option else self.angel.find_index('SENSEX' if is_s else 'NIFTY')
                 if inst:
                     if is_option: self.angel.subscribe_instrument(inst)
-                    interval={60:'ONE_MINUTE',180:'THREE_MINUTE',300:'FIVE_MINUTE',900:'FIFTEEN_MINUTE'}[tf]
+                    interval={60:'ONE_MINUTE',180:'THREE_MINUTE',300:'FIVE_MINUTE',600:'TEN_MINUTE',900:'FIFTEEN_MINUTE',1800:'THIRTY_MINUTE',3600:'ONE_HOUR'}[tf]
                     fresh=self.angel.candles(inst,interval,2)
                     if fresh: candles=fresh
             if not candles:
@@ -1193,8 +1193,20 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if state.market_cache.get('key')==cache_key and time.time()-state.market_cache_ts < 0.10:
                 return self._send_json(state.market_cache['data'])
             with state.lock:
-                chart=state.get_instrument_chart_data(symbol,tf); chain=state.get_option_chain(symbol,expiry); unreal=sum(x.get('pnl',0) for x in state.positions); trades=list(state.closed_trades); wins=sum(1 for t in trades if t['pnl']>0); gp=sum(t['pnl'] for t in trades if t['pnl']>0); gl=abs(sum(t['pnl'] for t in trades if t['pnl']<0)); pf=round(gp/gl,2) if gl else (gp if gp else 0)
-                data={'nifty_spot':state.nifty_spot,'sensex_spot':state.sensex_spot,'nifty_chg':round(state.nifty_spot-state.prev_close,2),'nifty_pct':round((state.nifty_spot-state.prev_close)/state.prev_close*100,2),'sensex_chg':round(state.sensex_spot-state.sensex_prev_close,2) if state.sensex_prev_close else 0,'sensex_pct':round((state.sensex_spot-state.sensex_prev_close)/state.sensex_prev_close*100,2) if state.sensex_prev_close else 0,'chart':chart,'chain':chain['chain'],'expiries':chain['expiries'],'selected_expiry':chain['selected_expiry'],'wallet':{**state.wallet,'unrealized_pnl':round(unreal,2),'net_pnl':round(state.wallet['realized_pnl']+unreal,2)},'analytics':{'win_rate':round(wins/len(trades)*100,1) if trades else 0,'profit_factor':pf,'net_pnl':round(state.wallet['realized_pnl']+unreal,2),'total_trades':len(trades)},'positions':list(state.positions),'pending_orders':list(state.pending_orders),'orders':list(state.orders),'closed_trades':trades[:15],'market_source':'Angel One SmartAPI' if state.angel.enabled else 'Development mode','market_error':state.angel.last_error if state.angel.enabled else '','bot':state.bot,'bot_positions':len(state._bot_positions())}
+                market_errors=[]
+                try:
+                    chart=state.get_instrument_chart_data(symbol,tf)
+                except Exception as e:
+                    chart=state.chart_cache.get((symbol,tf),{}).get('candles',[]) if isinstance(state.chart_cache.get((symbol,tf),{}),dict) else []
+                    market_errors.append('Chart: '+str(e))
+                try:
+                    chain=state.get_option_chain(symbol,expiry)
+                except Exception as e:
+                    cached_chain=state.live_chain_cache.get((symbol,expiry))
+                    chain=cached_chain[1] if cached_chain else {'chain':[],'expiries':[],'selected_expiry':expiry}
+                    market_errors.append('Option chain: '+str(e))
+                unreal=sum(x.get('pnl',0) for x in state.positions); trades=list(state.closed_trades); wins=sum(1 for t in trades if t['pnl']>0); gp=sum(t['pnl'] for t in trades if t['pnl']>0); gl=abs(sum(t['pnl'] for t in trades if t['pnl']<0)); pf=round(gp/gl,2) if gl else (gp if gp else 0)
+                data={'nifty_spot':state.nifty_spot,'sensex_spot':state.sensex_spot,'nifty_chg':round(state.nifty_spot-state.prev_close,2),'nifty_pct':round((state.nifty_spot-state.prev_close)/state.prev_close*100,2) if state.prev_close else 0,'sensex_chg':round(state.sensex_spot-state.sensex_prev_close,2) if state.sensex_prev_close else 0,'sensex_pct':round((state.sensex_spot-state.sensex_prev_close)/state.sensex_prev_close*100,2) if state.sensex_prev_close else 0,'chart':chart,'chain':chain.get('chain',[]),'expiries':chain.get('expiries',[]),'selected_expiry':chain.get('selected_expiry'),'wallet':{**state.wallet,'unrealized_pnl':round(unreal,2),'net_pnl':round(state.wallet['realized_pnl']+unreal,2)},'analytics':{'win_rate':round(wins/len(trades)*100,1) if trades else 0,'profit_factor':pf,'net_pnl':round(state.wallet['realized_pnl']+unreal,2),'total_trades':len(trades)},'positions':list(state.positions),'pending_orders':list(state.pending_orders),'orders':list(state.orders),'closed_trades':trades[:15],'market_source':'Angel One SmartAPI' if state.angel.enabled else 'Development mode','market_error':' | '.join([x for x in market_errors+[state.angel.last_error if state.angel.enabled else ''] if x]),'bot':state.bot,'bot_positions':len(state._bot_positions())}
                 state.market_cache={'key':cache_key,'data':data}; state.market_cache_ts=time.time(); return self._send_json(data)
         if parsed.path=='/api/bot':
             with state.lock:
