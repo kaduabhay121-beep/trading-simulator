@@ -677,6 +677,10 @@ def build_strategy_markers(candles):
     return out
 
 
+MATRIX_JOBS = {}
+MATRIX_JOBS_LOCK = threading.Lock()
+
+
 class SimulationState:
     def __init__(self):
         self.lock=threading.Lock(); self.nifty_spot=23765.0; self.sensex_spot=81200.0; self.prev_close=23897.70; self.sensex_prev_close=0.0
@@ -1268,20 +1272,72 @@ class Handler(http.server.BaseHTTPRequestHandler):
             try: days=max(1,min(30,int(p.get('days',['5'])[0]))); sl=max(0.1,min(20,float(p.get('sl',['0.6'])[0]))); tp=max(0.1,min(50,float(p.get('tp',['1.2'])[0])))
             except Exception: days,sl,tp=5,0.6,1.2
             under=p.get('underlying',[state.bot.get('underlying','NIFTY')])[0]; mode=p.get('mode',[state.bot.get('instrument_mode','ATM_OPTIONS')])[0]; trade_type=p.get('trade_type',['INTRADAY'])[0].upper(); trade_type='BTST' if trade_type=='BTST' else 'INTRADAY'
-            tfs=[int(x) for x in p.get('tfs',['60,180,300,600,900,1800,3600'])[0].split(',') if int(x) in TF_INTERVALS]
-            lots=[max(1,min(20,int(x))) for x in p.get('lots',['1,2,5,10'])[0].split(',')]
+            try: tfs=[int(x.strip()) for x in p.get('tfs',['60,180,300,600,900,1800,3600'])[0].split(',') if x.strip() and int(x.strip()) in TF_INTERVALS]
+            except Exception: tfs=[60,180,300,600,900,1800,3600]
+            try: lots=[]
+            except Exception: lots=[]
+            for raw in p.get('lots',['1,2,5,10'])[0].split(','):
+                try:
+                    v=max(1,min(20,int(raw.strip())))
+                    if v not in lots: lots.append(v)
+                except Exception: pass
+            if not tfs: return self._send_json({'ok':False,'error':'No valid timeframes selected.'},400)
+            if not lots: return self._send_json({'ok':False,'error':'No valid lot sizes selected.'},400)
             if not state.angel.enabled: return self._send_json({'ok':False,'error':'Research matrix needs Angel One historical market data.'},400)
-            results=[]; shared={}
-            for tf in tfs:
-                interval=TF_INTERVALS[tf]; inst=state.angel.find_index(under); candles=state.angel.candles(inst,interval,days) if inst else []
-                if not candles: continue
-                for stg in STRATEGIES:
-                    for lm in lots:
-                        if mode=='INDEX': r=backtest_strategy(candles,stg,sl,tp,state.bot.get('initial_balance',1000000.0),qty=lm,trade_type=trade_type); r.update({'underlying':under,'mode':'INDEX','timeframe':tf,'lot_multiplier':lm})
-                        else: r=_option_backtest(stg,under,mode,days,sl,tp,state.bot.get('initial_balance',1000000.0),state.angel,tf,lm,trade_type,shared)
-                        if r.get('ok'):
-                            state._store_research('MATRIX',r,days,sl,tp,lm); results.append({k:r.get(k) for k in ('strategy','underlying','mode','timeframe','trade_type','lot_multiplier','trades','win_rate','net_pnl','profit_factor','max_drawdown','rr_ratio')})
-            return self._send_json({'ok':True,'days':days,'underlying':under,'mode':mode,'trade_type':trade_type,'starting_balance':state.bot.get('initial_balance',1000000.0),'results':results,'count':len(results),'retention_days':30,'note':'Research matrix is paper-only. GIFT Nifty/pre-open/CAS context is stored when available; historical external context is not fabricated.'})
+            import uuid
+            job_id=uuid.uuid4().hex[:12]
+            with MATRIX_JOBS_LOCK:
+                # Clean old jobs and reject duplicate work while one is running.
+                now=time.time()
+                for jid,j in list(MATRIX_JOBS.items()):
+                    if now-j.get('created',now)>3600: MATRIX_JOBS.pop(jid,None)
+                if any(j.get('status')=='running' for j in MATRIX_JOBS.values()):
+                    return self._send_json({'ok':False,'error':'A research matrix is already running. Please wait for it to finish.','running':True},409)
+                MATRIX_JOBS[job_id]={'status':'running','created':now,'progress':0,'total':len(tfs)*len(STRATEGIES)*len(lots),'results':[],'errors':[],'params':{'days':days,'underlying':under,'mode':mode,'trade_type':trade_type,'tfs':tfs,'lots':lots}}
+            def run_matrix():
+                results=[]; errors=[]; shared={}
+                total=len(tfs)*len(STRATEGIES)*len(lots); done=0
+                try:
+                    for tf in tfs:
+                        interval=TF_INTERVALS[tf]; inst=state.angel.find_index(under); candles=state.angel.candles(inst,interval,days) if inst else []
+                        if not candles:
+                            errors.append(f'{tf/60:g}m: no historical candles returned')
+                            done += len(STRATEGIES)*len(lots)
+                            with MATRIX_JOBS_LOCK: MATRIX_JOBS[job_id]['progress']=done
+                            continue
+                        for stg in STRATEGIES:
+                            for lm in lots:
+                                try:
+                                    if mode=='INDEX':
+                                        r=backtest_strategy(candles,stg,sl,tp,state.bot.get('initial_balance',1000000.0),qty=lm,trade_type=trade_type)
+                                        r.update({'underlying':under,'mode':'INDEX','timeframe':tf,'lot_multiplier':lm})
+                                    else:
+                                        r=_option_backtest(stg,under,mode,days,sl,tp,state.bot.get('initial_balance',1000000.0),state.angel,tf,lm,trade_type,shared)
+                                    if r.get('ok'):
+                                        state._store_research('MATRIX',r,days,sl,tp,lm)
+                                        results.append({k:r.get(k) for k in ('strategy','underlying','mode','timeframe','trade_type','lot_multiplier','trades','win_rate','net_pnl','profit_factor','max_drawdown','rr_ratio')})
+                                    else:
+                                        errors.append(f'{stg} {tf/60:g}m × {lm}: {r.get("error","failed")}')
+                                except Exception as e:
+                                    errors.append(f'{stg} {tf/60:g}m × {lm}: {e}')
+                                done += 1
+                                with MATRIX_JOBS_LOCK:
+                                    MATRIX_JOBS[job_id]['progress']=done
+                                    MATRIX_JOBS[job_id]['results']=results[-200:]
+                                    MATRIX_JOBS[job_id]['errors']=errors[-50:]
+                    with MATRIX_JOBS_LOCK:
+                        MATRIX_JOBS[job_id].update({'status':'done','progress':total,'results':results,'errors':errors,'finished':time.time()})
+                except Exception as e:
+                    with MATRIX_JOBS_LOCK:
+                        MATRIX_JOBS[job_id].update({'status':'failed','error':str(e),'results':results,'errors':errors,'finished':time.time()})
+            threading.Thread(target=run_matrix,daemon=True,name='research-matrix').start()
+            return self._send_json({'ok':True,'async':True,'job_id':job_id,'status':'running','total':len(tfs)*len(STRATEGIES)*len(lots),'days':days,'underlying':under,'mode':mode,'trade_type':trade_type,'starting_balance':state.bot.get('initial_balance',1000000.0),'retention_days':30,'note':'Matrix runs in the background to avoid HTTP/Render timeout. Research is paper-only; no Angel One orders are sent.'})
+        if parsed.path=='/api/research/matrix_status':
+            p=parse_qs(parsed.query); job_id=p.get('job_id',[''])[0]
+            with MATRIX_JOBS_LOCK: job=dict(MATRIX_JOBS.get(job_id,{}))
+            if not job: return self._send_json({'ok':False,'error':'Matrix job not found or expired.'},404)
+            total=max(1,int(job.get('total',0))); progress=int(job.get('progress',0)); job['percent']=round(progress/total*100,1)
+            return self._send_json({'ok':True,'job_id':job_id,**job})
         if parsed.path=='/api/research/intelligence':
             p=parse_qs(parsed.query)
             try: limit=max(20,min(500,int(p.get('limit',['500'])[0])))

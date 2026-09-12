@@ -2020,8 +2020,30 @@ async function runBotReplay(){
 }
 
 async function runResearchMatrix(){
-  const out=document.getElementById('matrixResult'),table=document.getElementById('matrixTable'); if(out)out.innerText='Running research matrix…'; if(table)table.innerHTML='';
-  try{const days=document.getElementById('btDays').value,sl=document.getElementById('botSL').value,tp=document.getElementById('botTP').value,under=document.getElementById('botUnderlying').value,mode=document.getElementById('botMode').value,tradeType=document.getElementById('matrixTradeType').value,lots=document.getElementById('matrixLots').value,tfs=document.getElementById('matrixTf').value; const r=await fetch(`/api/research/matrix?days=${days}&sl=${sl}&tp=${tp}&underlying=${under}&mode=${encodeURIComponent(mode)}&trade_type=${tradeType}&lots=${lots}&tfs=${tfs}`,{cache:'no-store'}); const d=await r.json(); if(!r.ok||!d.ok)throw new Error(d.error||'Matrix failed'); if(out)out.innerText=`${d.count} tests stored · ₹10,00,000 starting capital · 30-day retention`; const names={EMA_CROSS:'EMA',RSI_MEAN_REVERT:'RSI',VWAP_REVERT:'VWAP',BREAKOUT:'Breakout',RBS:'RBS',SBR:'SBR'}; if(table)table.innerHTML='<div style="overflow:auto"><table class="bot-table"><thead><tr><th>Setup</th><th>TF</th><th>Lots</th><th>Trades</th><th>Win</th><th>PF</th><th>R:R</th><th>P&L</th><th>DD</th></tr></thead><tbody>'+d.results.map(x=>`<tr><td>${names[x.strategy]||x.strategy}</td><td>${x.timeframe/60}m</td><td>${x.lot_multiplier}</td><td>${x.trades}</td><td>${x.win_rate}%</td><td>${x.profit_factor}</td><td>1:${x.rr_ratio}</td><td class="${x.net_pnl>=0?'bot-good':'bot-bad'}">${money(x.net_pnl)}</td><td>${money(x.max_drawdown)}</td></tr>`).join('')+'</tbody></table></div>';}catch(e){if(out)out.innerText=e.message||'Matrix unavailable'}
+  const out=document.getElementById('matrixResult'),table=document.getElementById('matrixTable'); if(out)out.innerText='Starting research matrix…'; if(table)table.innerHTML='';
+  try{
+    const days=document.getElementById('btDays').value,sl=document.getElementById('botSL').value,tp=document.getElementById('botTP').value,under=document.getElementById('botUnderlying').value,mode=document.getElementById('botMode').value,tradeType=document.getElementById('matrixTradeType').value,lots=document.getElementById('matrixLots').value,tfs=document.getElementById('matrixTf').value;
+    const r=await fetch(`/api/research/matrix?days=${days}&sl=${sl}&tp=${tp}&underlying=${under}&mode=${encodeURIComponent(mode)}&trade_type=${tradeType}&lots=${encodeURIComponent(lots)}&tfs=${encodeURIComponent(tfs)}`,{cache:'no-store'});
+    let d; try{d=await r.json()}catch(_){throw new Error(`Matrix server returned HTTP ${r.status}`)}
+    if(!r.ok||!d.ok)throw new Error(d.error||`Matrix failed (HTTP ${r.status})`);
+    if(!d.async){ return renderMatrixResults(d,out,table); }
+    const job=d.job_id,total=d.total||1;
+    let finished=false;
+    while(!finished){
+      await new Promise(resolve=>setTimeout(resolve,900));
+      const sr=await fetch(`/api/research/matrix_status?job_id=${encodeURIComponent(job)}`,{cache:'no-store'});
+      let sd; try{sd=await sr.json()}catch(_){throw new Error(`Matrix status server returned HTTP ${sr.status}`)}
+      if(!sr.ok||!sd.ok)throw new Error(sd.error||'Matrix status failed');
+      if(out)out.innerText=`Validating… ${sd.progress||0}/${total} (${sd.percent||0}%) · ${sd.results?.length||0} completed`;
+      if(sd.status==='done'){finished=true; renderMatrixResults({count:sd.results.length,results:sd.results,errors:sd.errors||[]},out,table);}
+      if(sd.status==='failed'){throw new Error(sd.error||'Matrix worker failed')}
+    }
+  }catch(e){if(out)out.innerText=e.message||'Matrix unavailable'}
+}
+function renderMatrixResults(d,out,table){
+  const names={EMA_CROSS:'EMA',RSI_MEAN_REVERT:'RSI',VWAP_REVERT:'VWAP',BREAKOUT:'Breakout',RBS:'RBS',SBR:'SBR'};
+  if(out)out.innerText=`${d.count||0} tests stored · ₹10,00,000 starting capital · 30-day retention${d.errors?.length?' · '+d.errors.length+' skipped/failed':''}`;
+  if(table)table.innerHTML='<div style="overflow:auto"><table class="bot-table"><thead><tr><th>Setup</th><th>TF</th><th>Lots</th><th>Trades</th><th>Win</th><th>PF</th><th>R:R</th><th>P&L</th><th>DD</th></tr></thead><tbody>'+((d.results||[]).map(x=>`<tr><td>${names[x.strategy]||x.strategy}</td><td>${x.timeframe/60}m</td><td>${x.lot_multiplier}</td><td>${x.trades}</td><td>${x.win_rate}%</td><td>${x.profit_factor}</td><td>1:${x.rr_ratio}</td><td class="${x.net_pnl>=0?'bot-good':'bot-bad'}">${money(x.net_pnl)}</td><td>${money(x.max_drawdown)}</td></tr>`).join(''))+'</tbody></table></div>'+(d.errors?.length?`<div class="bot-reason" style="margin-top:6px">${d.errors.slice(0,8).join('<br>')}</div>`:'');
 }
 async function loadResearchHistory(){
   const el=document.getElementById('researchHistory'); if(el)el.innerHTML='<div class="bot-muted" style="padding:5px">Loading stored research…</div>';
