@@ -335,9 +335,9 @@ canvas { width: 100% !important; height: 100% !important; display: block; }
       <div class="bot-card">
         <div class="bot-card-title">Risk & limits</div>
         <div class="bot-risk-grid">
-          <label>Qty<input id="botQty" type="number" min="1" value="1" class="bot-input"></label><label>Risk / trade %<input id="botRiskTrade" type="number" step="0.1" min="0.1" value="1" class="bot-input"></label><label>Stop %<input id="botSL" type="number" step="0.1" min="0.1" value="0.6" class="bot-input"></label><label>Target %<input id="botTP" type="number" step="0.1" min="0.1" value="1.2" class="bot-input"></label>
+          <label>Qty<input id="botQty" type="number" min="1" value="1" class="bot-input" onchange="saveBotConfig()" onblur="saveBotConfig()"></label><label>Risk / trade %<input id="botRiskTrade" type="number" step="0.1" min="0.1" value="1" class="bot-input" onchange="saveBotConfig()" onblur="saveBotConfig()"></label><label>Stop %<input id="botSL" type="number" step="0.1" min="0.1" value="0.6" class="bot-input" onchange="saveBotConfig()" onblur="saveBotConfig()"></label><label>Target %<input id="botTP" type="number" step="0.1" min="0.1" value="1.2" class="bot-input" onchange="saveBotConfig()" onblur="saveBotConfig()"></label>
         </div>
-        <div class="bot-row2"><label style="font-size:8px;color:#64748b">Daily loss %<input id="botDailyLoss" type="number" step="0.1" min="0.1" value="2" class="bot-input"></label><label style="font-size:8px;color:#64748b">Max trades/day<input id="botMaxTrades" type="number" min="1" value="5" class="bot-input"></label></div><div class="bot-row2" style="margin-top:6px"><div class="bot-mini">Risk : Reward <b id="botRR">1 : 2.00</b></div><div class="bot-mini">Paper capital <b>₹10,00,000</b></div></div>
+        <div class="bot-row2"><label style="font-size:8px;color:#64748b">Daily loss %<input id="botDailyLoss" type="number" step="0.1" min="0.1" value="2" class="bot-input" onchange="saveBotConfig()" onblur="saveBotConfig()"></label><label style="font-size:8px;color:#64748b">Max trades/day<input id="botMaxTrades" type="number" min="1" value="5" class="bot-input" onchange="saveBotConfig()" onblur="saveBotConfig()"></label></div><div class="bot-row2" style="margin-top:6px"><div class="bot-mini">Risk : Reward <b id="botRR">1 : 2.00</b></div><div class="bot-mini">Paper capital <b>₹10,00,000</b></div></div>
       </div>
 
       <div class="bot-actions"><button class="bot-test" onclick="testBotSignal()">TEST SIGNAL</button><button class="bot-start" onclick="botControl('START')">START</button><button class="bot-stop" onclick="botControl('STOP')">STOP</button></div>
@@ -354,6 +354,11 @@ canvas { width: 100% !important; height: 100% !important; display: block; }
         <div id="replayResult" class="bot-reason">Replay runs the same strategy engine on historical candles. It never changes your live paper account.</div>
         <div id="replayMetrics" class="bot-grid4"></div>
         <button id="replayLogBtn" class="bot-small-btn bot-test replay-log-btn" style="display:none" onclick="openReplayTradeLog()">VIEW TRADE LOG</button>
+        <div class="bot-card-title" style="margin-top:12px">Research history · 30 days</div>
+        <div class="bot-row2"><select id="rhStrategy" class="bot-select"><option value="ALL">All strategies</option><option value="EMA_CROSS">EMA 9/15</option><option value="RSI_MEAN_REVERT">RSI</option><option value="VWAP_REVERT">VWAP</option><option value="BREAKOUT">Breakout</option><option value="RBS">RBS</option><option value="SBR">SBR</option></select><select id="rhMode" class="bot-select"><option value="ALL">All modes</option><option value="INDEX">Index</option><option value="ATM_OPTIONS">ATM Options</option><option value="ITM_1">ITM 1</option><option value="ITM_2">ITM 2</option><option value="ITM_3">ITM 3</option><option value="OTM_1">OTM 1</option><option value="OTM_2">OTM 2</option><option value="OTM_3">OTM 3</option></select></div>
+        <div class="bot-row2"><button class="bot-small-btn bot-test" style="width:100%" onclick="loadResearchHistory()">VIEW / REFRESH HISTORY</button><button class="bot-small-btn bot-test" style="width:100%" onclick="downloadResearch('runs')">EXPORT RUNS CSV</button></div>
+        <div class="bot-row2"><button class="bot-small-btn bot-test" style="width:100%" onclick="downloadResearch('trades')">EXPORT ALL TRADES CSV</button><button class="bot-small-btn bot-test" style="width:100%" onclick="loadResearchHistory()">APPLY FILTERS</button></div>
+        <div id="researchHistory" style="margin-top:7px"><div class="bot-muted" style="padding:5px">Stored research will appear here.</div></div>
       </div>
 
       <div class="bot-card"><div class="bot-card-title">Engine</div><div class="bot-safe" style="border:0;padding:0">Fast WebSocket market feed · multi-strategy research · multi-timeframe testing · RBS/SBR setups · BTST research · ATM/ITM/OTM options · automatic SL/target · risk/reward tracking · persistent 30-day research journal. CAS closing context + settled pre-open information + GIFT Nifty/NIFTY futures are treated as market context, never as fabricated historical data.</div></div>
@@ -1954,7 +1959,7 @@ function money(v){return '₹'+Number(v||0).toLocaleString('en-IN',{maximumFract
 function updateBotUI(b) {
   if(!b)return;
   const st=document.getElementById('botStatus'); if(st){st.innerText=b.risk_lock?'LOCKED':(b.enabled?'RUNNING':'STOPPED');st.className='bot-status '+(b.risk_lock?'locked':(b.enabled?'running':'stopped'));}
-  const set=(id,v)=>{const e=document.getElementById(id);if(e)e.value=v};
+  const set=(id,v)=>{const e=document.getElementById(id);if(e && document.activeElement!==e)e.value=v};
   set('botStrategy',b.strategy);set('botUnderlying',b.underlying);set('botMode',b.instrument_mode);set('botQty',b.qty);set('botRiskTrade',b.risk_per_trade);set('botSL',b.stop_loss_pct);set('botTP',b.target_pct);set('botDailyLoss',b.max_daily_loss);set('botMaxTrades',b.max_trades_per_day||5); const rr=document.getElementById('botRR');if(rr)rr.innerText='1 : '+(Number(b.target_pct||0)/Math.max(Number(b.stop_loss_pct||1),0.1)).toFixed(2);
   const sig=document.getElementById('botSignal');if(sig){sig.innerText=b.last_signal||'HOLD';sig.className='bot-signal '+String(b.last_signal||'HOLD').toLowerCase()}
   const cf=document.getElementById('botConfidence');if(cf)cf.innerText=((b.last_confidence||0)*100).toFixed(0)+'%';
@@ -1995,8 +2000,22 @@ async function runResearchMatrix(){
 }
 async function loadResearchHistory(){
   const el=document.getElementById('researchHistory'); if(el)el.innerHTML='<div class="bot-muted" style="padding:5px">Loading stored research…</div>';
-  try{const r=await fetch('/api/research/history?limit=40',{cache:'no-store'});const d=await r.json();if(!r.ok||!d.ok)throw new Error(d.error||'History unavailable'); if(el)el.innerHTML='<div class="bot-muted" style="margin-bottom:5px">'+d.runs.length+' stored test runs · retention '+d.retention_days+' days</div><div style="overflow:auto"><table class="bot-table"><thead><tr><th>ID</th><th>Type</th><th>Setup</th><th>TF</th><th>Lots</th><th>P&L</th><th>PF</th></tr></thead><tbody>'+d.runs.map(x=>`<tr><td>${x.id}</td><td>${x.kind}</td><td>${x.strategy||'—'}</td><td>${x.timeframe?x.timeframe/60+'m':'—'}</td><td>${x.lot_multiplier||1}</td><td class="${Number(x.result.net_pnl)>=0?'bot-good':'bot-bad'}">${money(x.result.net_pnl)}</td><td>${x.result.profit_factor??'—'}</td></tr>`).join('')+'</tbody></table></div>';}catch(e){if(el)el.innerHTML='<div class="bot-bad" style="padding:5px">'+(e.message||'History unavailable')+'</div>'}
+  try{const st=document.getElementById('rhStrategy')?.value||'ALL',mode=document.getElementById('rhMode')?.value||'ALL';let q='/api/research/history?limit=200';if(st!=='ALL')q+='&strategy='+encodeURIComponent(st);if(mode!=='ALL')q+='&mode='+encodeURIComponent(mode);const r=await fetch(q,{cache:'no-store'});const d=await r.json();if(!r.ok||!d.ok)throw new Error(d.error||'History unavailable');
+    if(!d.runs.length){if(el)el.innerHTML='<div class="bot-muted" style="padding:12px">No stored research matches these filters.</div>';return;}
+    const names={EMA_CROSS:'EMA 9/15',RSI_MEAN_REVERT:'RSI',VWAP_REVERT:'VWAP',BREAKOUT:'Breakout',RBS:'RBS',SBR:'SBR'};
+    if(el)el.innerHTML='<div class="bot-muted" style="margin-bottom:5px">'+d.runs.length+' stored runs · '+d.retention_days+'-day retention · tap a row to open every stored trade</div><div style="overflow:auto"><table class="bot-table"><thead><tr><th>ID</th><th>Time</th><th>Type</th><th>Setup</th><th>Market</th><th>TF</th><th>Lots</th><th>Trades</th><th>Win</th><th>P&L</th><th>PF</th></tr></thead><tbody>'+d.runs.map(x=>`<tr onclick="openResearchRun(${x.id})" style="cursor:pointer"><td>${x.id}</td><td>${replayLogTime(x.created_at)}</td><td>${x.kind}</td><td>${names[x.strategy]||x.strategy||'—'}</td><td>${x.underlying||'—'} / ${x.mode||'—'}</td><td>${x.timeframe?x.timeframe/60+'m':'—'}</td><td>${x.lot_multiplier||1}</td><td>${x.result.trades??0}</td><td>${x.result.win_rate??0}%</td><td class="${Number(x.result.net_pnl)>=0?'bot-good':'bot-bad'}">${money(x.result.net_pnl)}</td><td>${x.result.profit_factor??'—'}</td></tr>`).join('')+'</tbody></table></div>';
+  }catch(e){if(el)el.innerHTML='<div class="bot-bad" style="padding:5px">'+(e.message||'History unavailable')+'</div>'}
 }
+async function openResearchRun(runId){
+  const overlay=document.getElementById('replayLogOverlay'),sub=document.getElementById('replayLogSub'),summary=document.getElementById('replayLogSummary'),body=document.getElementById('replayLogBody'); if(!overlay)return;
+  try{const r=await fetch('/api/research/trades?run_id='+encodeURIComponent(runId),{cache:'no-store'});const d=await r.json();if(!r.ok||!d.ok)throw new Error(d.error||'Trade history unavailable');
+    if(sub)sub.innerText='RESEARCH RUN #'+runId+' · '+d.trades.length+' stored trades';
+    if(summary)summary.innerHTML=[['Trades',d.trades.length],['Run ID','#'+runId],['Storage','30 days'],['Source','Research DB']].map(x=>`<div class="bot-result"><span>${x[0]}</span><b>${x[1]}</b></div>`).join('');
+    const trades=d.trades.map(x=>x.trade||{}); if(body){if(!trades.length)body.innerHTML='<div class="replay-log-empty">No trade details stored for this run.</div>';else body.innerHTML='<table class="replay-log-table"><thead><tr><th>#</th><th>Symbol</th><th>Entry Time</th><th>Entry ₹</th><th>Exit Time</th><th>Exit ₹</th><th>Qty</th><th>R:R</th><th>Reason</th><th>P&L</th></tr></thead><tbody>'+trades.map((t,i)=>`<tr><td>${i+1}</td><td>${t.symbol||'INDEX'}</td><td>${replayLogTime(t.entry_time)}</td><td>₹${Number(t.entry||0).toFixed(2)}</td><td>${replayLogTime(t.exit_time)}</td><td>₹${Number(t.exit||0).toFixed(2)}</td><td>${t.qty??1}</td><td>1:${t.rr??'—'}</td><td>${t.reason||'—'}</td><td class="${Number(t.pnl)>=0?'bot-good':'bot-bad'}">₹${Number(t.pnl||0).toFixed(2)}</td></tr>`).join('')+'</tbody></table>';}
+    overlay.classList.add('open');overlay.setAttribute('aria-hidden','false');document.body.style.overflow='hidden';
+  }catch(e){alert(e.message||'Trade history unavailable')}
+}
+function downloadResearch(kind){window.location.href='/api/research/export.csv?kind='+encodeURIComponent(kind)}
 
 function replayLogTime(v){
   if(v===undefined||v===null||v==='') return '—';

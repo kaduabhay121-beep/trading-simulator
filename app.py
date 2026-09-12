@@ -547,7 +547,7 @@ def backtest_strategy(candles, strategy, sl_pct=0.6, tp_pct=1.2, starting_balanc
     net=balance-starting_balance; gross_profit=sum(max(0,t['pnl']) for t in trades); gross_loss=sum(-min(0,t['pnl']) for t in trades)
     pf=(gross_profit/gross_loss) if gross_loss else (999.0 if gross_profit else 0.0)
     avg_r=sum((t['pnl']/(max(sl_pct/100*max(t['entry']*t['qty'],1),0.01))) for t in trades)/len(trades) if trades else 0.0
-    return {'ok':True,'strategy':strategy,'trade_type':trade_type,'candles':len(candles),'trades':len(trades),'wins':int(wins),'losses':int(losses),'win_rate':round((wins/len(trades)*100),1) if trades else 0.0,'net_pnl':round(net,2),'return_pct':round(net/starting_balance*100,2),'profit_factor':round(pf,2),'max_drawdown':round(max_dd,2),'rr_ratio':_rr_ratio(sl_pct,tp_pct),'avg_r':round(avg_r,3),'qty':qty,'trades_detail':trades[-50:]}
+    return {'ok':True,'strategy':strategy,'trade_type':trade_type,'candles':len(candles),'trades':len(trades),'wins':int(wins),'losses':int(losses),'win_rate':round((wins/len(trades)*100),1) if trades else 0.0,'net_pnl':round(net,2),'return_pct':round(net/starting_balance*100,2),'profit_factor':round(pf,2),'max_drawdown':round(max_dd,2),'rr_ratio':_rr_ratio(sl_pct,tp_pct),'avg_r':round(avg_r,3),'qty':qty,'trades_detail':trades}
 
 def _align_candles(rows):
     return sorted([dict(x) for x in (rows or [])], key=lambda x:int(x.get('time',0)))
@@ -635,7 +635,7 @@ def _option_backtest(strategy, underlying, option_mode, days, sl_pct, tp_pct, st
             trades.append({'signal_time':position['signal_time'],'entry_time':position['time'],'exit_time':oc['time'],'entry':round(position['entry'],2),'exit':round(exitp,2),'qty':position['qty'],'lots':lot_multiplier,'pnl':round(pnl,2),'reason':'BTST/EOD' if trade_type=='BTST' else 'EOD','symbol':position['symbol'],'rr':_rr_ratio(sl_pct,tp_pct),'session':trade_type,'underlying_spot':position['spot'],'atm_strike':position['atm']}); wins += pnl>0; losses += pnl<=0
         peak=max(peak,balance); max_dd=max(max_dd,peak-balance)
     net=balance-starting_balance; gp=sum(max(0,t['pnl']) for t in trades); gl=sum(-min(0,t['pnl']) for t in trades); pf=gp/gl if gl else (999.0 if gp else 0.0)
-    return {'ok':True,'mode':option_mode,'underlying':underlying,'strategy':strategy,'timeframe':timeframe,'trade_type':trade_type,'lot_multiplier':lot_multiplier,'candles':len(base),'trades':len(trades),'wins':int(wins),'losses':int(losses),'win_rate':round(wins/len(trades)*100,1) if trades else 0.0,'net_pnl':round(net,2),'return_pct':round(net/starting_balance*100,2),'profit_factor':round(pf,2),'max_drawdown':round(max_dd,2),'rr_ratio':_rr_ratio(sl_pct,tp_pct),'trades_detail':trades[-50:],'data_note':'Historical option candles; research only; no Angel One orders are sent.'}
+    return {'ok':True,'mode':option_mode,'underlying':underlying,'strategy':strategy,'timeframe':timeframe,'trade_type':trade_type,'lot_multiplier':lot_multiplier,'candles':len(base),'trades':len(trades),'wins':int(wins),'losses':int(losses),'win_rate':round(wins/len(trades)*100,1) if trades else 0.0,'net_pnl':round(net,2),'return_pct':round(net/starting_balance*100,2),'profit_factor':round(pf,2),'max_drawdown':round(max_dd,2),'rr_ratio':_rr_ratio(sl_pct,tp_pct),'trades_detail':trades,'data_note':'Historical option candles; research only; no Angel One orders are sent.'}
 
 class SimulationState:
     def __init__(self):
@@ -645,9 +645,11 @@ class SimulationState:
         self.live_chain_cache={}; self.chart_cache={}; self.market_cache={}; self.market_cache_ts=0; self.angel=AngelOneData(); self.bot={'enabled':False,'strategy':'EMA_CROSS','underlying':'NIFTY','instrument_mode':'INDEX','qty':1,'risk_per_trade':1.0,'max_daily_loss':2.0,'stop_loss_pct':0.6,'target_pct':1.2,'last_signal':'HOLD','last_confidence':0,'last_reason':'Waiting for signal…','trades_today':0,'daily_pnl':0.0,'last_trade_ts':0,'last_eval_ts':0,'risk_lock':False,'risk_lock_reason':'','last_entry_price':0.0,'max_trades_per_day':5,'max_open_positions':1,'cooldown_sec':60,'trade_count_today':0,'session_date':datetime.now(IST).strftime('%Y-%m-%d'),'last_signal_change_ts':0,'strategy_stats':{k:{'trades':0,'wins':0,'loss':0,'pnl':0.0,'status':'UNVALIDATED'} for k in STRATEGIES},'initial_balance':1000000.0}; self._load_state(); self._init_history(); self.bot['enabled']=False; self._running=True
         threading.Thread(target=self._tick_loop,daemon=True).start()
 
-    DB_PATH=os.path.join(os.path.dirname(os.path.abspath(__file__)), 'simulator_state.db')
+    DB_PATH=os.environ.get('SIM_DB_PATH', os.path.join(os.path.dirname(os.path.abspath(__file__)), 'simulator_state.db'))
 
     def _db(self):
+        db_dir=os.path.dirname(os.path.abspath(self.DB_PATH))
+        os.makedirs(db_dir, exist_ok=True)
         db=sqlite3.connect(self.DB_PATH, timeout=5)
         db.execute("CREATE TABLE IF NOT EXISTS simulator_state (id INTEGER PRIMARY KEY CHECK(id=1), data TEXT NOT NULL)")
         db.execute("CREATE TABLE IF NOT EXISTS research_runs (id INTEGER PRIMARY KEY AUTOINCREMENT, created_at INTEGER NOT NULL, kind TEXT, strategy TEXT, underlying TEXT, mode TEXT, timeframe INTEGER, trade_type TEXT, days INTEGER, sl REAL, tp REAL, rr REAL, lot_multiplier INTEGER, result_json TEXT)")
@@ -1228,14 +1230,40 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return self._send_json({'ok':True,'days':days,'underlying':under,'mode':mode,'trade_type':trade_type,'starting_balance':state.bot.get('initial_balance',1000000.0),'results':results,'count':len(results),'retention_days':30,'note':'Research matrix is paper-only. GIFT Nifty/pre-open/CAS context is stored when available; historical external context is not fabricated.'})
         if parsed.path=='/api/research/history':
             p=parse_qs(parsed.query)
-            try: limit=max(1,min(200,int(p.get('limit',['50'])[0])))
-            except Exception: limit=50
+            try: limit=max(1,min(500,int(p.get('limit',['200'])[0])))
+            except Exception: limit=200
             try:
-                db=state._db(); rows=db.execute("SELECT id,created_at,kind,strategy,underlying,mode,timeframe,trade_type,days,sl,tp,rr,lot_multiplier,result_json FROM research_runs ORDER BY id DESC LIMIT ?",(limit,)).fetchall(); db.close()
+                db=state._db(); where=[]; args=[]
+                for col,key in [('strategy','strategy'),('underlying','underlying'),('mode','mode'),('trade_type','trade_type'),('kind','kind')]:
+                    val=p.get(key,[''])[0].strip()
+                    if val and val.upper()!='ALL': where.append(col+'=?'); args.append(val.upper())
+                sql="SELECT id,created_at,kind,strategy,underlying,mode,timeframe,trade_type,days,sl,tp,rr,lot_multiplier,result_json FROM research_runs"
+                if where: sql += ' WHERE ' + ' AND '.join(where)
+                sql += ' ORDER BY id DESC LIMIT ?'; args.append(limit)
+                rows=db.execute(sql,tuple(args)).fetchall(); db.close()
                 out=[]
                 for row in rows:
                     out.append({'id':row[0],'created_at':row[1],'kind':row[2],'strategy':row[3],'underlying':row[4],'mode':row[5],'timeframe':row[6],'trade_type':row[7],'days':row[8],'sl':row[9],'tp':row[10],'rr':row[11],'lot_multiplier':row[12],'result':json.loads(row[13]) if row[13] else {}})
-                return self._send_json({'ok':True,'runs':out,'retention_days':30})
+                return self._send_json({'ok':True,'runs':out,'retention_days':30,'db_path':state.DB_PATH})
+            except Exception as e: return self._send_json({'ok':False,'error':str(e)},500)
+        if parsed.path=='/api/research/export.csv':
+            p=parse_qs(parsed.query); kind=p.get('kind',['runs'])[0].lower()
+            import csv,io
+            try:
+                db=state._db(); buf=io.StringIO(); w=csv.writer(buf)
+                if kind=='trades':
+                    w.writerow(['run_id','trade_id','stored_at','trade_json'])
+                    rows=db.execute("SELECT run_id,id,created_at,trade_json FROM research_trades ORDER BY run_id DESC,id").fetchall()
+                    for r in rows: w.writerow(r)
+                    filename='research_trades_30d.csv'
+                else:
+                    w.writerow(['run_id','created_at','kind','strategy','underlying','mode','timeframe_sec','trade_type','days','stop_pct','target_pct','rr','lot_multiplier','candles','trades','wins','losses','win_rate','net_pnl','return_pct','profit_factor','max_drawdown'])
+                    rows=db.execute("SELECT id,created_at,kind,strategy,underlying,mode,timeframe,trade_type,days,sl,tp,rr,lot_multiplier,result_json FROM research_runs ORDER BY id DESC").fetchall()
+                    for r in rows:
+                        z=json.loads(r[13]) if r[13] else {}
+                        w.writerow([r[0],r[1],r[2],r[3],r[4],r[5],r[6],r[7],r[8],r[9],r[10],r[11],r[12],z.get('candles'),z.get('trades'),z.get('wins'),z.get('losses'),z.get('win_rate'),z.get('net_pnl'),z.get('return_pct'),z.get('profit_factor'),z.get('max_drawdown')])
+                    filename='research_runs_30d.csv'
+                db.close(); body=buf.getvalue().encode('utf-8-sig'); self.send_response(200); self.send_header('Content-Type','text/csv; charset=utf-8'); self.send_header('Content-Disposition','attachment; filename="'+filename+'"'); self.send_header('Content-Length',str(len(body))); self.end_headers(); self.wfile.write(body); return
             except Exception as e: return self._send_json({'ok':False,'error':str(e)},500)
         if parsed.path=='/api/research/trades':
             p=parse_qs(parsed.query)
@@ -1267,7 +1295,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 elif action=='RESET_RISK': state.bot['risk_lock']=False; state.bot['risk_lock_reason']=''; state.bot['daily_pnl']=0.0; state.bot['trades_today']=0; state.bot['trade_count_today']=0; state.bot['last_reason']='Risk counters reset'
                 elif action=='CONFIG':
                     for k in ('strategy','underlying','instrument_mode'):
-                        if k in payload and payload[k] in (['EMA_CROSS','RSI_MEAN_REVERT','VWAP_REVERT','BREAKOUT'] if k=='strategy' else ['NIFTY','SENSEX'] if k=='underlying' else ['INDEX','ATM_OPTIONS','ITM_1','ITM_2','ITM_3','OTM_1','OTM_2','OTM_3']): state.bot[k]=payload[k]
+                        if k in payload and payload[k] in (list(STRATEGIES) if k=='strategy' else ['NIFTY','SENSEX'] if k=='underlying' else ['INDEX','ATM_OPTIONS','ITM_1','ITM_2','ITM_3','OTM_1','OTM_2','OTM_3']): state.bot[k]=payload[k]
                     for k in ('qty','risk_per_trade','max_daily_loss','stop_loss_pct','target_pct','max_trades_per_day','max_open_positions','cooldown_sec'):
                         if k in payload:
                             try: state.bot[k]=max(0.01,float(payload[k]))
