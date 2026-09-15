@@ -202,7 +202,7 @@ canvas { width: 100% !important; height: 100% !important; display: block; }
           <span id="histChartStatus" class="hist-ct-status">Historical mode off</span>
         </div>
         <div class="hist-ct-row" id="histControls" style="display:none">
-          <button type="button" class="hist-ct-btn" onclick="safeHistoricalAction(event, historicalPrevCandle)">◀ PREV</button><button type="button" id="histPlayBtn" class="hist-ct-btn primary" onclick="safeHistoricalAction(event, toggleHistoricalPlay)">▶ PLAY</button><button type="button" class="hist-ct-btn" onclick="safeHistoricalAction(event, historicalNextCandle)">NEXT ▶</button>
+          <button type="button" class="hist-ct-btn" onclick="safeHistoricalAction(event, historicalPrevCandle)">◀ PREV</button><button type="button" class="hist-ct-btn" onclick="safeHistoricalAction(event, historicalZoomOut)">− TIME</button><button type="button" class="hist-ct-btn" onclick="safeHistoricalAction(event, historicalZoomIn)">+ TIME</button><button type="button" id="histPlayBtn" class="hist-ct-btn primary" onclick="safeHistoricalAction(event, toggleHistoricalPlay)">▶ PLAY</button><button type="button" class="hist-ct-btn" onclick="safeHistoricalAction(event, historicalNextCandle)">NEXT ▶</button>
           <select id="histSpeed" class="hist-ct-select"><option value="1">1×</option><option value="2">2×</option><option value="5">5×</option><option value="10">10×</option></select>
           <span class="hist-ct-badge">REPLAY <b id="histProgress">0/0</b> · <b id="histReplayTime">—</b></span>
           <span class="hist-ct-badge">CAPITAL <b id="histCapital">₹10,00,000</b> · P&L <b id="histPnl">₹0</b></span>
@@ -711,6 +711,7 @@ function getPriceFromY(pixelY) {
 
 // Touch Gestures
 viewport.addEventListener('touchstart', e => {
+  if (e.target && e.target.closest && e.target.closest('#historicalChartToolbar')) return;
   if (e.touches.length === 2) {
     e.preventDefault();
     clearTimeout(longPressTimer);
@@ -747,6 +748,7 @@ viewport.addEventListener('touchstart', e => {
 }, { passive: false });
 
 viewport.addEventListener('touchmove', e => {
+  if (e.target && e.target.closest && e.target.closest('#historicalChartToolbar')) return;
   if (dragMode === 'pinch' && e.touches.length === 2) {
     e.preventDefault();
     clearTimeout(longPressTimer);
@@ -772,32 +774,40 @@ viewport.addEventListener('touchmove', e => {
       priceScaleZoomFactor = Math.max(0.15, Math.min(6.0, priceScaleZoomFactor * (1 + dy * 0.01)));
       dragStartY = touchY;
       drawChart();
-    } else if (dragMode === 'time_row_zoom' || dragMode === 'chart_pan') {
+    } else if (dragMode === 'time_row_zoom') {
+      e.preventDefault();
+      const dx = touchX - dragStartX;
+      if (Math.abs(dx) >= 3) {
+        // Horizontal drag on the TIME AXIS changes candle density, like chart replay zoom.
+        // Drag right = fewer candles (zoom in), drag left = more candles (zoom out).
+        const factor = Math.exp(-dx / 140);
+        visibleCandleCount = Math.round(Math.max(10, Math.min(150, visibleCandleCount * factor)));
+        const total = marketCache.chart.candles.length;
+        panOffset = Math.max(0, Math.min(Math.max(0, total - visibleCandleCount), panOffset));
+        dragStartX = touchX;
+        drawChart();
+      }
+    } else if (dragMode === 'chart_pan') {
       e.preventDefault();
       const dx = touchX - dragStartX;
       const dy = touchY - dragStartY;
       let redraw = false;
-
       const logicalW = canvas.width / (window.devicePixelRatio || 1);
       const candlePx = Math.max(4, (logicalW - 70) / Math.max(visibleCandleCount, 1));
       const shift = Math.round(dx / candlePx);
       if (shift !== 0) {
         const total = marketCache.chart.candles.length;
         panOffset = Math.max(0, Math.min(Math.max(0,total - visibleCandleCount), panOffset + shift));
-        dragStartX = touchX;
-        redraw = true;
+        dragStartX = touchX; redraw = true;
       }
-
       if (Math.abs(dy) >= 1) {
         const chartTop = 68;
         const chartBottom = (canvas.height / (window.devicePixelRatio || 1)) - 24;
         const chartH = Math.max(chartBottom - chartTop, 50);
         const pRange = (smoothMaxP && smoothMinP) ? (smoothMaxP - smoothMinP) : 80;
         verticalPanOffset += dy * (pRange / chartH);
-        dragStartY = touchY;
-        redraw = true;
+        dragStartY = touchY; redraw = true;
       }
-
       if (redraw) drawChart();
     }
   }
@@ -811,7 +821,8 @@ viewport.addEventListener('wheel', e => {
   drawChart();
 }, { passive: false });
 
-viewport.addEventListener('touchend', () => {
+viewport.addEventListener('touchend', e => {
+  if (e.target && e.target.closest && e.target.closest('#historicalChartToolbar')) return;
   clearTimeout(longPressTimer);
   dragMode = 'none';
 });
@@ -1666,7 +1677,7 @@ function drawChart() {
   let targetMinP = Math.min(...candles.map(c => c.low));
   let targetMaxP = Math.max(...candles.map(c => c.high));
 
-  const matchingPos = historicalChartMode && historicalReplay?.position ? {id:'hist',symbol:historicalReplay.underlying,action:'BUY',qty:Number(historicalReplay.position.qty),buy_price:Number(historicalReplay.position.entry),ltp:Number(historicalCurrentCandle()?.close||historicalReplay.position.entry),pnl:(Number(historicalCurrentCandle()?.close||historicalReplay.position.entry)-Number(historicalReplay.position.entry))*Number(historicalReplay.position.qty),stop_loss:Number(historicalReplay.position.stop_loss||0),target:Number(historicalReplay.position.target||0),trailing_sl:Number(historicalReplay.position.trailing_sl||0)} : ((typeof findMatchingPosition === 'function') ? findMatchingPosition() : null);
+  const matchingPos = historicalChartMode && historicalReplay?.position ? {id:'hist',symbol:historicalReplay.underlying,action:historicalReplay.position.side==='SHORT'?'SELL':'BUY',qty:Number(historicalReplay.position.qty),buy_price:Number(historicalReplay.position.entry),ltp:Number(historicalCurrentCandle()?.close||historicalReplay.position.entry),pnl:(historicalReplay.position.side==='SHORT'?(Number(historicalReplay.position.entry)-Number(historicalCurrentCandle()?.close||historicalReplay.position.entry)):(Number(historicalCurrentCandle()?.close||historicalReplay.position.entry)-Number(historicalReplay.position.entry)))*Number(historicalReplay.position.qty),stop_loss:Number(historicalReplay.position.stop_loss||0),target:Number(historicalReplay.position.target||0),trailing_sl:Number(historicalReplay.position.trailing_sl||0)} : ((typeof findMatchingPosition === 'function') ? findMatchingPosition() : null);
 
   if (matchingPos) {
     targetMinP = Math.min(targetMinP, matchingPos.buy_price);
@@ -2172,6 +2183,7 @@ async function openResearchRun(runId){
   panel.addEventListener('pointerdown',e=>{if(e.target!==handle&&!handle.contains(e.target))e.stopPropagation();},{passive:false});
   panel.addEventListener('pointermove',e=>{if(!dragging)e.stopPropagation();},{passive:false});
   panel.addEventListener('pointerup',e=>e.stopPropagation(),{passive:false});
+  ['touchstart','touchmove','touchend','touchcancel'].forEach(type=>panel.addEventListener(type,e=>e.stopPropagation(),{passive:false}));
   minBtn?.addEventListener('click',e=>{e.preventDefault();e.stopPropagation();panel.classList.toggle('minimized');minBtn.textContent=panel.classList.contains('minimized')?'＋':'—';minBtn.title=panel.classList.contains('minimized')?'Restore':'Minimize';});
   maxBtn?.addEventListener('click',e=>{e.preventDefault();e.stopPropagation();panel.classList.toggle('maximized');maxBtn.textContent=panel.classList.contains('maximized')?'❐':'□';maxBtn.title=panel.classList.contains('maximized')?'Restore size':'Maximize';if(panel.classList.contains('maximized')){panel.style.left='8px';panel.style.top='8px';panel.style.right='8px';}else{panel.style.right='auto';clamp();}});
   window.addEventListener('resize',()=>{if(panel.classList.contains('open')&&!panel.classList.contains('maximized'))clamp();});
@@ -2244,7 +2256,12 @@ function updateHistoricalChartView(){
   if(document.getElementById('histPnl')){document.getElementById('histPnl').innerText=money(historicalReplay.realized_pnl);document.getElementById('histPnl').className=historicalReplay.realized_pnl>=0?'bot-good':'bot-bad';}
   const p=historicalReplay.position;
   const ps=document.getElementById('histPositionStatus');
-  if(ps){ps.style.display=p?'block':'none'; if(p)ps.innerHTML=`OPEN LONG · ${p.qty} Qty · Entry ₹${Number(p.entry).toFixed(2)} · SL ₹${Number(p.stop_loss||0).toFixed(2)} · Target ₹${Number(p.target||0).toFixed(2)}`;}
+  let unreal=0;
+  if(p){ const side=p.side==='SHORT'?'SHORT':'LONG'; unreal=(side==='SHORT'?(Number(p.entry)-Number(ch.ltp)):(Number(ch.ltp)-Number(p.entry)))*Number(p.qty||0); }
+  historicalReplay.unrealized_pnl=Number(unreal||0);
+  const totalPnl=Number(historicalReplay.realized_pnl||0)+historicalReplay.unrealized_pnl;
+  if(document.getElementById('histPnl')){document.getElementById('histPnl').innerText=money(totalPnl);document.getElementById('histPnl').className=totalPnl>=0?'bot-good':'bot-bad';}
+  if(ps){ps.style.display=p?'block':'none'; if(p)ps.innerHTML=`OPEN ${p.side==='SHORT'?'SHORT':'LONG'} · ${p.qty} Qty · Entry ₹${Number(p.entry).toFixed(2)} · LTP ₹${Number(ch.ltp).toFixed(2)} · Unrealized ${money(unreal)} · SL ₹${Number(p.stop_loss||0).toFixed(2)} · Target ₹${Number(p.target||0).toFixed(2)}`;}
   drawChart();
 }
 function toggleHistoricalPanel(){
@@ -2278,7 +2295,7 @@ async function startHistoricalChartTrading(){
     const q=new URLSearchParams({date,tf:String(tf),underlying:under,mode:instrument,trade_type:'INTRADAY',instrument_type:instrument,option_type:otype,expiry:ex,strike:st});
     const r=await fetch(`/api/historical/chart_day?${q.toString()}`,{cache:'no-store'}),d=await r.json();
     if(!r.ok||!d.ok)throw new Error(d.error||`Historical chart failed (HTTP ${r.status})`);
-    historicalReplay={session_id:d.session.session_id,run_id:d.run_id,date:d.replay_day,underlying:d.underlying,tf:d.timeframe,candles:d.candles_data,index:0,playing:false,speed:1,qty:Math.max(1,qty),position:d.session.position||null,trades:d.session.trades||[],realized_pnl:Number(d.session.realized_pnl||0),balance:Number(d.session.balance||1000000),starting_balance:Number(d.session.starting_balance||1000000),max_drawdown:Number(d.session.max_drawdown||0),instrument_type:d.session.instrument_type||instrument,option_type:d.session.option_type||otype,expiry:d.session.expiry||ex,strike:Number(d.session.strike||st||0),contract_symbol:d.session.contract_symbol||'',display_symbol:d.session.display_symbol||under};
+    historicalReplay={session_id:d.session.session_id,run_id:d.run_id,date:d.replay_day,underlying:d.underlying,tf:d.timeframe,candles:d.candles_data,index:0,playing:false,speed:1,qty:Math.max(1,qty),position:d.session.position||null,trades:d.session.trades||[],realized_pnl:Number(d.session.realized_pnl||0),unrealized_pnl:0,balance:Number(d.session.balance||1000000),starting_balance:Number(d.session.starting_balance||1000000),max_drawdown:Number(d.session.max_drawdown||0),instrument_type:d.session.instrument_type||instrument,option_type:d.session.option_type||otype,expiry:d.session.expiry||ex,strike:Number(d.session.strike||st||0),contract_symbol:d.session.contract_symbol||'',display_symbol:d.session.display_symbol||under};
     historicalChartMode=true; currentChartSymbol=(instrument==='OPTION'?(d.session.contract_symbol||'OPTION'):under); currentTimeframe=(tf/60)+'m'; currentTradeMode='MARKET';
     document.getElementById('historicalChartToolbar')?.classList.add('open');
     document.getElementById('histControls').style.display='flex'; document.getElementById('histExitBtn').style.display='inline-block';
@@ -2302,6 +2319,8 @@ function exitHistoricalChartTrading(){
   historicalChartMode=false; historicalReplay=null; const hc=document.getElementById('histControls'); if(hc)hc.style.display='none'; const hp=document.getElementById('histProgressRow'); if(hp)hp.style.display='none'; const hs=document.getElementById('histStatsRow'); if(hs)hs.style.display='none'; const he=document.getElementById('histExitBtn'); if(he)he.style.display='none';
   document.getElementById('histChartStatus').innerText='Historical mode closed. Live chart restored.'; document.getElementById('historicalChartToolbar')?.classList.remove('open'); fetchMarket(true);
 }
+function historicalZoomIn(){ if(!historicalReplay)return; visibleCandleCount=Math.max(10,Math.round(visibleCandleCount*0.8)); panOffset=Math.min(Math.max(0,historicalReplay.candles.length-visibleCandleCount),panOffset); drawChart(); }
+function historicalZoomOut(){ if(!historicalReplay)return; visibleCandleCount=Math.min(150,Math.round(visibleCandleCount*1.25)); panOffset=Math.min(Math.max(0,historicalReplay.candles.length-visibleCandleCount),panOffset); drawChart(); }
 function historicalPrevCandle(){if(!historicalReplay)return;historicalReplay.index=Math.max(0,historicalReplay.index-1);updateHistoricalChartView();}
 async function historicalNextCandle(){
   if(!historicalReplay)return;
@@ -2319,19 +2338,40 @@ async function historicalPlayLoop(){
 async function historicalCheckPosition(){
   const h=historicalReplay,p=h?.position,c=historicalCurrentCandle(); if(!h||!p||!c)return;
   let exitPrice=0,reason='';
-  if(Number(p.stop_loss)>0 && Number(c.low)<=Number(p.stop_loss)){exitPrice=Number(p.stop_loss);reason='SL';}
-  else if(Number(p.target)>0 && Number(c.high)>=Number(p.target)){exitPrice=Number(p.target);reason='TARGET';}
+  if(p.side==='SHORT'){
+    if(Number(p.stop_loss)>0 && Number(c.high)>=Number(p.stop_loss)){exitPrice=Number(p.stop_loss);reason='SL';}
+    else if(Number(p.target)>0 && Number(c.low)<=Number(p.target)){exitPrice=Number(p.target);reason='TARGET';}
+  } else {
+    if(Number(p.stop_loss)>0 && Number(c.low)<=Number(p.stop_loss)){exitPrice=Number(p.stop_loss);reason='SL';}
+    else if(Number(p.target)>0 && Number(c.high)>=Number(p.target)){exitPrice=Number(p.target);reason='TARGET';}
+  }
   if(!exitPrice)return;
   await historicalCloseAt(exitPrice,reason,c);
 }
 async function historicalChartTrade(side){
   const h=historicalReplay,c=historicalCurrentCandle();
   if(!historicalChartMode||!h||!c){const st=document.getElementById('histChartStatus');if(st)st.innerText='Historical session is not loaded. Click LOAD HISTORICAL first.';return;}
-  if(side==='SELL'){if(!h.position){const st=document.getElementById('histChartStatus');if(st)st.innerText='SELL ignored: no historical long position is open.';return;} await historicalCloseAt(Number(c.close),'MANUAL_EXIT',c);const st=document.getElementById('histChartStatus');if(st)st.innerText=`HIST SELL / EXIT · ₹${Number(c.close).toFixed(2)} · ${replayLogTime(c.time)}`;return;}
-  if(h.position){alert('A historical position is already open.');return;}
+  const price=Number(c.close);
   const qty=Math.max(1,Number(document.getElementById('histChartQty')?.value||h.qty||1));
-  const price=Number(c.close); const slPct=Number(document.getElementById('botSL')?.value||0.6),tpPct=Number(document.getElementById('botTP')?.value||1.2); const sl=Number(document.getElementById('inputLomSL')?.value||price*(1-slPct/100)); const tp=Number(document.getElementById('inputLomTarget')?.value||price*(1+tpPct/100));
-  try{const r=await fetch('/api/historical/chart_trade',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({session_id:h.session_id,action:'BUY',qty,price,stop_loss:sl,target:tp,trailing_sl:0,candle_time:c.time,candle_index:h.index})});const d=await r.json();if(!r.ok||!d.ok)throw new Error(d.error||'Historical BUY failed');h.position=d.position;h.qty=qty;playSound('ORDER_PLACED');const st=document.getElementById('histChartStatus');if(st)st.innerText=`HIST BUY filled · ₹${price.toFixed(2)} · ${qty} Qty · ${replayLogTime(c.time)}`;updateHistoricalChartView();}catch(e){const st=document.getElementById('histChartStatus');if(st)st.innerText='Historical BUY failed: '+(e.message||e);alert(e.message||e)}
+  const action=String(side||'BUY').toUpperCase();
+  // BUY opens LONG or closes SHORT; SELL opens SHORT or closes LONG.
+  const existing=h.position;
+  if(existing && ((action==='BUY'&&existing.side==='LONG')||(action==='SELL'&&existing.side==='SHORT'))){
+    const st=document.getElementById('histChartStatus');if(st)st.innerText=`${action} ignored: ${existing.side} position already open.`;return;
+  }
+  const isClosing=existing && ((action==='SELL'&&existing.side==='LONG')||(action==='BUY'&&existing.side==='SHORT'));
+  const slPct=Number(document.getElementById('botSL')?.value||0.6),tpPct=Number(document.getElementById('botTP')?.value||1.2);
+  const sl=isClosing?Number(existing.stop_loss||0):(action==='BUY'?price*(1-slPct/100):price*(1+slPct/100));
+  const tp=isClosing?Number(existing.target||0):(action==='BUY'?price*(1+tpPct/100):price*(1-tpPct/100));
+  try{
+    const r=await fetch('/api/historical/chart_trade',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({session_id:h.session_id,action,qty:existing?Number(existing.qty):qty,price,stop_loss:sl,target:tp,trailing_sl:0,candle_time:c.time,candle_index:h.index})});
+    const d=await r.json();if(!r.ok||!d.ok)throw new Error(d.error||`Historical ${action} failed`);
+    h.position=d.position||null; h.qty=qty;
+    if(d.session){h.trades=d.session.trades||h.trades;h.realized_pnl=Number(d.session.realized_pnl||h.realized_pnl);h.balance=Number(d.session.balance||h.balance);h.max_drawdown=Number(d.session.max_drawdown||h.max_drawdown);}
+    playSound('ORDER_PLACED');
+    const st=document.getElementById('histChartStatus');if(st)st.innerText=isClosing?`HIST ${action} filled / EXIT · ₹${price.toFixed(2)} · ${replayLogTime(c.time)}`:`HIST ${action} filled · ₹${price.toFixed(2)} · ${qty} Qty · ${replayLogTime(c.time)}`;
+    updateHistoricalChartView();
+  }catch(e){const st=document.getElementById('histChartStatus');if(st)st.innerText=`Historical ${action} failed: `+(e.message||e);alert(e.message||e)}
 }
 async function historicalChartLimitTrade(){
   const h=historicalReplay,c=historicalCurrentCandle();if(!h||!c)return;

@@ -1825,24 +1825,29 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 if not session: return self._send_json({'ok':False,'error':'Historical chart session not found.'},404)
                 if price<=0: return self._send_json({'ok':False,'error':'Historical trade price is invalid.'},400)
                 pos=session.get('position')
-                if action=='BUY':
-                    if pos: return self._send_json({'ok':False,'error':'A historical position is already open. Close it before buying again.'},400)
-                    pos={'side':'LONG','entry':price,'qty':qty,'stop_loss':sl,'target':tp,'trailing_sl':tsl,'entry_time':candle_time,'entry_index':candle_index,'symbol':session.get('contract_symbol') or session.get('display_symbol') or session.get('underlying','NIFTY')}
-                    session['position']=pos; session['status']='OPEN'; session['replay_index']=candle_index; state._save_historical_chart_session(session)
-                    return self._send_json({'ok':True,'session':session,'position':pos,'paper_only':True})
-                if action=='SELL':
-                    if not pos: return self._send_json({'ok':False,'error':'No historical long position is open.'},400)
-                    pnl=(price-float(pos['entry']))*int(pos['qty']); trade={'symbol':pos.get('symbol',session.get('contract_symbol') or session.get('display_symbol') or session.get('underlying','NIFTY')),'action':'BUY','qty':int(pos['qty']),'entry':round(float(pos['entry']),2),'exit':round(price,2),'entry_time':pos.get('entry_time',0),'exit_time':candle_time,'entry_index':pos.get('entry_index',0),'exit_index':candle_index,'pnl':round(pnl,2),'reason':str(payload.get('reason','MANUAL_EXIT')),'rr':round((float(pos.get('target',0))-float(pos.get('entry',0)))/max(float(pos.get('entry',0))-float(pos.get('stop_loss',0)),0.01),2) if pos.get('stop_loss') and pos.get('target') else 0.0,'session':'HISTORICAL_CHART'}
+                # BUY opens LONG or closes SHORT. SELL opens SHORT or closes LONG.
+                if action not in ('BUY','SELL'): return self._send_json({'ok':False,'error':'Historical action must be BUY or SELL.'},400)
+                closing = bool(pos and ((action=='SELL' and pos.get('side','LONG')=='LONG') or (action=='BUY' and pos.get('side','LONG')=='SHORT')))
+                if pos and not closing:
+                    return self._send_json({'ok':False,'error':f'A historical {pos.get("side","LONG")} position is already open. Close it before opening the opposite side.'},400)
+                if closing:
+                    side=pos.get('side','LONG'); pnl=((float(pos['entry'])-price) if side=='SHORT' else (price-float(pos['entry'])))*int(pos['qty'])
+                    trade={'symbol':pos.get('symbol',session.get('contract_symbol') or session.get('display_symbol') or session.get('underlying','NIFTY')),'action':side,'qty':int(pos['qty']),'entry':round(float(pos['entry']),2),'exit':round(price,2),'entry_time':pos.get('entry_time',0),'exit_time':candle_time,'entry_index':pos.get('entry_index',0),'exit_index':candle_index,'pnl':round(pnl,2),'reason':str(payload.get('reason','MANUAL_EXIT')),'rr':round((abs(float(pos.get('target',0))-float(pos.get('entry',0))))/max(abs(float(pos.get('entry',0))-float(pos.get('stop_loss',0))),0.01),2) if pos.get('stop_loss') and pos.get('target') else 0.0,'session':'HISTORICAL_CHART'}
                     session['position']=None; session['replay_index']=candle_index; state._append_historical_chart_trade(session,trade)
-                    return self._send_json({'ok':True,'session':session,'trade':trade,'paper_only':True})
-                return self._send_json({'ok':False,'error':'Only BUY to open and SELL to close are supported in historical chart mode.'},400)
+                    return self._send_json({'ok':True,'session':session,'trade':trade,'position':None,'paper_only':True})
+                side='LONG' if action=='BUY' else 'SHORT'
+                if side=='LONG': stop=sl or price*(1-float(session.get('stop_loss_pct',0.6))/100); target=tp or price*(1+float(session.get('target_pct',1.2))/100)
+                else: stop=sl or price*(1+float(session.get('stop_loss_pct',0.6))/100); target=tp or price*(1-float(session.get('target_pct',1.2))/100)
+                pos={'side':side,'entry':price,'qty':qty,'stop_loss':stop,'target':target,'trailing_sl':tsl,'entry_time':candle_time,'entry_index':candle_index,'symbol':session.get('contract_symbol') or session.get('display_symbol') or session.get('underlying','NIFTY')}
+                session['position']=pos; session['status']='OPEN'; session['replay_index']=candle_index; state._save_historical_chart_session(session)
+                return self._send_json({'ok':True,'session':session,'position':pos,'paper_only':True})
             if parsed.path=='/api/historical/chart_close':
                 sid=str(payload.get('session_id','')).strip(); price=float(payload.get('price',0) or 0); candle_time=int(payload.get('candle_time',0) or 0); candle_index=int(payload.get('candle_index',0) or 0); reason=str(payload.get('reason','MANUAL_EXIT'))
                 session=state._get_historical_chart_session(sid)
                 if not session: return self._send_json({'ok':False,'error':'Historical chart session not found.'},404)
                 pos=session.get('position')
                 if not pos: return self._send_json({'ok':False,'error':'No historical position is open.'},400)
-                pnl=(price-float(pos['entry']))*int(pos['qty']); trade={'symbol':pos.get('symbol',session.get('contract_symbol') or session.get('display_symbol') or session.get('underlying','NIFTY')),'action':'BUY','qty':int(pos['qty']),'entry':round(float(pos['entry']),2),'exit':round(price,2),'entry_time':pos.get('entry_time',0),'exit_time':candle_time,'entry_index':pos.get('entry_index',0),'exit_index':candle_index,'pnl':round(pnl,2),'reason':reason,'rr':round((float(pos.get('target',0))-float(pos.get('entry',0)))/max(float(pos.get('entry',0))-float(pos.get('stop_loss',0)),0.01),2) if pos.get('stop_loss') and pos.get('target') else 0.0,'session':'HISTORICAL_CHART'}
+                pnl=((float(pos['entry'])-price) if pos.get('side','LONG')=='SHORT' else (price-float(pos['entry'])))*int(pos['qty']); trade={'symbol':pos.get('symbol',session.get('contract_symbol') or session.get('display_symbol') or session.get('underlying','NIFTY')),'action':'BUY','qty':int(pos['qty']),'entry':round(float(pos['entry']),2),'exit':round(price,2),'entry_time':pos.get('entry_time',0),'exit_time':candle_time,'entry_index':pos.get('entry_index',0),'exit_index':candle_index,'pnl':round(pnl,2),'reason':reason,'rr':round((float(pos.get('target',0))-float(pos.get('entry',0)))/max(float(pos.get('entry',0))-float(pos.get('stop_loss',0)),0.01),2) if pos.get('stop_loss') and pos.get('target') else 0.0,'session':'HISTORICAL_CHART'}
                 session['position']=None; session['replay_index']=candle_index; state._append_historical_chart_trade(session,trade)
                 return self._send_json({'ok':True,'session':session,'trade':trade,'paper_only':True})
             if parsed.path=='/api/historical/chart_finish':
