@@ -782,6 +782,7 @@ class SimulationState:
                 "CREATE TABLE IF NOT EXISTS research_trades (id BIGSERIAL PRIMARY KEY, run_id BIGINT, created_at BIGINT NOT NULL, trade_json TEXT NOT NULL)",
                 "CREATE TABLE IF NOT EXISTS paper_trade_journal (id BIGSERIAL PRIMARY KEY, created_at BIGINT NOT NULL, trade_json TEXT NOT NULL)",
                 "CREATE TABLE IF NOT EXISTS historical_datasets (dataset_key TEXT PRIMARY KEY, saved_at BIGINT NOT NULL, meta_json TEXT NOT NULL, candles_json TEXT NOT NULL)"
+                "CREATE TABLE IF NOT EXISTS historical_replay_sessions (session_id TEXT PRIMARY KEY, created_at BIGINT NOT NULL, updated_at BIGINT NOT NULL, run_id BIGINT, replay_day TEXT NOT NULL, underlying TEXT NOT NULL, mode TEXT NOT NULL, timeframe INTEGER NOT NULL, trade_type TEXT NOT NULL, state_json TEXT NOT NULL)"
             ]
             for sql in stmts: db.execute(sql)
             db.commit()
@@ -794,6 +795,7 @@ class SimulationState:
         db.execute("CREATE TABLE IF NOT EXISTS research_trades (id INTEGER PRIMARY KEY AUTOINCREMENT, run_id INTEGER, created_at INTEGER NOT NULL, trade_json TEXT NOT NULL)")
         db.execute("CREATE TABLE IF NOT EXISTS paper_trade_journal (id INTEGER PRIMARY KEY AUTOINCREMENT, created_at INTEGER NOT NULL, trade_json TEXT NOT NULL)")
         db.execute("CREATE TABLE IF NOT EXISTS historical_datasets (dataset_key TEXT PRIMARY KEY, saved_at INTEGER NOT NULL, meta_json TEXT NOT NULL, candles_json TEXT NOT NULL)")
+        db.execute("CREATE TABLE IF NOT EXISTS historical_replay_sessions (session_id TEXT PRIMARY KEY, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, run_id INTEGER, replay_day TEXT NOT NULL, underlying TEXT NOT NULL, mode TEXT NOT NULL, timeframe INTEGER NOT NULL, trade_type TEXT NOT NULL, state_json TEXT NOT NULL)")
         # Research/replay history is permanent by design. Nothing is auto-deleted.
         return _DBAdapter(db, False)
 
@@ -817,14 +819,57 @@ class SimulationState:
         try:
             db=self._db(); now=int(time.time());
             if self.DATABASE_URL:
-                cur=db.execute("INSERT INTO research_runs(created_at,kind,strategy,underlying,mode,timeframe,trade_type,days,sl,tp,rr,lot_multiplier,result_json) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id",(now,kind,result.get('strategy'),result.get('underlying'),result.get('mode'),result.get('timeframe'),result.get('trade_type','INTRADAY'),days,sl,tp,_rr_ratio(sl,tp),lot_multiplier,json.dumps(result,separators=(',',':'))))
+                cur=db.execute("INSERT INTO research_runs(created_at,kind,strategy,underlying,mode,timeframe,trade_type,days,sl,tp,rr,lot_multiplier,result_json) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id",(now,kind,result.get('strategy'),result.get('underlying'),result.get('mode'),result.get('timeframe'),result.get('trade_type','INTRADAY'),days,sl,tp,_rr_ratio(sl,tp),lot_multiplier,json.dumps(result,separators=(',',':'))))
                 rid=cur.fetchone()[0]
             else:
-                cur=db.execute("INSERT INTO research_runs(created_at,kind,strategy,underlying,mode,timeframe,trade_type,days,sl,tp,rr,lot_multiplier,result_json) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",(now,kind,result.get('strategy'),result.get('underlying'),result.get('mode'),result.get('timeframe'),result.get('trade_type','INTRADAY'),days,sl,tp,_rr_ratio(sl,tp),lot_multiplier,json.dumps(result,separators=(',',':'))))
+                cur=db.execute("INSERT INTO research_runs(created_at,kind,strategy,underlying,mode,timeframe,trade_type,days,sl,tp,rr,lot_multiplier,result_json) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",(now,kind,result.get('strategy'),result.get('underlying'),result.get('mode'),result.get('timeframe'),result.get('trade_type','INTRADAY'),days,sl,tp,_rr_ratio(sl,tp),lot_multiplier,json.dumps(result,separators=(',',':'))))
                 rid=cur.lastrowid
             for t in result.get('trades_detail',[]): db.execute("INSERT INTO research_trades(run_id,created_at,trade_json) VALUES(?,?,?)",(rid,now,json.dumps(t,separators=(',',':'))))
             db.commit(); db.close(); return rid
         except Exception: return None
+
+    def _create_historical_chart_session(self, replay_day, underlying, mode, timeframe, trade_type, starting_balance=1000000.0):
+        sid=base64.urlsafe_b64encode(os.urandom(18)).decode().rstrip('=')
+        state={'session_id':sid,'replay_day':str(replay_day),'underlying':str(underlying).upper(),'mode':str(mode).upper(),'timeframe':int(timeframe),'trade_type':str(trade_type).upper(),'starting_balance':float(starting_balance),'balance':float(starting_balance),'realized_pnl':0.0,'position':None,'trades':[],'peak_balance':float(starting_balance),'max_drawdown':0.0,'replay_index':0,'status':'OPEN'}
+        result={'strategy':'MANUAL_CHART','underlying':state['underlying'],'mode':state['mode'],'timeframe':state['timeframe'],'trade_type':state['trade_type'],'replay_day':state['replay_day'],'candles':0,'trades':0,'wins':0,'losses':0,'win_rate':0.0,'net_pnl':0.0,'return_pct':0.0,'profit_factor':0.0,'max_drawdown':0.0,'rr_ratio':0.0,'trades_detail':[],'session_id':sid,'status':'OPEN','data_note':'Interactive historical chart trading; paper-only; no Angel One order placement.'}
+        rid=self._store_research('HISTORICAL_CHART',result,days=1,sl=0,tp=0,lot_multiplier=1)
+        now=int(time.time())
+        try:
+            db=self._db(); db.execute('INSERT INTO historical_replay_sessions(session_id,created_at,updated_at,run_id,replay_day,underlying,mode,timeframe,trade_type,state_json) VALUES(?,?,?,?,?,?,?,?,?,?)',(sid,now,now,rid,state['replay_day'],state['underlying'],state['mode'],state['timeframe'],state['trade_type'],json.dumps(state,separators=(',',':')))); db.commit(); db.close()
+        except Exception:
+            pass
+        state['run_id']=rid
+        return state
+
+    def _get_historical_chart_session(self, session_id):
+        try:
+            db=self._db(); row=db.execute('SELECT state_json,run_id FROM historical_replay_sessions WHERE session_id=?',(str(session_id),)).fetchone(); db.close()
+            if not row: return None
+            state=json.loads(row[0]); state['run_id']=row[1]; return state
+        except Exception: return None
+
+    def _save_historical_chart_session(self, state):
+        try:
+            db=self._db(); now=int(time.time()); state=dict(state); db.execute('UPDATE historical_replay_sessions SET updated_at=?,state_json=? WHERE session_id=?',(now,json.dumps(state,separators=(',',':')),str(state.get('session_id'))));
+            rid=state.get('run_id')
+            result={'strategy':'MANUAL_CHART','underlying':state.get('underlying'),'mode':state.get('mode'),'timeframe':state.get('timeframe'),'trade_type':state.get('trade_type'),'replay_day':state.get('replay_day'),'candles':state.get('candles',0),'trades':len(state.get('trades',[])),'wins':sum(1 for t in state.get('trades',[]) if float(t.get('pnl',0))>0),'losses':sum(1 for t in state.get('trades',[]) if float(t.get('pnl',0))<=0),'win_rate':round(sum(1 for t in state.get('trades',[]) if float(t.get('pnl',0))>0)/len(state.get('trades',[]))*100,1) if state.get('trades') else 0.0,'net_pnl':round(float(state.get('realized_pnl',0)),2),'return_pct':round(float(state.get('realized_pnl',0))/max(float(state.get('starting_balance',1000000)),1)*100,2),'profit_factor':round(sum(max(0,float(t.get('pnl',0))) for t in state.get('trades',[]))/max(sum(-min(0,float(t.get('pnl',0))) for t in state.get('trades',[])),0.01),2) if any(float(t.get('pnl',0))<0 for t in state.get('trades',[])) else (999.0 if any(float(t.get('pnl',0))>0 for t in state.get('trades',[])) else 0.0),'max_drawdown':round(float(state.get('max_drawdown',0)),2),'rr_ratio':0.0,'trades_detail':state.get('trades',[]),'session_id':state.get('session_id'),'status':state.get('status','OPEN'),'data_note':'Interactive historical chart trading; paper-only; no Angel One order placement.'}
+            if rid:
+                db.execute('UPDATE research_runs SET result_json=? WHERE id=?',(json.dumps(result,separators=(',',':')),rid))
+            db.commit(); db.close(); return result
+        except Exception: return None
+
+    def _append_historical_chart_trade(self, state, trade):
+        state.setdefault('trades',[]).append(trade)
+        state['realized_pnl']=round(float(state.get('realized_pnl',0))+float(trade.get('pnl',0)),2)
+        state['balance']=round(float(state.get('starting_balance',1000000))+state['realized_pnl'],2)
+        state['peak_balance']=max(float(state.get('peak_balance',state['balance'])),state['balance'])
+        state['max_drawdown']=max(float(state.get('max_drawdown',0)),state['peak_balance']-state['balance'])
+        rid=state.get('run_id'); now=int(time.time())
+        try:
+            db=self._db(); db.execute('INSERT INTO research_trades(run_id,created_at,trade_json) VALUES(?,?,?)',(rid,now,json.dumps(trade,separators=(',',':')))); db.commit(); db.close()
+        except Exception: pass
+        self._save_historical_chart_session(state)
+        return state
 
     def _journal_paper_trade(self, trade):
         try:
@@ -1336,6 +1381,36 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 candles=state._bot_underlying_candles(state.bot['underlying']); candles=candles[:-1] if len(candles)>1 else candles; signal,conf,meta=strategy_signal(candles,state.bot['strategy']) if len(candles)>=25 else ('HOLD',0.0,{})
                 state.bot['last_signal']=signal; state.bot['last_confidence']=conf; state.bot['signal_meta']=meta; state.bot['last_reason']=state._bot_reason(signal,meta) if meta else 'Waiting for enough candles…'
                 return self._send_json({'ok':True,'bot':state.bot,'paper_only':True})
+        if parsed.path=='/api/historical/chart_day':
+            p=parse_qs(parsed.query)
+            date=p.get('date',[''])[0] or datetime.now(IST).date().isoformat()
+            under=p.get('underlying',['NIFTY'])[0].upper(); mode=p.get('mode',['INDEX'])[0].upper(); trade_type=p.get('trade_type',['INTRADAY'])[0].upper()
+            try: tf=max(60,min(3600,int(p.get('tf',['300'])[0])))
+            except Exception: tf=300
+            day=_parse_replay_date(date)
+            if not day: return self._send_json({'ok':False,'error':'Invalid historical date. Use YYYY-MM-DD.'},400)
+            if day.weekday()>=5: return self._send_json({'ok':False,'error':'Selected date is a weekend. Choose an NSE/BSE trading day.'},400)
+            if not state.angel.enabled: return self._send_json({'ok':False,'error':'Historical chart trading needs Angel One historical market data. Enable ANGELONE_ENABLED.'},400)
+            interval=TF_INTERVALS.get(tf,'FIVE_MINUTE'); start_day=day.isoformat(); end_day=day.isoformat()
+            base=state._load_historical_dataset(under,mode,tf,start_day,end_day)
+            data_source='Persistent historical dataset' if base else 'Angel One Historical API'
+            if not base:
+                inst=state.angel.find_index(under)
+                base=state.angel.candles_range(inst,interval,day,day) if inst else []
+                if base: state._store_historical_dataset(under,mode,tf,start_day,end_day,base)
+            base=_align_candles(base)
+            if not base: return self._send_json({'ok':False,'error':f'No historical candles returned for {under} on {date}. Angel One may not have data for that session.'},404)
+            sid=p.get('session_id',[''])[0].strip()
+            session=state._get_historical_chart_session(sid) if sid else None
+            if session and (session.get('replay_day')!=date or session.get('underlying')!=under or int(session.get('timeframe',tf))!=tf): session=None
+            if not session: session=state._create_historical_chart_session(date,under,mode,tf,trade_type,1000000.0)
+            session['candles']=len(base); session['data_source']=data_source; state._save_historical_chart_session(session)
+            result={'ok':True,'session':session,'run_id':session.get('run_id'),'replay_day':date,'underlying':under,'mode':mode,'trade_type':trade_type,'timeframe':tf,'interval':interval,'candles':len(base),'data_source':data_source,'candles_data':base,'paper_only':True,'note':'Historical chart trading is simulated only. No Angel One order-placement API is called.'}
+            return self._send_json(result)
+        if parsed.path=='/api/historical/chart_session':
+            p=parse_qs(parsed.query); sid=p.get('session_id',[''])[0].strip(); session=state._get_historical_chart_session(sid) if sid else None
+            if not session: return self._send_json({'ok':False,'error':'Historical chart session not found.'},404)
+            return self._send_json({'ok':True,'session':session,'paper_only':True})
         if parsed.path=='/api/historical/replay_day':
             p=parse_qs(parsed.query)
             day=_parse_replay_date(p.get('date',[''])[0])
@@ -1611,6 +1686,37 @@ class Handler(http.server.BaseHTTPRequestHandler):
                             except: pass
                     state.bot['qty']=int(max(1,state.bot.get('qty',1))); state.bot['max_trades_per_day']=int(max(1,state.bot.get('max_trades_per_day',5))); state.bot['max_open_positions']=int(max(1,state.bot.get('max_open_positions',1))); state.bot['cooldown_sec']=int(max(5,state.bot.get('cooldown_sec',60)))
                 state._save_state(); self._send_json({'ok':True,'bot':{**state.bot,'open_positions':len(state._bot_positions())},'paper_only':True}); return
+            if parsed.path=='/api/historical/chart_trade':
+                sid=str(payload.get('session_id','')).strip(); action=str(payload.get('action','BUY')).upper(); price=float(payload.get('price',0) or 0); qty=max(1,int(payload.get('qty',1) or 1)); sl=float(payload.get('stop_loss',0) or 0); tp=float(payload.get('target',0) or 0); tsl=float(payload.get('trailing_sl',0) or 0); candle_time=int(payload.get('candle_time',0) or 0); candle_index=int(payload.get('candle_index',0) or 0)
+                session=state._get_historical_chart_session(sid)
+                if not session: return self._send_json({'ok':False,'error':'Historical chart session not found.'},404)
+                if price<=0: return self._send_json({'ok':False,'error':'Historical trade price is invalid.'},400)
+                pos=session.get('position')
+                if action=='BUY':
+                    if pos: return self._send_json({'ok':False,'error':'A historical position is already open. Close it before buying again.'},400)
+                    pos={'side':'LONG','entry':price,'qty':qty,'stop_loss':sl,'target':tp,'trailing_sl':tsl,'entry_time':candle_time,'entry_index':candle_index,'symbol':session.get('underlying','NIFTY')}
+                    session['position']=pos; session['status']='OPEN'; session['replay_index']=candle_index; state._save_historical_chart_session(session)
+                    return self._send_json({'ok':True,'session':session,'position':pos,'paper_only':True})
+                if action=='SELL':
+                    if not pos: return self._send_json({'ok':False,'error':'No historical long position is open.'},400)
+                    pnl=(price-float(pos['entry']))*int(pos['qty']); trade={'symbol':pos.get('symbol',session.get('underlying','NIFTY')),'action':'BUY','qty':int(pos['qty']),'entry':round(float(pos['entry']),2),'exit':round(price,2),'entry_time':pos.get('entry_time',0),'exit_time':candle_time,'entry_index':pos.get('entry_index',0),'exit_index':candle_index,'pnl':round(pnl,2),'reason':str(payload.get('reason','MANUAL_EXIT')),'rr':round((float(pos.get('target',0))-float(pos.get('entry',0)))/max(float(pos.get('entry',0))-float(pos.get('stop_loss',0)),0.01),2) if pos.get('stop_loss') and pos.get('target') else 0.0,'session':'HISTORICAL_CHART'}
+                    session['position']=None; session['replay_index']=candle_index; state._append_historical_chart_trade(session,trade)
+                    return self._send_json({'ok':True,'session':session,'trade':trade,'paper_only':True})
+                return self._send_json({'ok':False,'error':'Only BUY to open and SELL to close are supported in historical chart mode.'},400)
+            if parsed.path=='/api/historical/chart_close':
+                sid=str(payload.get('session_id','')).strip(); price=float(payload.get('price',0) or 0); candle_time=int(payload.get('candle_time',0) or 0); candle_index=int(payload.get('candle_index',0) or 0); reason=str(payload.get('reason','MANUAL_EXIT'))
+                session=state._get_historical_chart_session(sid)
+                if not session: return self._send_json({'ok':False,'error':'Historical chart session not found.'},404)
+                pos=session.get('position')
+                if not pos: return self._send_json({'ok':False,'error':'No historical position is open.'},400)
+                pnl=(price-float(pos['entry']))*int(pos['qty']); trade={'symbol':pos.get('symbol',session.get('underlying','NIFTY')),'action':'BUY','qty':int(pos['qty']),'entry':round(float(pos['entry']),2),'exit':round(price,2),'entry_time':pos.get('entry_time',0),'exit_time':candle_time,'entry_index':pos.get('entry_index',0),'exit_index':candle_index,'pnl':round(pnl,2),'reason':reason,'rr':round((float(pos.get('target',0))-float(pos.get('entry',0)))/max(float(pos.get('entry',0))-float(pos.get('stop_loss',0)),0.01),2) if pos.get('stop_loss') and pos.get('target') else 0.0,'session':'HISTORICAL_CHART'}
+                session['position']=None; session['replay_index']=candle_index; state._append_historical_chart_trade(session,trade)
+                return self._send_json({'ok':True,'session':session,'trade':trade,'paper_only':True})
+            if parsed.path=='/api/historical/chart_finish':
+                sid=str(payload.get('session_id','')).strip(); session=state._get_historical_chart_session(sid)
+                if not session: return self._send_json({'ok':False,'error':'Historical chart session not found.'},404)
+                session['status']='FINISHED'; state._save_historical_chart_session(session)
+                return self._send_json({'ok':True,'session':session,'paper_only':True})
             if parsed.path=='/api/order':
                 symbol=payload.get('symbol','NIFTY'); action=payload.get('action','BUY'); qty=int(payload.get('qty',65)); ot=payload.get('order_type','MARKET'); lp=float(payload.get('limit_price',0)); sl=float(payload.get('stop_loss',0)); tp=float(payload.get('target',0)); tsl=float(payload.get('trailing_sl',0)); ltp,_,_=state._get_live_instrument_ltp(symbol)
                 if not ltp: return self._send_json({'error':'Live price unavailable'},400)

@@ -1,14 +1,26 @@
-# TradeLab v2.9.1 — Historical Replay + Permanent Cloud Research Storage
+# TradeLab v2.10 — Historical Chart Trading
 
-This build adds exact-day historical replay and permanent research/replay storage. It uses SQLite locally by default, and automatically uses PostgreSQL/Neon when `DATABASE_URL` is configured. No Angel One order-placement API is implemented; Angel One is used for market/historical data only.
+v2.10 adds interactive, candle-by-candle historical chart trading to the existing TradeLab paper-trading simulator.
 
-## Render + Neon
-Set the Render environment variable:
-`DATABASE_URL=<your Neon PostgreSQL connection string>`
+## What is new
+- Load an exact previous NSE/BSE trading day from Angel One historical candles.
+- Historical chart mode for NIFTY and SENSEX.
+- 1m / 3m / 5m / 10m / 15m / 30m / 1h replay timeframes.
+- Future candles remain hidden until the user advances the replay.
+- PREV / PLAY / PAUSE / NEXT controls with 1x / 2x / 5x / 10x speed.
+- Historical BUY opens a simulated long position at the revealed candle close.
+- Historical SELL closes the simulated long position.
+- Long-press limit-order workflow can be used in historical mode; the order fills only if the revealed candle touches the requested price.
+- Stop-loss and target are checked against each newly revealed candle.
+- Historical P&L and session capital are separate from the live paper account.
+- Every historical chart trade is permanently stored in the research database.
+- Historical replay sessions and exact-day candle datasets remain permanently retained.
+- Existing live Angel One WebSocket chart, paper trading, bot, research matrix, replay, and Neon persistence are preserved.
 
-Do not commit the connection string to GitHub or put it in frontend code. Keep it only as a private Render environment variable.
+## Storage
+- `DATABASE_URL` -> PostgreSQL/Neon on Render.
+- `SIM_DB_PATH` -> local SQLite fallback.
+- No automatic 30-day deletion.
 
-`SIM_DB_PATH` is only used by the local SQLite fallback. Render Free does not need a disk when PostgreSQL is configured.
-
-## Historical retention
-Research runs, replay sessions, stored trade details, paper journal entries, and historical datasets are retained permanently by the application. There is no automatic 30-day deletion.
+## Safety
+Angel One is used only for market/historical data. This build does **not** call Angel One order-placement APIs. Historical chart BUY/SELL actions are simulator-only and are stored as paper trades.

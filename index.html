@@ -369,6 +369,19 @@ canvas { width: 100% !important; height: 100% !important; display: block; }
         <div class="bot-card-title" style="margin-top:10px">Saved historical sessions</div>
         <div class="bot-row2"><button class="bot-small-btn bot-test" style="width:100%" onclick="loadHistoricalReplayHistory()">VIEW SAVED SESSIONS</button><button class="bot-small-btn bot-test" style="width:100%" onclick="downloadResearch('runs')">EXPORT ALL RESEARCH</button></div>
         <div id="historicalReplayHistory" class="bot-reason">Every historical replay is retained in the Research History database.</div>
+        <div class="bot-card-title" style="margin-top:12px">📅 Historical Chart Trading · v2.10</div>
+        <div class="bot-reason">Load a previous trading day, then trade it candle-by-candle. Future candles stay hidden until you advance the replay. BUY opens a paper long; SELL closes it. SL/Target are checked against each revealed candle.</div>
+        <div class="bot-row2"><input id="histChartDate" class="bot-input" type="date" title="Historical chart day"><select id="histChartTf" class="bot-select"><option value="60">1m</option><option value="180">3m</option><option value="300" selected>5m</option><option value="600">10m</option><option value="900">15m</option><option value="1800">30m</option><option value="3600">1h</option></select></div>
+        <div class="bot-row2"><select id="histChartUnderlying" class="bot-select"><option value="NIFTY">NIFTY</option><option value="SENSEX">SENSEX</option></select><input id="histChartQty" class="bot-input" type="number" min="1" value="1" placeholder="Qty / units"></div>
+        <div class="bot-row2"><button id="histLoadBtn" class="bot-small-btn bot-test" style="width:100%" onclick="startHistoricalChartTrading()">📅 LOAD HISTORICAL CHART</button><button id="histExitBtn" class="bot-small-btn" style="width:100%;display:none" onclick="exitHistoricalChartTrading()">EXIT HISTORICAL MODE</button></div>
+        <div id="histChartStatus" class="bot-reason">Not loaded. Your live chart remains unchanged until you enter historical mode.</div>
+        <div class="bot-row2" id="histControls" style="display:none"><button class="bot-small-btn bot-test" onclick="historicalPrevCandle()">◀ PREV</button><button id="histPlayBtn" class="bot-small-btn bot-test" onclick="toggleHistoricalPlay()">▶ PLAY</button><button class="bot-small-btn bot-test" onclick="historicalNextCandle()">NEXT ▶</button><select id="histSpeed" class="bot-select"><option value="1">1×</option><option value="2">2×</option><option value="5">5×</option><option value="10">10×</option></select></div>
+        <div class="bot-row2" id="histProgressRow" style="display:none"><div class="bot-mini" style="width:100%">Replay <b id="histProgress">0 / 0</b> · Time <b id="histReplayTime">—</b></div></div>
+        <div class="bot-row2" id="histStatsRow" style="display:none"><div class="bot-mini">Capital <b id="histCapital">₹10,00,000</b></div><div class="bot-mini">P&L <b id="histPnl">₹0</b></div></div>
+        <div id="histPositionStatus" class="bot-reason" style="display:none"></div>
+        <div class="bot-card-title" style="margin-top:10px">Historical chart trades · Permanent</div>
+        <div id="histTradeLog" class="bot-reason">Trades from historical chart sessions are stored permanently in the research database.</div>
+        <div class="bot-row2"><button class="bot-small-btn bot-test" style="width:100%" onclick="loadHistoricalChartTradeLog()">VIEW SESSION TRADES</button><button class="bot-small-btn bot-test" style="width:100%" onclick="finishHistoricalChartSession()">SAVE / FINISH SESSION</button></div>
         <div class="bot-card-title" style="margin-top:12px">Strategy Intelligence</div>
         <div class="bot-row2"><button class="bot-small-btn bot-test" style="width:100%" onclick="runStrategyIntelligence()">🏆 AUTO-RANK BEST SETUPS</button><button class="bot-small-btn bot-test" style="width:100%" onclick="runWalkForward()">🧪 WALK-FORWARD TEST</button></div>
         <div id="intelligenceResult" class="bot-reason">Rank stored matrix results by profitability, consistency, drawdown, profit factor and sample size.</div><div id="intelligenceTable"></div>
@@ -569,6 +582,8 @@ let touchCoordinates = { x: 0, y: 0 };
 
 let smoothMinP = null;
 let smoothMaxP = null;
+let historicalChartMode = false;
+let historicalReplay = null;
 
 let audioCtx = null;
 function initAudio() { if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)(); }
@@ -641,7 +656,7 @@ function getPriceFromY(pixelY) {
   let minP = Math.min(...allCandles.map(c => c.low));
   let maxP = Math.max(...allCandles.map(c => c.high));
 
-    const matchingPos = (typeof findMatchingPosition === 'function') ? findMatchingPosition() : null;
+    const matchingPos = historicalChartMode && historicalReplay?.position ? {buy_price:Number(historicalReplay.position.entry),ltp:Number(historicalCurrentCandle()?.close||historicalReplay.position.entry)} : ((typeof findMatchingPosition === 'function') ? findMatchingPosition() : null);
   if (matchingPos && matchingPos.buy_price > 0) {
     const avgP = (minP + maxP) / 2;
     if (Math.abs(matchingPos.buy_price - avgP) / avgP < 0.35) {
@@ -881,6 +896,7 @@ function updateLomMargin() {
 }
 
 async function submitLomOrder() {
+  if (historicalChartMode) { await historicalChartLimitTrade(); return; }
   const qty = parseInt(document.getElementById('selectLomQty').value, 10);
   const price = parseFloat(document.getElementById('inputLomPrice').value) || 0;
   const sl = parseFloat(document.getElementById('inputLomSL').value) || 0;
@@ -1114,6 +1130,7 @@ function renderWatchlist() {
 // Fetch Engine
 let marketFetchInFlight = false;
 async function fetchMarket(force=false) {
+  if (historicalChartMode) return;
   if (marketFetchInFlight) return;
   marketFetchInFlight = true;
   try {
@@ -1277,6 +1294,7 @@ function updateUI(data) {
 // Heavy market/option-chain refreshes stay separate, so the chart never waits for REST work.
 let tickFetchInFlight = false;
 async function fetchLiveTick() {
+  if (historicalChartMode) return;
   if (tickFetchInFlight || !currentChartSymbol || !marketCache || !marketCache.chart) return;
   tickFetchInFlight = true;
   try {
@@ -1614,7 +1632,7 @@ function drawChart() {
   let targetMinP = Math.min(...candles.map(c => c.low));
   let targetMaxP = Math.max(...candles.map(c => c.high));
 
-  const matchingPos = (typeof findMatchingPosition === 'function') ? findMatchingPosition() : null;
+  const matchingPos = historicalChartMode && historicalReplay?.position ? {id:'hist',symbol:historicalReplay.underlying,action:'BUY',qty:Number(historicalReplay.position.qty),buy_price:Number(historicalReplay.position.entry),ltp:Number(historicalCurrentCandle()?.close||historicalReplay.position.entry),pnl:(Number(historicalCurrentCandle()?.close||historicalReplay.position.entry)-Number(historicalReplay.position.entry))*Number(historicalReplay.position.qty),stop_loss:Number(historicalReplay.position.stop_loss||0),target:Number(historicalReplay.position.target||0),trailing_sl:Number(historicalReplay.position.trailing_sl||0)} : ((typeof findMatchingPosition === 'function') ? findMatchingPosition() : null);
 
   if (matchingPos) {
     targetMinP = Math.min(targetMinP, matchingPos.buy_price);
@@ -1929,6 +1947,7 @@ function drawChart() {
 }
 
 async function triggerDirectTrade(side) {
+  if (historicalChartMode) { await historicalChartTrade(side); return; }
   const qtySelect = document.getElementById('directQtySelect');
   const qty = parseInt(qtySelect.value, 10);
   
@@ -2085,6 +2104,121 @@ async function openResearchRun(runId){
     overlay.classList.add('open');overlay.setAttribute('aria-hidden','false');document.body.style.overflow='hidden';
   }catch(e){alert(e.message||'Trade history unavailable')}
 }
+
+function historicalDefaultDate(){
+  const d=new Date(); d.setDate(d.getDate()-1);
+  while(d.getDay()===0||d.getDay()===6)d.setDate(d.getDate()-1);
+  return d.toISOString().slice(0,10);
+}
+function historicalCurrentCandle(){
+  const h=historicalReplay; if(!h||!h.candles) return null;
+  return h.candles[Math.max(0,Math.min(h.index,h.candles.length-1))]||null;
+}
+function historicalVisibleCandles(){
+  const h=historicalReplay; if(!h) return [];
+  return h.candles.slice(0,Math.max(1,h.index+1));
+}
+function historicalChartPayload(){
+  const h=historicalReplay; if(!h) return null;
+  const candles=historicalVisibleCandles();
+  const closes=candles.map(c=>c.close);
+  const ema9=calcEmaLocal(closes,9), ema15=calcEmaLocal(closes,15), vwap=calcVwapLocal(candles);
+  return {symbol:h.underlying,display_title:h.underlying==='SENSEX'?'SENSEX':'NIFTY 50',timeframe:(h.tf/60)+'m',ltp:Number(candles[candles.length-1]?.close||0),countdown:'HIST',candles,ema9_series:ema9,ema15_series:ema15,ema9:ema9[ema9.length-1]||0,ema15:ema15[ema15.length-1]||0,vwap_series:vwap,vwap:vwap[vwap.length-1]||0,strategy_markers:[],greeks:{delta:0,gamma:0,theta:0,vega:0,iv:0}};
+}
+function calcVwapLocal(candles){let pv=0,v=0,out=[]; for(const c of candles){const q=Math.max(Number(c.volume||0),1);pv+=((c.high+c.low+c.close)/3)*q;v+=q;out.push(Number((pv/v).toFixed(2)));}return out;}
+function updateHistoricalChartView(){
+  if(!historicalReplay)return;
+  marketCache=marketCache||{wallet:{balance:1000000,used_margin:0,realized_pnl:0,net_pnl:0,unrealized_pnl:0},positions:[],pending_orders:[],orders:[],nifty_spot:0,sensex_spot:0};
+  marketCache.chart=historicalChartPayload();
+  const ch=marketCache.chart, c=historicalCurrentCandle();
+  const idx=Math.max(0,historicalReplay.index), total=historicalReplay.candles.length;
+  document.getElementById('onChartSymbol').innerText=`${ch.display_title} • ${historicalReplay.tf/60}m • HISTORICAL`;
+  document.getElementById('onChartPriceSub').innerText=`${ch.ltp.toFixed(2)} · ${historicalReplay.date}`;
+  document.getElementById('chainSpotBadge').innerText=`HIST: ${ch.ltp.toFixed(2)}`;
+  document.getElementById('btnSellLTP').innerText=ch.ltp.toFixed(2); document.getElementById('btnBuyLTP').innerText=ch.ltp.toFixed(2);
+  panOffset=0; verticalPanOffset=0;
+  if(document.getElementById('histProgress'))document.getElementById('histProgress').innerText=`${idx+1} / ${total}`;
+  if(document.getElementById('histReplayTime'))document.getElementById('histReplayTime').innerText=c?replayLogTime(c.time):'—';
+  if(document.getElementById('histCapital'))document.getElementById('histCapital').innerText=money(historicalReplay.balance);
+  if(document.getElementById('histPnl')){document.getElementById('histPnl').innerText=money(historicalReplay.realized_pnl);document.getElementById('histPnl').className=historicalReplay.realized_pnl>=0?'bot-good':'bot-bad';}
+  const p=historicalReplay.position;
+  const ps=document.getElementById('histPositionStatus');
+  if(ps){ps.style.display=p?'block':'none'; if(p)ps.innerHTML=`OPEN LONG · ${p.qty} Qty · Entry ₹${Number(p.entry).toFixed(2)} · SL ₹${Number(p.stop_loss||0).toFixed(2)} · Target ₹${Number(p.target||0).toFixed(2)}`;}
+  drawChart();
+}
+async function startHistoricalChartTrading(){
+  const date=document.getElementById('histChartDate')?.value||historicalDefaultDate(),tf=Number(document.getElementById('histChartTf')?.value||300),under=document.getElementById('histChartUnderlying')?.value||'NIFTY',qty=Number(document.getElementById('histChartQty')?.value||1),out=document.getElementById('histChartStatus');
+  if(out)out.innerText=`Loading ${under} historical candles for ${date}…`;
+  try{
+    const r=await fetch(`/api/historical/chart_day?date=${encodeURIComponent(date)}&tf=${tf}&underlying=${under}&mode=INDEX&trade_type=INTRADAY`,{cache:'no-store'}),d=await r.json();
+    if(!r.ok||!d.ok)throw new Error(d.error||`Historical chart failed (HTTP ${r.status})`);
+    historicalReplay={session_id:d.session.session_id,run_id:d.run_id,date:d.replay_day,underlying:d.underlying,tf:d.timeframe,candles:d.candles_data,index:0,playing:false,speed:1,qty:Math.max(1,qty),position:d.session.position||null,trades:d.session.trades||[],realized_pnl:Number(d.session.realized_pnl||0),balance:Number(d.session.balance||1000000),starting_balance:Number(d.session.starting_balance||1000000),max_drawdown:Number(d.session.max_drawdown||0)};
+    historicalChartMode=true; currentChartSymbol=under; currentTimeframe=(tf/60)+'m'; currentTradeMode='MARKET';
+    document.getElementById('histControls').style.display='flex'; document.getElementById('histProgressRow').style.display='flex'; document.getElementById('histStatsRow').style.display='flex'; document.getElementById('histExitBtn').style.display='block';
+    if(out)out.innerText=`HISTORICAL MODE · ${date} · ${under} · ${tf/60}m · ${historicalReplay.candles.length} candles · ${d.data_source}. Paper-only.`;
+    updateHistoricalChartView();
+  }catch(e){if(out)out.innerText=e.message||'Historical chart unavailable';}
+}
+function exitHistoricalChartTrading(){
+  if(historicalReplay?.playing) toggleHistoricalPlay(true);
+  historicalChartMode=false; historicalReplay=null; document.getElementById('histControls').style.display='none'; document.getElementById('histProgressRow').style.display='none'; document.getElementById('histStatsRow').style.display='none'; document.getElementById('histExitBtn').style.display='none';
+  document.getElementById('histChartStatus').innerText='Historical mode closed. Live chart restored.'; fetchMarket(true);
+}
+function historicalPrevCandle(){if(!historicalReplay)return;historicalReplay.index=Math.max(0,historicalReplay.index-1);updateHistoricalChartView();}
+async function historicalNextCandle(){
+  if(!historicalReplay)return;
+  if(historicalReplay.index>=historicalReplay.candles.length-1){toggleHistoricalPlay(true);return;}
+  historicalReplay.index++; updateHistoricalChartView(); await historicalCheckPosition();
+}
+function toggleHistoricalPlay(forceStop=false){
+  if(!historicalReplay)return; historicalReplay.playing=forceStop?false:!historicalReplay.playing;
+  const btn=document.getElementById('histPlayBtn'); if(btn)btn.innerText=historicalReplay.playing?'⏸ PAUSE':'▶ PLAY';
+  if(historicalReplay.playing) historicalPlayLoop();
+}
+async function historicalPlayLoop(){
+  while(historicalReplay?.playing){await historicalNextCandle(); if(!historicalReplay?.playing)break; await new Promise(r=>setTimeout(r,Math.max(80,900/Number(document.getElementById('histSpeed')?.value||1))));}
+}
+async function historicalCheckPosition(){
+  const h=historicalReplay,p=h?.position,c=historicalCurrentCandle(); if(!h||!p||!c)return;
+  let exitPrice=0,reason='';
+  if(Number(p.stop_loss)>0 && Number(c.low)<=Number(p.stop_loss)){exitPrice=Number(p.stop_loss);reason='SL';}
+  else if(Number(p.target)>0 && Number(c.high)>=Number(p.target)){exitPrice=Number(p.target);reason='TARGET';}
+  if(!exitPrice)return;
+  await historicalCloseAt(exitPrice,reason,c);
+}
+async function historicalChartTrade(side){
+  const h=historicalReplay,c=historicalCurrentCandle(); if(!h||!c)return;
+  if(side==='SELL'){if(!h.position){alert('No historical long position is open.');return;} await historicalCloseAt(Number(c.close),'MANUAL_EXIT',c);return;}
+  if(h.position){alert('A historical position is already open.');return;}
+  const qty=Math.max(1,Number(document.getElementById('histChartQty')?.value||h.qty||1));
+  const price=Number(c.close); const slPct=Number(document.getElementById('botSL')?.value||0.6),tpPct=Number(document.getElementById('botTP')?.value||1.2); const sl=Number(document.getElementById('inputLomSL')?.value||price*(1-slPct/100)); const tp=Number(document.getElementById('inputLomTarget')?.value||price*(1+tpPct/100));
+  try{const r=await fetch('/api/historical/chart_trade',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({session_id:h.session_id,action:'BUY',qty,price,stop_loss:sl,target:tp,trailing_sl:0,candle_time:c.time,candle_index:h.index})});const d=await r.json();if(!r.ok||!d.ok)throw new Error(d.error||'Historical BUY failed');h.position=d.position;h.qty=qty;playSound('ORDER_PLACED');updateHistoricalChartView();}catch(e){alert(e.message||e)}
+}
+async function historicalChartLimitTrade(){
+  const h=historicalReplay,c=historicalCurrentCandle();if(!h||!c)return;
+  const price=Number(document.getElementById('inputLomPrice')?.value||c.close),qty=Math.max(1,Number(document.getElementById('selectLomQty')?.value||h.qty||1)),sl=Number(document.getElementById('inputLomSL')?.value||price*0.994),tp=Number(document.getElementById('inputLomTarget')?.value||price*1.012);
+  if(lomAction!=='BUY'){closeChartLimitModal();await historicalChartTrade('SELL');return;}
+  if(h.position){alert('A historical position is already open.');return;}
+  // Historical limit orders fill when a revealed candle touches the requested price.
+  if(Number(c.low)<=price && Number(c.high)>=price){
+    try{const r=await fetch('/api/historical/chart_trade',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({session_id:h.session_id,action:'BUY',qty,price,stop_loss:sl,target:tp,trailing_sl:0,candle_time:c.time,candle_index:h.index})});const d=await r.json();if(!r.ok||!d.ok)throw new Error(d.error||'Historical limit BUY failed');h.position=d.position;h.qty=qty;closeChartLimitModal();playSound('LIMIT_TRIGGERED');updateHistoricalChartView();}catch(e){alert(e.message||e)}
+  } else {alert('Limit price was not reached by the current historical candle. Use NEXT to advance and place again when the candle reaches your price.');}
+}
+async function historicalCloseAt(price,reason,candle){
+  const h=historicalReplay;if(!h?.position)return;
+  try{const r=await fetch('/api/historical/chart_close',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({session_id:h.session_id,price:Number(price),candle_time:candle?.time||0,candle_index:h.index,reason})});const d=await r.json();if(!r.ok||!d.ok)throw new Error(d.error||'Historical close failed');h.position=null;h.trades=d.session.trades||h.trades;h.realized_pnl=Number(d.session.realized_pnl||0);h.balance=Number(d.session.balance||1000000);h.max_drawdown=Number(d.session.max_drawdown||0);playSound(reason==='SL'?'SL_HIT':reason==='TARGET'?'TARGET_HIT':'ORDER_PLACED');updateHistoricalChartView();}catch(e){console.error(e)}
+}
+async function finishHistoricalChartSession(){
+  const h=historicalReplay;if(!h)return;
+  if(h.position){const c=historicalCurrentCandle();await historicalCloseAt(Number(c.close),'EOD',c);}
+  try{const r=await fetch('/api/historical/chart_finish',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({session_id:h.session_id})});const d=await r.json();if(r.ok&&d.ok){h.realized_pnl=Number(d.session.realized_pnl||h.realized_pnl);h.balance=Number(d.session.balance||h.balance);document.getElementById('histChartStatus').innerText=`Session saved permanently · ${h.date} · ${h.trades.length} closed trades · ${money(h.realized_pnl)}`;loadHistoricalChartTradeLog();}}catch(e){alert(e.message||e)}
+}
+async function loadHistoricalChartTradeLog(){
+  const el=document.getElementById('histTradeLog');if(!el)return;
+  const sid=historicalReplay?.session_id;if(!sid){el.innerText='Load a historical chart session first.';return;}
+  try{const r=await fetch(`/api/research/trades?run_id=${encodeURIComponent(historicalReplay.run_id)}`,{cache:'no-store'}),d=await r.json();if(!r.ok||!d.ok)throw new Error(d.error||'Trade log unavailable');const t=d.trades.map(x=>x.trade||{});el.innerHTML=t.length?`<div class="bot-muted">${t.length} permanent historical trades</div><div style="overflow:auto"><table class="bot-table"><thead><tr><th>#</th><th>Entry</th><th>Exit</th><th>Qty</th><th>Reason</th><th>P&L</th></tr></thead><tbody>${t.map((x,i)=>`<tr><td>${i+1}</td><td>${replayLogTime(x.entry_time)} · ₹${Number(x.entry).toFixed(2)}</td><td>${replayLogTime(x.exit_time)} · ₹${Number(x.exit).toFixed(2)}</td><td>${x.qty}</td><td>${x.reason}</td><td class="${Number(x.pnl)>=0?'bot-good':'bot-bad'}">${money(x.pnl)}</td></tr>`).join('')}</tbody></table></div>`:'No closed trades yet.';}catch(e){el.innerText=e.message||'Trade log unavailable'}
+}
+
 function defaultReplayDate(){
   const d=new Date(); d.setDate(d.getDate()-1);
   while(d.getDay()===0||d.getDay()===6)d.setDate(d.getDate()-1);
@@ -2155,6 +2289,8 @@ async function resetAccount() {
 }
 
 resizeCanvas();
+const histDateEl=document.getElementById('histChartDate'); if(histDateEl) histDateEl.value=historicalDefaultDate();
+const replayDateEl=document.getElementById('replayDate'); if(replayDateEl && !replayDateEl.value) replayDateEl.value=historicalDefaultDate();
 renderTabs();
 renderWatchlist();
 setInterval(() => fetchMarket(false), 500);
