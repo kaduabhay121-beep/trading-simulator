@@ -50,7 +50,7 @@ window.onerror = function(msg, src, line) { alert("FATAL JS ERROR: " + msg + " (
   /* Fast Trade Widget */
   .onchart-order-widget { position: absolute; top: 8px; left: 8px; z-index: 10; pointer-events: auto; }
   .historical-chart-toolbar{position:absolute;top:8px;left:8px;z-index:40;display:none;width:min(760px,calc(100% - 16px));background:rgba(8,12,20,.97);border:1px solid #26344a;border-radius:10px;padding:7px;box-shadow:0 8px 24px rgba(0,0,0,.35);touch-action:none;user-select:none;-webkit-user-select:none}
-  .historical-chart-toolbar.open{display:block}
+  .historical-chart-toolbar.open{display:block}.historical-chart-toolbar.minimized{width:auto!important;max-width:calc(100% - 16px)!important;padding:0}.historical-chart-toolbar.minimized .hist-ct-row,.historical-chart-toolbar.minimized #histPositionStatus{display:none!important}.historical-chart-toolbar.maximized{left:8px!important;top:8px!important;right:8px!important;width:auto!important;max-height:calc(100% - 16px);overflow:auto}.hist-ct-actions{display:flex;gap:4px;margin-left:auto}.hist-ct-icon{width:24px;height:22px;border:1px solid #34445c;background:#111827;color:#dbeafe;border-radius:5px;font-weight:800;line-height:18px;padding:0;cursor:pointer}.hist-ct-icon:hover{background:#1e293b}
   .hist-ct-row{display:flex;gap:5px;align-items:center;flex-wrap:wrap}
   .hist-ct-handle{display:flex;align-items:center;justify-content:space-between;gap:8px;height:24px;margin:-2px -1px 4px;padding:0 5px;color:#94a3b8;font-size:9px;font-weight:900;letter-spacing:.5px;cursor:grab;border-bottom:1px solid #1d2939}
   .hist-ct-handle:active{cursor:grabbing}
@@ -185,7 +185,7 @@ canvas { width: 100% !important; height: 100% !important; display: block; }
     <div class="chart-viewport" id="chartViewport">
       <!-- Historical Chart Trading controls live on the chart only -->
       <div id="historicalChartToolbar" class="historical-chart-toolbar">
-        <div id="historicalChartHandle" class="hist-ct-handle" title="Drag to move historical controls"><span>⋮⋮ HISTORICAL CHART TRADING</span><span class="hist-ct-grip">⠿</span></div>
+        <div id="historicalChartHandle" class="hist-ct-handle" title="Drag to move historical controls"><span>⋮⋮ HISTORICAL CHART TRADING</span><span class="hist-ct-actions"><button type="button" id="histMinBtn" class="hist-ct-icon" title="Minimize" aria-label="Minimize">—</button><button type="button" id="histMaxBtn" class="hist-ct-icon" title="Maximize" aria-label="Maximize">□</button></span></div>
         <div class="hist-ct-row">
           <input id="histChartDate" class="hist-ct-input" type="date" title="Historical trading day">
           <select id="histChartUnderlying" class="hist-ct-select"><option value="NIFTY">NIFTY</option><option value="SENSEX">SENSEX</option></select>
@@ -2139,38 +2139,42 @@ async function openResearchRun(runId){
   }catch(e){alert(e.message||'Trade history unavailable')}
 }
 
-// Historical control window: keep it above the canvas and make it draggable on touch/mouse.
+// Historical control window: draggable on mouse/touch, with minimize/maximize.
 (function initHistoricalControlWindow(){
   const panel=document.getElementById('historicalChartToolbar'), handle=document.getElementById('historicalChartHandle');
+  const minBtn=document.getElementById('histMinBtn'), maxBtn=document.getElementById('histMaxBtn');
   if(!panel||!handle) return;
-  let dragging=false, startX=0, startY=0, baseLeft=0, baseTop=0;
+  let dragging=false, pointerId=null, startX=0, startY=0, baseLeft=0, baseTop=0;
   const clamp=()=>{
-    const parent=panel.offsetParent||panel.parentElement;
-    const pw=parent?.clientWidth||window.innerWidth, ph=parent?.clientHeight||window.innerHeight;
-    const maxX=Math.max(0,pw-panel.offsetWidth-8), maxY=Math.max(0,ph-panel.offsetHeight-8);
+    const parent=panel.offsetParent||panel.parentElement; if(!parent)return;
+    const pw=parent.clientWidth||window.innerWidth, ph=parent.clientHeight||window.innerHeight;
+    const maxX=Math.max(8,pw-panel.offsetWidth-8), maxY=Math.max(8,ph-panel.offsetHeight-8);
     baseLeft=Math.max(8,Math.min(baseLeft,maxX)); baseTop=Math.max(8,Math.min(baseTop,maxY));
     panel.style.left=baseLeft+'px'; panel.style.top=baseTop+'px'; panel.style.right='auto';
   };
-  const down=e=>{
-    if(e.pointerType==='mouse' && e.button!==0) return;
-    dragging=true; const pt=e.touches?e.touches[0]:e; startX=pt.clientX; startY=pt.clientY;
-    const r=panel.getBoundingClientRect(); const pr=(panel.offsetParent||panel.parentElement).getBoundingClientRect();
-    baseLeft=r.left-pr.left; baseTop=r.top-pr.top; panel.setPointerCapture?.(e.pointerId);
-    e.preventDefault(); e.stopPropagation();
+  const begin=e=>{
+    if(e.target.closest('button,select,input')) return;
+    if(e.pointerType==='mouse' && e.button!==0)return;
+    const parent=panel.offsetParent||panel.parentElement, r=panel.getBoundingClientRect(), pr=parent.getBoundingClientRect();
+    baseLeft=r.left-pr.left; baseTop=r.top-pr.top; startX=e.clientX; startY=e.clientY; dragging=true; pointerId=e.pointerId;
+    handle.setPointerCapture?.(pointerId); e.preventDefault(); e.stopPropagation();
   };
   const move=e=>{
-    if(!dragging)return; const pt=e.touches?e.touches[0]:e; baseLeft+=(pt.clientX-startX); baseTop+=(pt.clientY-startY); startX=pt.clientX; startY=pt.clientY; clamp(); e.preventDefault(); e.stopPropagation();
+    if(!dragging||e.pointerId!==pointerId)return;
+    baseLeft+=e.clientX-startX; baseTop+=e.clientY-startY; startX=e.clientX; startY=e.clientY; clamp(); e.preventDefault(); e.stopPropagation();
   };
-  const up=e=>{dragging=false; e.stopPropagation();};
-  handle.addEventListener('pointerdown',down,{passive:false}); handle.addEventListener('pointermove',move,{passive:false}); handle.addEventListener('pointerup',up,{passive:false}); handle.addEventListener('pointercancel',up,{passive:false});
-  handle.addEventListener('touchstart',down,{passive:false}); handle.addEventListener('touchmove',move,{passive:false}); handle.addEventListener('touchend',up,{passive:false});
-  // Any interaction inside the control window must never reach the chart gesture handler.
-  panel.addEventListener('pointerdown',e=>e.stopPropagation(),{passive:true});
-  panel.addEventListener('pointermove',e=>{if(!dragging)e.stopPropagation();},{passive:true});
-  panel.addEventListener('touchstart',e=>e.stopPropagation(),{passive:false});
-  panel.addEventListener('touchmove',e=>{if(!dragging)e.stopPropagation();},{passive:false});
-  panel.addEventListener('touchend',e=>e.stopPropagation(),{passive:false});
-  window.addEventListener('resize',()=>{if(panel.classList.contains('open'))clamp();});
+  const end=e=>{if(!dragging||e.pointerId!==pointerId)return; dragging=false; try{handle.releasePointerCapture?.(pointerId)}catch(_){} pointerId=null; e.stopPropagation();};
+  handle.addEventListener('pointerdown',begin,{passive:false});
+  handle.addEventListener('pointermove',move,{passive:false});
+  handle.addEventListener('pointerup',end,{passive:false});
+  handle.addEventListener('pointercancel',end,{passive:false});
+  // Prevent chart gesture handlers from seeing interactions inside the controller.
+  panel.addEventListener('pointerdown',e=>{if(e.target!==handle&&!handle.contains(e.target))e.stopPropagation();},{passive:false});
+  panel.addEventListener('pointermove',e=>{if(!dragging)e.stopPropagation();},{passive:false});
+  panel.addEventListener('pointerup',e=>e.stopPropagation(),{passive:false});
+  minBtn?.addEventListener('click',e=>{e.preventDefault();e.stopPropagation();panel.classList.toggle('minimized');minBtn.textContent=panel.classList.contains('minimized')?'＋':'—';minBtn.title=panel.classList.contains('minimized')?'Restore':'Minimize';});
+  maxBtn?.addEventListener('click',e=>{e.preventDefault();e.stopPropagation();panel.classList.toggle('maximized');maxBtn.textContent=panel.classList.contains('maximized')?'❐':'□';maxBtn.title=panel.classList.contains('maximized')?'Restore size':'Maximize';if(panel.classList.contains('maximized')){panel.style.left='8px';panel.style.top='8px';panel.style.right='8px';}else{panel.style.right='auto';clamp();}});
+  window.addEventListener('resize',()=>{if(panel.classList.contains('open')&&!panel.classList.contains('maximized'))clamp();});
 })();
 
 let historicalTradeBusy=false;

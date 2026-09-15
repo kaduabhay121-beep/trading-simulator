@@ -834,7 +834,7 @@ class SimulationState:
                 "CREATE TABLE IF NOT EXISTS research_runs (id BIGSERIAL PRIMARY KEY, created_at BIGINT NOT NULL, kind TEXT, strategy TEXT, underlying TEXT, mode TEXT, timeframe INTEGER, trade_type TEXT, days INTEGER, sl DOUBLE PRECISION, tp DOUBLE PRECISION, rr DOUBLE PRECISION, lot_multiplier INTEGER, result_json TEXT)",
                 "CREATE TABLE IF NOT EXISTS research_trades (id BIGSERIAL PRIMARY KEY, run_id BIGINT, created_at BIGINT NOT NULL, trade_json TEXT NOT NULL)",
                 "CREATE TABLE IF NOT EXISTS paper_trade_journal (id BIGSERIAL PRIMARY KEY, created_at BIGINT NOT NULL, trade_json TEXT NOT NULL)",
-                "CREATE TABLE IF NOT EXISTS historical_datasets (dataset_key TEXT PRIMARY KEY, saved_at BIGINT NOT NULL, meta_json TEXT NOT NULL, candles_json TEXT NOT NULL)"
+                "CREATE TABLE IF NOT EXISTS historical_datasets (dataset_key TEXT PRIMARY KEY, saved_at BIGINT NOT NULL, meta_json TEXT NOT NULL, candles_json TEXT NOT NULL)",
                 "CREATE TABLE IF NOT EXISTS historical_replay_sessions (session_id TEXT PRIMARY KEY, created_at BIGINT NOT NULL, updated_at BIGINT NOT NULL, run_id BIGINT, replay_day TEXT NOT NULL, underlying TEXT NOT NULL, mode TEXT NOT NULL, timeframe INTEGER NOT NULL, trade_type TEXT NOT NULL, state_json TEXT NOT NULL)"
             ]
             for sql in stmts: db.execute(sql)
