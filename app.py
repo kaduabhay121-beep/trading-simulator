@@ -881,9 +881,20 @@ class SimulationState:
             db.commit(); db.close(); return rid
         except Exception: return None
 
+    def _historical_lot_size(self, session):
+        """Return the contract lot size for an interactive historical session."""
+        try:
+            if str(session.get('instrument_type','INDEX')).upper() != 'OPTION':
+                return 1
+            v=int(float(session.get('lot_size') or 0))
+            if v>0: return v
+        except Exception: pass
+        under=str(session.get('underlying','NIFTY')).upper()
+        return 20 if under=='SENSEX' else 65
+
     def _create_historical_chart_session(self, replay_day, underlying, mode, timeframe, trade_type, starting_balance=1000000.0):
         sid=base64.urlsafe_b64encode(os.urandom(18)).decode().rstrip('=')
-        state={'session_id':sid,'replay_day':str(replay_day),'underlying':str(underlying).upper(),'mode':str(mode).upper(),'timeframe':int(timeframe),'trade_type':str(trade_type).upper(),'starting_balance':float(starting_balance),'balance':float(starting_balance),'realized_pnl':0.0,'position':None,'trades':[],'peak_balance':float(starting_balance),'max_drawdown':0.0,'replay_index':0,'status':'OPEN'}
+        state={'session_id':sid,'replay_day':str(replay_day),'underlying':str(underlying).upper(),'mode':str(mode).upper(),'timeframe':int(timeframe),'trade_type':str(trade_type).upper(),'starting_balance':float(starting_balance),'balance':float(starting_balance),'realized_pnl':0.0,'position':None,'trades':[],'peak_balance':float(starting_balance),'max_drawdown':0.0,'replay_index':0,'status':'OPEN','instrument_type':'INDEX','lot_size':1,'lots':1}
         result={'strategy':'MANUAL_CHART','underlying':state['underlying'],'mode':state['mode'],'timeframe':state['timeframe'],'trade_type':state['trade_type'],'replay_day':state['replay_day'],'candles':0,'trades':0,'wins':0,'losses':0,'win_rate':0.0,'net_pnl':0.0,'return_pct':0.0,'profit_factor':0.0,'max_drawdown':0.0,'rr_ratio':0.0,'trades_detail':[],'session_id':sid,'status':'OPEN','data_note':'Interactive historical chart trading; paper-only; no Angel One order placement.'}
         rid=self._store_research('HISTORICAL_CHART',result,days=1,sl=0,tp=0,lot_multiplier=1)
         now=int(time.time())
@@ -905,9 +916,9 @@ class SimulationState:
         try:
             db=self._db(); now=int(time.time()); state=dict(state); db.execute('UPDATE historical_replay_sessions SET updated_at=?,state_json=? WHERE session_id=?',(now,json.dumps(state,separators=(',',':')),str(state.get('session_id'))));
             rid=state.get('run_id')
-            result={'strategy':'MANUAL_CHART','underlying':state.get('underlying'),'mode':state.get('mode'),'timeframe':state.get('timeframe'),'trade_type':state.get('trade_type'),'replay_day':state.get('replay_day'),'candles':state.get('candles',0),'trades':len(state.get('trades',[])),'wins':sum(1 for t in state.get('trades',[]) if float(t.get('pnl',0))>0),'losses':sum(1 for t in state.get('trades',[]) if float(t.get('pnl',0))<=0),'win_rate':round(sum(1 for t in state.get('trades',[]) if float(t.get('pnl',0))>0)/len(state.get('trades',[]))*100,1) if state.get('trades') else 0.0,'net_pnl':round(float(state.get('realized_pnl',0)),2),'return_pct':round(float(state.get('realized_pnl',0))/max(float(state.get('starting_balance',1000000)),1)*100,2),'profit_factor':round(sum(max(0,float(t.get('pnl',0))) for t in state.get('trades',[]))/max(sum(-min(0,float(t.get('pnl',0))) for t in state.get('trades',[])),0.01),2) if any(float(t.get('pnl',0))<0 for t in state.get('trades',[])) else (999.0 if any(float(t.get('pnl',0))>0 for t in state.get('trades',[])) else 0.0),'max_drawdown':round(float(state.get('max_drawdown',0)),2),'rr_ratio':0.0,'trades_detail':state.get('trades',[]),'session_id':state.get('session_id'),'status':state.get('status','OPEN'),'data_note':'Interactive historical chart trading; paper-only; no Angel One order placement.'}
+            result={'strategy':'MANUAL_CHART','underlying':state.get('underlying'),'mode':state.get('mode'),'timeframe':state.get('timeframe'),'trade_type':state.get('trade_type'),'replay_day':state.get('replay_day'),'candles':state.get('candles',0),'trades':len(state.get('trades',[])),'wins':sum(1 for t in state.get('trades',[]) if float(t.get('pnl',0))>0),'losses':sum(1 for t in state.get('trades',[]) if float(t.get('pnl',0))<=0),'win_rate':round(sum(1 for t in state.get('trades',[]) if float(t.get('pnl',0))>0)/len(state.get('trades',[]))*100,1) if state.get('trades') else 0.0,'net_pnl':round(float(state.get('realized_pnl',0)),2),'return_pct':round(float(state.get('realized_pnl',0))/max(float(state.get('starting_balance',1000000)),1)*100,2),'profit_factor':round(sum(max(0,float(t.get('pnl',0))) for t in state.get('trades',[]))/max(sum(-min(0,float(t.get('pnl',0))) for t in state.get('trades',[])),0.01),2) if any(float(t.get('pnl',0))<0 for t in state.get('trades',[])) else (999.0 if any(float(t.get('pnl',0))>0 for t in state.get('trades',[])) else 0.0),'max_drawdown':round(float(state.get('max_drawdown',0)),2),'rr_ratio':0.0,'trades_detail':state.get('trades',[]),'session_id':state.get('session_id'),'status':state.get('status','OPEN'),'lots':int(state.get('lots',1) or 1),'lot_size':int(state.get('lot_size',1) or 1),'quantity':int((state.get('lots',1) or 1)*(state.get('lot_size',1) or 1)),'data_note':'Interactive historical chart trading; paper-only; no Angel One order placement.'}
             if rid:
-                db.execute('UPDATE research_runs SET result_json=? WHERE id=?',(json.dumps(result,separators=(',',':')),rid))
+                db.execute('UPDATE research_runs SET lot_multiplier=?, result_json=? WHERE id=?',(int(state.get('lots',1) or 1),json.dumps(result,separators=(',',':')),rid))
             db.commit(); db.close(); return result
         except Exception: return None
 
@@ -1534,7 +1545,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 session_mode=instrument_type if instrument_type=='OPTION' else 'INDEX'
                 if session and (session.get('replay_day')!=date or session.get('underlying')!=under or int(session.get('timeframe',tf))!=tf or session.get('mode')!=session_mode or session.get('option_type')!=option_type or session.get('expiry')!=((contract or {}).get('expiry','')) or session.get('strike')!=((round(float(contract.get('strike',0))/100,2) if contract else 0))): session=None
                 if not session: session=state._create_historical_chart_session(date,under,session_mode,tf,trade_type,1000000.0)
-                session['candles']=len(candles); session['data_source']=data_source; session['instrument_type']=instrument_type; session['option_type']=option_type if instrument_type=='OPTION' else ''; session['expiry']=(contract or {}).get('expiry',''); session['strike']=round(float((contract or {}).get('strike',0))/100,2) if contract else 0; session['contract_symbol']=(contract or {}).get('symbol',''); session['exchange']=str((contract or {}).get('exch_seg',base_inst.get('exch_seg','NSE'))).upper(); session['display_symbol']=((contract or {}).get('symbol') or ('NIFTY 50' if under=='NIFTY' else 'SENSEX'))
+                session['candles']=len(candles); session['data_source']=data_source; session['instrument_type']=instrument_type; session['option_type']=option_type if instrument_type=='OPTION' else ''; session['expiry']=(contract or {}).get('expiry',''); session['strike']=round(float((contract or {}).get('strike',0))/100,2) if contract else 0; session['contract_symbol']=(contract or {}).get('symbol',''); session['exchange']=str((contract or {}).get('exch_seg',base_inst.get('exch_seg','NSE'))).upper(); session['display_symbol']=((contract or {}).get('symbol') or ('NIFTY 50' if under=='NIFTY' else 'SENSEX')); session['lot_size']=int(float((contract or {}).get('lotsize') or (contract or {}).get('lot_size') or (20 if under=='SENSEX' else 65 if instrument_type=='OPTION' else 1))); session['lots']=int(max(1,session.get('lots',1)))
+
                 state._save_historical_chart_session(session)
                 result={'ok':True,'session':session,'run_id':session.get('run_id'),'replay_day':date,'underlying':under,'mode':session_mode,'trade_type':trade_type,'timeframe':tf,'interval':TF_INTERVALS.get(tf,'FIVE_MINUTE'),'candles':len(candles),'data_source':data_source,'candles_data':candles,'paper_only':True,'contract':contract,'option_type':option_type if instrument_type=='OPTION' else '', 'expiry':session.get('expiry',''),'strike':session.get('strike',0),'display_symbol':session.get('display_symbol'),'note':'Historical chart trading is simulated only. No Angel One order-placement API is called.'}
                 return self._send_json(result)
@@ -1820,9 +1832,15 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     state.bot['qty']=int(max(1,state.bot.get('qty',1))); state.bot['max_trades_per_day']=int(max(1,state.bot.get('max_trades_per_day',5))); state.bot['max_open_positions']=int(max(1,state.bot.get('max_open_positions',1))); state.bot['cooldown_sec']=int(max(5,state.bot.get('cooldown_sec',60)))
                 state._save_state(); self._send_json({'ok':True,'bot':{**state.bot,'open_positions':len(state._bot_positions())},'paper_only':True}); return
             if parsed.path=='/api/historical/chart_trade':
-                sid=str(payload.get('session_id','')).strip(); action=str(payload.get('action','BUY')).upper(); price=float(payload.get('price',0) or 0); qty=max(1,int(payload.get('qty',1) or 1)); sl=float(payload.get('stop_loss',0) or 0); tp=float(payload.get('target',0) or 0); tsl=float(payload.get('trailing_sl',0) or 0); candle_time=int(payload.get('candle_time',0) or 0); candle_index=int(payload.get('candle_index',0) or 0)
+                sid=str(payload.get('session_id','')).strip(); action=str(payload.get('action','BUY')).upper(); price=float(payload.get('price',0) or 0); requested_lots=max(1,int(payload.get('lots',1) or 1)); sl=float(payload.get('stop_loss',0) or 0); tp=float(payload.get('target',0) or 0); tsl=float(payload.get('trailing_sl',0) or 0); candle_time=int(payload.get('candle_time',0) or 0); candle_index=int(payload.get('candle_index',0) or 0)
                 session=state._get_historical_chart_session(sid)
                 if not session: return self._send_json({'ok':False,'error':'Historical chart session not found.'},404)
+                lot_size=state._historical_lot_size(session)
+                try: lot_size=max(1,int(lot_size))
+                except Exception: lot_size=1
+                session['lot_size']=lot_size
+                qty=max(1,requested_lots*lot_size)
+                session['lots']=requested_lots
                 if price<=0: return self._send_json({'ok':False,'error':'Historical trade price is invalid.'},400)
                 pos=session.get('position')
                 # BUY opens LONG or closes SHORT. SELL opens SHORT or closes LONG.
@@ -1832,7 +1850,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     return self._send_json({'ok':False,'error':f'A historical {pos.get("side","LONG")} position is already open. Close it before opening the opposite side.'},400)
                 if closing:
                     side=pos.get('side','LONG'); pnl=((float(pos['entry'])-price) if side=='SHORT' else (price-float(pos['entry'])))*int(pos['qty'])
-                    trade={'symbol':pos.get('symbol',session.get('contract_symbol') or session.get('display_symbol') or session.get('underlying','NIFTY')),'action':side,'qty':int(pos['qty']),'entry':round(float(pos['entry']),2),'exit':round(price,2),'entry_time':pos.get('entry_time',0),'exit_time':candle_time,'entry_index':pos.get('entry_index',0),'exit_index':candle_index,'pnl':round(pnl,2),'reason':str(payload.get('reason','MANUAL_EXIT')),'rr':round((abs(float(pos.get('target',0))-float(pos.get('entry',0))))/max(abs(float(pos.get('entry',0))-float(pos.get('stop_loss',0))),0.01),2) if pos.get('stop_loss') and pos.get('target') else 0.0,'session':'HISTORICAL_CHART'}
+                    trade={'symbol':pos.get('symbol',session.get('contract_symbol') or session.get('display_symbol') or session.get('underlying','NIFTY')),'action':side,'qty':int(pos['qty']),'lots':int(pos.get('lots',max(1,round(int(pos['qty'])/max(int(pos.get('lot_size',lot_size)),1))))),'lot_size':int(pos.get('lot_size',lot_size)),'entry':round(float(pos['entry']),2),'exit':round(price,2),'entry_time':pos.get('entry_time',0),'exit_time':candle_time,'entry_index':pos.get('entry_index',0),'exit_index':candle_index,'pnl':round(pnl,2),'reason':str(payload.get('reason','MANUAL_EXIT')),'rr':round((abs(float(pos.get('target',0))-float(pos.get('entry',0))))/max(abs(float(pos.get('entry',0))-float(pos.get('stop_loss',0))),0.01),2) if pos.get('stop_loss') and pos.get('target') else 0.0,'stop_loss':float(pos.get('stop_loss',0) or 0),'target':float(pos.get('target',0) or 0),'trailing_sl':float(pos.get('trailing_sl',0) or 0),'session':'HISTORICAL_CHART'}
                     session['position']=None; session['replay_index']=candle_index; state._append_historical_chart_trade(session,trade)
                     return self._send_json({'ok':True,'session':session,'trade':trade,'position':None,'paper_only':True})
                 side='LONG' if action=='BUY' else 'SHORT'
@@ -1843,7 +1861,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 if stop or target:
                     if side=='LONG' and ((stop and stop>=price) or (target and target<=price)): return self._send_json({'ok':False,'error':'For LONG, SL must be below entry and Target must be above entry.'},400)
                     if side=='SHORT' and ((stop and stop<=price) or (target and target>=price)): return self._send_json({'ok':False,'error':'For SHORT, SL must be above entry and Target must be below entry.'},400)
-                pos={'side':side,'entry':price,'qty':qty,'stop_loss':stop,'target':target,'trailing_sl':tsl,'entry_time':candle_time,'entry_index':candle_index,'symbol':session.get('contract_symbol') or session.get('display_symbol') or session.get('underlying','NIFTY')}
+                pos={'side':side,'entry':price,'qty':qty,'lots':requested_lots,'lot_size':lot_size,'stop_loss':stop,'target':target,'trailing_sl':tsl,'entry_time':candle_time,'entry_index':candle_index,'symbol':session.get('contract_symbol') or session.get('display_symbol') or session.get('underlying','NIFTY')}
                 session['position']=pos; session['status']='OPEN'; session['replay_index']=candle_index; state._save_historical_chart_session(session)
                 return self._send_json({'ok':True,'session':session,'position':pos,'paper_only':True})
             if parsed.path=='/api/historical/chart_close':
@@ -1852,9 +1870,43 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 if not session: return self._send_json({'ok':False,'error':'Historical chart session not found.'},404)
                 pos=session.get('position')
                 if not pos: return self._send_json({'ok':False,'error':'No historical position is open.'},400)
-                pnl=((float(pos['entry'])-price) if pos.get('side','LONG')=='SHORT' else (price-float(pos['entry'])))*int(pos['qty']); trade={'symbol':pos.get('symbol',session.get('contract_symbol') or session.get('display_symbol') or session.get('underlying','NIFTY')),'action':'BUY','qty':int(pos['qty']),'entry':round(float(pos['entry']),2),'exit':round(price,2),'entry_time':pos.get('entry_time',0),'exit_time':candle_time,'entry_index':pos.get('entry_index',0),'exit_index':candle_index,'pnl':round(pnl,2),'reason':reason,'rr':round((float(pos.get('target',0))-float(pos.get('entry',0)))/max(float(pos.get('entry',0))-float(pos.get('stop_loss',0)),0.01),2) if pos.get('stop_loss') and pos.get('target') else 0.0,'session':'HISTORICAL_CHART'}
+                pnl=((float(pos['entry'])-price) if pos.get('side','LONG')=='SHORT' else (price-float(pos['entry'])))*int(pos['qty']); trade={'symbol':pos.get('symbol',session.get('contract_symbol') or session.get('display_symbol') or session.get('underlying','NIFTY')),'action':pos.get('side','LONG'),'qty':int(pos['qty']),'lots':int(pos.get('lots',max(1,round(int(pos['qty'])/max(int(pos.get('lot_size',lot_size)),1))))),'lot_size':int(pos.get('lot_size',lot_size)),'entry':round(float(pos['entry']),2),'exit':round(price,2),'entry_time':pos.get('entry_time',0),'exit_time':candle_time,'entry_index':pos.get('entry_index',0),'exit_index':candle_index,'pnl':round(pnl,2),'reason':reason,'rr':round((float(pos.get('target',0))-float(pos.get('entry',0)))/max(float(pos.get('entry',0))-float(pos.get('stop_loss',0)),0.01),2) if pos.get('stop_loss') and pos.get('target') else 0.0,'stop_loss':float(pos.get('stop_loss',0) or 0),'target':float(pos.get('target',0) or 0),'trailing_sl':float(pos.get('trailing_sl',0) or 0),'session':'HISTORICAL_CHART'}
                 session['position']=None; session['replay_index']=candle_index; state._append_historical_chart_trade(session,trade)
                 return self._send_json({'ok':True,'session':session,'trade':trade,'paper_only':True})
+            if parsed.path=='/api/historical/chart_rewind':
+                sid=str(payload.get('session_id','')).strip(); target=max(0,int(payload.get('candle_index',0) or 0))
+                session=state._get_historical_chart_session(sid)
+                if not session: return self._send_json({'ok':False,'error':'Historical chart session not found.'},404)
+                original=list(session.get('trades',[]))
+                # Reconstruct state from immutable closed trades plus the currently open position.
+                realized=0.0; kept=[]; open_pos=None
+                for t in original:
+                    ei=int(t.get('entry_index',0) or 0); xi=int(t.get('exit_index',10**9) or 10**9)
+                    if ei>target: continue
+                    if xi<=target:
+                        kept.append(t); realized += float(t.get('pnl',0) or 0)
+                    else:
+                        open_pos={
+                            'side':'SHORT' if str(t.get('action','BUY')).upper()=='SHORT' else 'LONG',
+                            'entry':float(t.get('entry',0) or 0), 'qty':int(t.get('qty',1) or 1),
+                            'lots':int(t.get('lots',max(1,round(int(t.get('qty',1) or 1)/max(int(t.get('lot_size',1) or 1),1))))),
+                            'lot_size':int(t.get('lot_size',1) or 1), 'stop_loss':float(t.get('stop_loss',0) or 0),
+                            'target':float(t.get('target',0) or 0), 'trailing_sl':float(t.get('trailing_sl',0) or 0),
+                            'entry_time':t.get('entry_time',0), 'entry_index':ei, 'symbol':t.get('symbol',session.get('contract_symbol') or session.get('underlying','NIFTY'))
+                        }
+                cur=session.get('position')
+                if cur and int(cur.get('entry_index',0) or 0)<=target and not open_pos:
+                    open_pos=dict(cur)
+                session['trades']=kept; session['position']=open_pos; session['realized_pnl']=round(realized,2); session['balance']=round(float(session.get('starting_balance',1000000))+realized,2); session['replay_index']=target
+                session['peak_balance']=max(float(session.get('starting_balance',1000000)),session['balance']); session['max_drawdown']=max(0.0,float(session.get('starting_balance',1000000))-session['balance'])
+                try:
+                    db=state._db(); rid=session.get('run_id'); db.execute('DELETE FROM research_trades WHERE run_id=?',(rid,))
+                    now=int(time.time())
+                    for t in kept: db.execute('INSERT INTO research_trades(run_id,created_at,trade_json) VALUES(?,?,?)',(rid,now,json.dumps(t,separators=(',',':'))))
+                    db.commit(); db.close()
+                except Exception: pass
+                state._save_historical_chart_session(session)
+                return self._send_json({'ok':True,'session':session,'paper_only':True})
             if parsed.path=='/api/historical/chart_finish':
                 sid=str(payload.get('session_id','')).strip(); session=state._get_historical_chart_session(sid)
                 if not session: return self._send_json({'ok':False,'error':'Historical chart session not found.'},404)
