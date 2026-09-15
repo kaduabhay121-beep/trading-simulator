@@ -2188,10 +2188,24 @@ async function safeDirectTrade(e,side){
   return triggerDirectTrade(side);
 }
 
+const HISTORICAL_MARKET_HOLIDAYS_2026=new Set([
+  '2026-01-15','2026-01-26','2026-02-19','2026-03-03','2026-03-19','2026-03-26','2026-03-31',
+  '2026-04-01','2026-04-03','2026-04-14','2026-05-01','2026-05-28','2026-06-26','2026-08-26',
+  '2026-09-14','2026-10-02','2026-10-20','2026-11-10','2026-11-24','2026-12-25'
+]);
+function isHistoricalMarketClosedDate(dateStr){
+  const d=new Date(`${dateStr}T12:00:00`);
+  return Number.isNaN(d.getTime())||d.getDay()===0||d.getDay()===6||HISTORICAL_MARKET_HOLIDAYS_2026.has(dateStr);
+}
+function previousHistoricalTradingDate(dateStr){
+  const d=new Date(`${dateStr}T12:00:00`);
+  if(Number.isNaN(d.getTime())) return historicalDefaultDate();
+  do{d.setDate(d.getDate()-1); const y=d.getFullYear(),m=String(d.getMonth()+1).padStart(2,'0'),day=String(d.getDate()).padStart(2,'0'); const key=`${y}-${m}-${day}`; if(!isHistoricalMarketClosedDate(key)) return key;}while(true);
+}
 function historicalDefaultDate(){
-  const d=new Date(); d.setDate(d.getDate()-1);
-  while(d.getDay()===0||d.getDay()===6)d.setDate(d.getDate()-1);
-  return d.toISOString().slice(0,10);
+  const now=new Date();
+  const y=now.getFullYear(),m=String(now.getMonth()+1).padStart(2,'0'),day=String(now.getDate()).padStart(2,'0');
+  return previousHistoricalTradingDate(`${y}-${m}-${day}`);
 }
 function historicalCurrentCandle(){
   const h=historicalReplay; if(!h||!h.candles) return null;
@@ -2266,7 +2280,18 @@ async function startHistoricalChartTrading(){
     document.getElementById('histControls').style.display='flex'; document.getElementById('histExitBtn').style.display='inline-block';
     if(out)out.innerText=`HISTORICAL · ${date} · ${d.session.display_symbol||under} · ${tf/60}m · ${historicalReplay.candles.length} candles · paper-only`;
     updateHistoricalChartView();
-  }catch(e){if(out)out.innerText=e.message||'Historical chart unavailable';}
+  }catch(e){
+    let msg=e.message||'Historical chart unavailable';
+    if(diagnosticPreviousTradingDayFromError(msg)){
+      const prev=diagnosticPreviousTradingDayFromError(msg);
+      const dateEl=document.getElementById('histChartDate'); if(dateEl) dateEl.value=prev;
+      if(out) out.innerText=`Selected date is closed. Switched to previous trading day ${prev}. Tap LOAD HISTORICAL again.`;
+    } else if(out) out.innerText=msg;
+  }
+}
+function diagnosticPreviousTradingDayFromError(msg){
+  const m=String(msg||'').match(/Previous trading day is (\d{4}-\d{2}-\d{2})/);
+  return m?m[1]:'';
 }
 function exitHistoricalChartTrading(){
   if(historicalReplay?.playing) toggleHistoricalPlay(true);
@@ -2401,7 +2426,15 @@ async function resetAccount() {
 resizeCanvas();
 const histDateEl=document.getElementById('histChartDate'); if(histDateEl) histDateEl.value=historicalDefaultDate();
 const histUnderEl=document.getElementById('histChartUnderlying'); if(histUnderEl) histUnderEl.addEventListener('change',()=>{if(document.getElementById('histChartInstrument')?.value==='OPTION')loadHistoricalOptionContracts();});
-const histDateEl2=document.getElementById('histChartDate'); if(histDateEl2) histDateEl2.addEventListener('change',()=>{if(document.getElementById('histChartInstrument')?.value==='OPTION')loadHistoricalOptionContracts();});
+const histDateEl2=document.getElementById('histChartDate'); if(histDateEl2) histDateEl2.addEventListener('change',()=>{
+  const date=histDateEl2.value;
+  if(isHistoricalMarketClosedDate(date)){
+    const prev=previousHistoricalTradingDate(date);
+    histDateEl2.value=prev;
+    const st=document.getElementById('histChartStatus'); if(st) st.innerText=`${date} is not a trading day. Using previous trading day ${prev}.`;
+  }
+  if(document.getElementById('histChartInstrument')?.value==='OPTION')loadHistoricalOptionContracts();
+});
 const replayDateEl=document.getElementById('replayDate'); if(replayDateEl && !replayDateEl.value) replayDateEl.value=historicalDefaultDate();
 renderTabs();
 renderWatchlist();

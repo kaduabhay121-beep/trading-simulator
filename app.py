@@ -559,6 +559,39 @@ def _next_weekday(d):
     while x.weekday()>=5: x+=timedelta(days=1)
     return x
 
+# NSE/BSE cash-market holidays for 2026 used by Historical Chart Trading.
+# The list is intentionally local so the historical picker never treats an exchange
+# holiday as a trading session and never sends a known-closed date to Angel One.
+EXCHANGE_HOLIDAYS_2026={
+    1: {'2026-01-15','2026-01-26'},
+    2: {'2026-02-19'},
+    3: {'2026-03-03','2026-03-19','2026-03-26','2026-03-31'},
+    4: {'2026-04-01','2026-04-03','2026-04-14'},
+    5: {'2026-05-01','2026-05-28'},
+    6: {'2026-06-26'},
+    8: {'2026-08-26'},
+    9: {'2026-09-14'},
+    10:{'2026-10-02','2026-10-20'},
+    11:{'2026-11-10','2026-11-24'},
+    12:{'2026-12-25'},
+}
+
+def _is_exchange_holiday(day):
+    if not day: return False
+    if day.weekday()>=5: return True
+    return day.isoformat() in EXCHANGE_HOLIDAYS_2026.get(day.month,set())
+
+def _previous_trading_day(day):
+    d=day-timedelta(days=1)
+    while _is_exchange_holiday(d): d-=timedelta(days=1)
+    return d
+
+def _next_trading_day(day):
+    d=day+timedelta(days=1)
+    while _is_exchange_holiday(d): d+=timedelta(days=1)
+    return d
+
+
 
 def _is_cas_window(ts):
     dt=datetime.fromtimestamp(int(ts),IST)
@@ -1405,6 +1438,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
             p=parse_qs(parsed.query); date=p.get('date',[''])[0] or datetime.now(IST).date().isoformat(); under=p.get('underlying',['NIFTY'])[0].upper()
             day=_parse_replay_date(date)
             if not day: return self._send_json({'ok':False,'error':'Invalid date.'},400)
+            if _is_exchange_holiday(day):
+                prev=_previous_trading_day(day)
+                return self._send_json({'ok':False,'error':f'{date} is not a trading day. Previous trading day is {prev.isoformat()}.','previous_trading_day':prev.isoformat(),'market_closed':True},400)
             seg='BFO' if under=='SENSEX' else 'NFO'; grouped={}
             for x in state.angel.instruments:
                 if str(x.get('exch_seg','')).upper()!=seg or str(x.get('name','')).upper()!=under or str(x.get('instrumenttype','')).upper()!='OPTIDX': continue
@@ -1432,7 +1468,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if option_type not in ('CE','PE'): option_type='CE'
             day=_parse_replay_date(date)
             if not day: return self._send_json({'ok':False,'error':'Invalid historical date. Use YYYY-MM-DD.'},400)
-            if day.weekday()>=5: return self._send_json({'ok':False,'error':'Selected date is a weekend. Choose an NSE/BSE trading day.'},400)
+            if _is_exchange_holiday(day):
+                prev=_previous_trading_day(day)
+                reason='weekend' if day.weekday()>=5 else 'exchange holiday'
+                return self._send_json({'ok':False,'error':f'Selected date {date} is a {reason}; no market candles exist for that date. Previous trading day is {prev.isoformat()}.','previous_trading_day':prev.isoformat(),'market_closed':True},400)
             if not state.angel.enabled: return self._send_json({'ok':False,'error':'Historical chart trading needs Angel One historical market data. Enable ANGELONE_ENABLED.'},400)
             try:
                 base_inst=state.angel.find_index(under)
