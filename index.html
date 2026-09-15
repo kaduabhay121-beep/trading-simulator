@@ -48,7 +48,7 @@ window.onerror = function(msg, src, line) { alert("FATAL JS ERROR: " + msg + " (
   #chartCanvas { width: 100%; height: 100%; display: block; touch-action: none !important; }
 
   /* Fast Trade Widget */
-  .onchart-order-widget { position: absolute; top: 8px; left: 8px; z-index: 10; pointer-events: auto; }
+  .onchart-order-widget { position: absolute; top: 8px; left: 8px; z-index: 10; pointer-events: auto !important; }
   .historical-chart-toolbar{position:absolute;top:8px;left:8px;z-index:40;display:none;width:min(760px,calc(100% - 16px));background:rgba(8,12,20,.97);border:1px solid #26344a;border-radius:10px;padding:7px;box-shadow:0 8px 24px rgba(0,0,0,.35);touch-action:none;user-select:none;-webkit-user-select:none}
   .historical-chart-toolbar.open{display:block}.historical-chart-toolbar.minimized{width:auto!important;max-width:calc(100% - 16px)!important;padding:0}.historical-chart-toolbar.minimized .hist-ct-row,.historical-chart-toolbar.minimized #histPositionStatus{display:none!important}.historical-chart-toolbar.maximized{left:8px!important;top:8px!important;right:8px!important;width:auto!important;max-height:calc(100% - 16px);overflow:auto}.hist-qty-stepper{display:flex;align-items:center;gap:2px}.hist-qty-input{width:78px!important;text-align:center}.hist-qty-btn{width:27px;height:28px;border:1px solid #334155;background:#111827;color:#e2e8f0;border-radius:5px;font-size:17px;font-weight:900;line-height:24px;padding:0;cursor:pointer}.hist-qty-btn:active{background:#1e293b}.hist-ct-actions.hist-ct-icon{width:24px;height:22px;border:1px solid #34445c;background:#111827;color:#dbeafe;border-radius:5px;font-weight:800;line-height:18px;padding:0;cursor:pointer}.hist-ct-icon:hover{background:#1e293b}
   .hist-ct-row{display:flex;gap:5px;align-items:center;flex-wrap:wrap}
@@ -80,7 +80,7 @@ window.onerror = function(msg, src, line) { alert("FATAL JS ERROR: " + msg + " (
   .limit-price-input { width: 75px; background: #0c1017; border: 1px solid var(--blue); color: #fff; border-radius: 4px; padding: 4px 6px; font-size: 11px; font-weight: 700; outline: none; display: none; }
 
   /* Fully Transparent P&L Overlay */
-  #livePriceOverlayPill { display: none; position: absolute; left: 10px; z-index: 20; background: rgba(13, 17, 23, 0.45); backdrop-filter: blur(2px); border: 1px solid rgba(255, 255, 255, 0.15); border-radius: 6px; padding: 3px 6px; font-size: 10px; align-items: center; gap: 5px; pointer-events: auto; }
+  #livePriceOverlayPill { display: none; position: absolute; left: 10px; z-index: 1000; background: rgba(13, 17, 23, 0.45); backdrop-filter: blur(2px); border: 1px solid rgba(255, 255, 255, 0.15); border-radius: 6px; padding: 3px 6px; font-size: 10px; align-items: center; gap: 5px; pointer-events: auto; }
   .pill-action-btn { background: rgba(30, 41, 59, 0.6); border: 1px solid rgba(51, 65, 85, 0.6); color: #cbd5e1; padding: 2px 5px; border-radius: 3px; font-size: 9px; font-weight: 800; cursor: pointer; }
   .pill-close-btn { background: rgba(235, 87, 87, 0.8); color: white; border: none; padding: 2px 6px; border-radius: 3px; font-size: 9px; font-weight: 800; cursor: pointer; }
 
@@ -621,6 +621,9 @@ let smoothMinP = null;
 let smoothMaxP = null;
 let historicalChartMode = false;
 let historicalReplay = null;
+// Historical replay viewport state: keep the Y-axis stable between candles so the chart does not repeatedly drift vertically.
+let historicalYMin = null;
+let historicalYMax = null;
 
 let audioCtx = null;
 function initAudio() { if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)(); }
@@ -714,7 +717,7 @@ function getPriceFromY(pixelY) {
 
 // Touch Gestures
 viewport.addEventListener('touchstart', e => {
-  if (e.target && e.target.closest && e.target.closest('#historicalChartToolbar')) return;
+  if (e.target && e.target.closest && (e.target.closest('#historicalChartToolbar') || e.target.closest('#livePriceOverlayPill'))) return;
   if (e.touches.length === 2) {
     e.preventDefault();
     clearTimeout(longPressTimer);
@@ -751,7 +754,7 @@ viewport.addEventListener('touchstart', e => {
 }, { passive: false });
 
 viewport.addEventListener('touchmove', e => {
-  if (e.target && e.target.closest && e.target.closest('#historicalChartToolbar')) return;
+  if (e.target && e.target.closest && (e.target.closest('#historicalChartToolbar') || e.target.closest('#livePriceOverlayPill'))) return;
   if (dragMode === 'pinch' && e.touches.length === 2) {
     e.preventDefault();
     clearTimeout(longPressTimer);
@@ -808,7 +811,12 @@ viewport.addEventListener('touchmove', e => {
         const chartBottom = (canvas.height / (window.devicePixelRatio || 1)) - 24;
         const chartH = Math.max(chartBottom - chartTop, 50);
         const pRange = (smoothMaxP && smoothMinP) ? (smoothMaxP - smoothMinP) : 80;
-        verticalPanOffset += dy * (pRange / chartH);
+        const shiftPrice = dy * (pRange / chartH);
+        verticalPanOffset += shiftPrice;
+        if (historicalChartMode && historicalYMin !== null && historicalYMax !== null) {
+          historicalYMin += shiftPrice;
+          historicalYMax += shiftPrice;
+        }
         dragStartY = touchY; redraw = true;
       }
       if (redraw) drawChart();
@@ -825,7 +833,7 @@ viewport.addEventListener('wheel', e => {
 }, { passive: false });
 
 viewport.addEventListener('touchend', e => {
-  if (e.target && e.target.closest && e.target.closest('#historicalChartToolbar')) return;
+  if (e.target && e.target.closest && (e.target.closest('#historicalChartToolbar') || e.target.closest('#livePriceOverlayPill'))) return;
   clearTimeout(longPressTimer);
   dragMode = 'none';
 });
@@ -834,9 +842,11 @@ let mouseDragging = false;
 let mouseLastX = 0;
 let mouseLastY = 0;
 viewport.addEventListener('pointerdown', e => {
+  if (e.target && e.target.closest && e.target.closest('#livePriceOverlayPill')) return;
   if (e.pointerType === 'mouse' && e.button === 0) { mouseDragging = true; mouseLastX = e.clientX; mouseLastY = e.clientY; viewport.setPointerCapture?.(e.pointerId); }
 });
 viewport.addEventListener('pointermove', e => {
+  if (e.target && e.target.closest && e.target.closest('#livePriceOverlayPill')) return;
   if (!mouseDragging || e.pointerType !== 'mouse' || !marketCache?.chart) return;
   e.preventDefault();
   const rect = canvas.getBoundingClientRect();
@@ -1516,6 +1526,35 @@ function renderOptionChain(data) {
 let activeEditBracket = 'SL';
 let activePosId = null;
 
+async function closeOverlayPosition(){
+  try{
+    const pill=document.getElementById('livePriceOverlayPill');
+    const btn=document.getElementById('btnOverlayClose');
+    if(btn){btn.disabled=true;btn.textContent='CLOSING…';}
+    if(historicalChartMode){
+      const p=historicalReplay?.position;
+      if(!p){if(btn){btn.disabled=false;btn.textContent='✕ CLOSE';}return;}
+      const c=historicalCurrentCandle();
+      await historicalCloseAt(Number(c?.close||p.entry||0),'MANUAL_EXIT',c);
+    } else {
+      const id=activePosId;
+      if(id!=null) await exitPosition(id);
+    }
+  } finally {
+    const btn=document.getElementById('btnOverlayClose');
+    if(btn){btn.disabled=false;btn.textContent='✕ CLOSE';}
+  }
+}
+
+const overlayCloseBtn=document.getElementById('btnOverlayClose');
+if(overlayCloseBtn){
+  ['pointerdown','pointerup','touchstart','touchend','click'].forEach(type=>overlayCloseBtn.addEventListener(type,e=>e.stopPropagation(),{passive:false}));
+}
+const overlayPillEl=document.getElementById('livePriceOverlayPill');
+if(overlayPillEl){
+  ['pointerdown','pointermove','pointerup','touchstart','touchmove','touchend','click'].forEach(type=>overlayPillEl.addEventListener(type,e=>e.stopPropagation(),{passive:false}));
+}
+
 function updatePositionPills(data) {
   let matchingPos = null;
   if (historicalChartMode && historicalReplay?.position) {
@@ -1534,7 +1573,7 @@ function updatePositionPills(data) {
     document.getElementById('overlaySL').innerText=matchingPos.stop_loss?`₹${matchingPos.stop_loss}`:'Set';
     document.getElementById('overlayTP').innerText=matchingPos.target?`₹${matchingPos.target}`:'Set';
     document.getElementById('overlayTSL').innerText=matchingPos.trailing_sl?`₹${matchingPos.trailing_sl}`:'Set';
-    document.getElementById('btnOverlayClose').onclick=()=> historicalChartMode ? historicalCloseAt(Number(historicalCurrentCandle()?.close||matchingPos.ltp),'MANUAL_EXIT',historicalCurrentCandle()) : exitPosition(matchingPos.id);
+    document.getElementById('btnOverlayClose').onclick=()=>closeOverlayPosition();
   } else { activePosId=null; overlayPill.style.display='none'; }
 }
 function openBracketEdit(mode) {
@@ -1708,6 +1747,28 @@ function drawChart() {
   const span = ((targetMaxP - targetMinP) / 2 || 1) * priceScaleZoomFactor;
   targetMinP = midP - span + verticalPanOffset;
   targetMaxP = midP + span + verticalPanOffset;
+
+  // In historical replay, do not auto-fit the Y-axis on every newly revealed candle.
+  // Repeated auto-fitting makes the entire chart appear to drift upward/downward.
+  // Keep a stable range and only expand/recenter when the current visible data leaves it.
+  if (historicalChartMode && historicalReplay) {
+    const currentPrice = Number(historicalCurrentCandle()?.close || 0);
+    if (!(historicalYMin > 0 && historicalYMax > historicalYMin)) {
+      historicalYMin = targetMinP;
+      historicalYMax = targetMaxP;
+    } else {
+      const stableSpan = Math.max(historicalYMax - historicalYMin, 0.0001);
+      const margin = stableSpan * 0.12;
+      if (targetMinP < historicalYMin + margin || targetMaxP > historicalYMax - margin) {
+        const desiredMid = currentPrice > 0 ? currentPrice : (targetMinP + targetMaxP) / 2;
+        const desiredSpan = Math.max(stableSpan, targetMaxP - targetMinP);
+        historicalYMin = desiredMid - desiredSpan / 2;
+        historicalYMax = desiredMid + desiredSpan / 2;
+      }
+    }
+    targetMinP = historicalYMin;
+    targetMaxP = historicalYMax;
+  }
 
   if (smoothMinP === null || smoothMaxP === null || Math.abs(smoothMinP - targetMinP) > (targetMaxP - targetMinP) * 1.5) {
     smoothMinP = targetMinP;
@@ -2258,6 +2319,9 @@ function historicalChartPayload(){
   return {symbol:h.contract_symbol||h.underlying,display_title:h.contract_symbol|| (h.underlying==='SENSEX'?'SENSEX':'NIFTY 50'),timeframe:(h.tf/60)+'m',ltp:Number(candles[candles.length-1]?.close||0),countdown:'HIST',candles,ema9_series:ema9,ema15_series:ema15,ema9:ema9[ema9.length-1]||0,ema15:ema15[ema15.length-1]||0,vwap_series:vwap,vwap:vwap[vwap.length-1]||0,strategy_markers:[],greeks:{delta:0,gamma:0,theta:0,vega:0,iv:0}};
 }
 function calcVwapLocal(candles){let pv=0,v=0,out=[]; for(const c of candles){const q=Math.max(Number(c.volume||0),1);pv+=((c.high+c.low+c.close)/3)*q;v+=q;out.push(Number((pv/v).toFixed(2)));}return out;}
+function resetHistoricalViewport(){
+  historicalYMin=null; historicalYMax=null; smoothMinP=null; smoothMaxP=null;
+}
 function updateHistoricalChartView(){
   if(!historicalReplay)return;
   marketCache=marketCache||{wallet:{balance:1000000,used_margin:0,realized_pnl:0,net_pnl:0,unrealized_pnl:0},positions:[],pending_orders:[],orders:[],nifty_spot:0,sensex_spot:0};
@@ -2268,7 +2332,7 @@ function updateHistoricalChartView(){
   document.getElementById('onChartPriceSub').innerText=`${ch.ltp.toFixed(2)} · ${historicalReplay.date}`;
   document.getElementById('chainSpotBadge').innerText=`HIST: ${ch.ltp.toFixed(2)}`;
   document.getElementById('btnSellLTP').innerText=ch.ltp.toFixed(2); document.getElementById('btnBuyLTP').innerText=ch.ltp.toFixed(2);
-  panOffset=0; verticalPanOffset=0;
+  // Preserve the user's chart position between replay candles. Reset only when a new session is loaded.
   if(document.getElementById('histProgress'))document.getElementById('histProgress').innerText=`${idx+1} / ${total}`;
   if(document.getElementById('histReplayTime'))document.getElementById('histReplayTime').innerText=c?replayLogTime(c.time):'—';
   if(document.getElementById('histCapital'))document.getElementById('histCapital').innerText=money(historicalReplay.balance);
@@ -2322,6 +2386,8 @@ async function startHistoricalChartTrading(){
     const r=await fetch(`/api/historical/chart_day?${q.toString()}`,{cache:'no-store'}),d=await r.json();
     if(!r.ok||!d.ok)throw new Error(d.error||`Historical chart failed (HTTP ${r.status})`);
     historicalReplay={session_id:d.session.session_id,run_id:d.run_id,date:d.replay_day,underlying:d.underlying,tf:d.timeframe,candles:d.candles_data,index:0,playing:false,speed:1,lots:Math.max(1,lots),lot_size:Number(d.session.lot_size||1),position:d.session.position||null,trades:d.session.trades||[],realized_pnl:Number(d.session.realized_pnl||0),unrealized_pnl:0,balance:Number(d.session.balance||1000000),starting_balance:Number(d.session.starting_balance||1000000),max_drawdown:Number(d.session.max_drawdown||0),instrument_type:d.session.instrument_type||instrument,option_type:d.session.option_type||otype,expiry:d.session.expiry||ex,strike:Number(d.session.strike||st||0),contract_symbol:d.session.contract_symbol||'',display_symbol:d.session.display_symbol||under};
+    resetHistoricalViewport();
+    panOffset=0; verticalPanOffset=0; visibleCandleCount=Math.max(10,Math.min(150,Number(visibleCandleCount||35)));
     const qtyEl=document.getElementById('histChartQty'); if(qtyEl)qtyEl.value=Math.max(1,Math.min(10000,Math.floor(historicalReplay.lots))); updateHistoricalLotMeta();
     historicalChartMode=true; currentChartSymbol=(instrument==='OPTION'?(d.session.contract_symbol||'OPTION'):under); currentTimeframe=(tf/60)+'m'; currentTradeMode='MARKET';
     document.getElementById('historicalChartToolbar')?.classList.add('open');
@@ -2343,7 +2409,7 @@ function diagnosticPreviousTradingDayFromError(msg){
 }
 function exitHistoricalChartTrading(){
   if(historicalReplay?.playing) toggleHistoricalPlay(true);
-  historicalChartMode=false; historicalReplay=null; const hc=document.getElementById('histControls'); if(hc)hc.style.display='none'; const hp=document.getElementById('histProgressRow'); if(hp)hp.style.display='none'; const hs=document.getElementById('histStatsRow'); if(hs)hs.style.display='none'; const he=document.getElementById('histExitBtn'); if(he)he.style.display='none';
+  historicalChartMode=false; historicalReplay=null; resetHistoricalViewport(); const hc=document.getElementById('histControls'); if(hc)hc.style.display='none'; const hp=document.getElementById('histProgressRow'); if(hp)hp.style.display='none'; const hs=document.getElementById('histStatsRow'); if(hs)hs.style.display='none'; const he=document.getElementById('histExitBtn'); if(he)he.style.display='none';
   document.getElementById('histChartStatus').innerText='Historical mode closed. Live chart restored.'; document.getElementById('historicalChartToolbar')?.classList.remove('open'); fetchMarket(true);
 }
 function historicalZoomIn(){ if(!historicalReplay)return; visibleCandleCount=Math.max(10,Math.round(visibleCandleCount*0.8)); panOffset=Math.min(Math.max(0,historicalReplay.candles.length-visibleCandleCount),panOffset); drawChart(); }
