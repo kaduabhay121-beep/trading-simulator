@@ -14,6 +14,11 @@ import struct
 import hmac
 import hashlib
 import sqlite3
+
+try:
+    import psycopg
+except Exception:
+    psycopg = None
 from datetime import datetime, time as dtime, timedelta
 import pytz
 from urllib.parse import urlparse, parse_qs
@@ -245,6 +250,39 @@ class AngelOneData:
         if now.time() > dtime(15,30):
             return now.replace(hour=15,minute=30,second=0,microsecond=0)
         return now.replace(second=0,microsecond=0)
+
+    def candles_range(self, inst, interval='ONE_MINUTE', start_date=None, end_date=None):
+        if not self.enabled or not self.jwt or not inst: return []
+        if isinstance(start_date,str): start_date=_parse_replay_date(start_date)
+        if isinstance(end_date,str): end_date=_parse_replay_date(end_date)
+        if not start_date or not end_date or end_date < start_date: return []
+        key=('RANGE',str(inst.get('exch_seg','NSE')).upper(),str(inst.get('token')),interval,start_date.isoformat(),end_date.isoformat())
+        now=time.time(); cached=self.candle_cache.get(key)
+        if cached and now-cached.get('ts',0)<86400: return [dict(x) for x in cached['rows']]
+        start=IST.localize(datetime.combine(start_date,dtime(9,0))); end=IST.localize(datetime.combine(end_date,dtime(15,40)))
+        body={'exchange':str(inst.get('exch_seg','NSE')).upper(),'symboltoken':str(inst['token']),'interval':interval,'fromdate':start.strftime('%Y-%m-%d %H:%M'),'todate':end.strftime('%Y-%m-%d %H:%M')}
+        try:
+            with self.lock:
+                wait=max(0.0,0.45-(time.time()-self.last_candle))
+                if wait: time.sleep(wait)
+                res=self._request(CANDLE_URL,body,self._auth_headers()); self.last_candle=time.time()
+            if not res.get('status',True): raise RuntimeError(res.get('message') or res.get('errorcode') or 'Historical candle request failed')
+            out=[]
+            for r in (res.get('data') or []):
+                if len(r)<6: continue
+                ts=r[0]
+                if isinstance(ts,str):
+                    dt=datetime.fromisoformat(ts.replace('Z','+00:00'))
+                    if dt.tzinfo is None: dt=IST.localize(dt)
+                    ts=int(dt.timestamp())
+                else: ts=int(ts)
+                out.append({'time':ts,'is_prev_day':False,'open':float(r[1]),'high':float(r[2]),'low':float(r[3]),'close':float(r[4]),'volume':int(float(r[5] or 0))})
+            if not out: raise RuntimeError(f'No historical candles returned for {body["exchange"]} token {body["symboltoken"]} ({body["fromdate"]} → {body["todate"]})')
+            self.candle_cache[key]={'ts':time.time(),'rows':[dict(x) for x in out]}; self.last_error=''; return out
+        except Exception as e:
+            self.last_error=str(e)
+            if cached and cached.get('rows'): return [dict(x) for x in cached['rows']]
+            return []
 
     def candles(self, inst, interval='ONE_MINUTE', days=2):
         if not self.enabled or not self.jwt or not inst: return []
@@ -509,6 +547,19 @@ def _rr_ratio(sl_pct,tp_pct):
 def _session_date(ts):
     return datetime.fromtimestamp(int(ts),IST).date()
 
+def _parse_replay_date(value):
+    try:
+        d=datetime.strptime(str(value), '%Y-%m-%d').date()
+        return d
+    except Exception:
+        return None
+
+def _next_weekday(d):
+    x=d+timedelta(days=1)
+    while x.weekday()>=5: x+=timedelta(days=1)
+    return x
+
+
 def _is_cas_window(ts):
     dt=datetime.fromtimestamp(int(ts),IST)
     return dt.weekday()<5 and dtime(15,15)<=dt.time()<dtime(15,35)
@@ -558,9 +609,9 @@ def backtest_strategy(candles, strategy, sl_pct=0.6, tp_pct=1.2, starting_balanc
 def _align_candles(rows):
     return sorted([dict(x) for x in (rows or [])], key=lambda x:int(x.get('time',0)))
 
-def _option_backtest(strategy, underlying, option_mode, days, sl_pct, tp_pct, starting_balance, angel, timeframe=60, lot_multiplier=1, trade_type='INTRADAY', shared_cache=None, base_override=None):
+def _option_backtest(strategy, underlying, option_mode, days, sl_pct, tp_pct, starting_balance, angel, timeframe=60, lot_multiplier=1, trade_type='INTRADAY', shared_cache=None, base_override=None, replay_start=None, replay_end=None):
     inst=angel.find_index(underlying); interval=TF_INTERVALS.get(int(timeframe),'ONE_MINUTE')
-    base=_align_candles(base_override if base_override is not None else (angel.candles(inst,interval,days) if inst else []))
+    base=_align_candles(base_override if base_override is not None else (angel.candles_range(inst,interval,replay_start,replay_end) if replay_start and replay_end else (angel.candles(inst,interval,days) if inst else [])))
     if len(base)<40: return {'ok':False,'error':'Not enough historical underlying candles for replay'}
     balance=float(starting_balance); peak=balance; max_dd=0.0; trades=[]; position=None; wins=losses=0; cache=shared_cache if shared_cache is not None else {}
     def contract_for(spot, ts):
@@ -583,7 +634,8 @@ def _option_backtest(strategy, underlying, option_mode, days, sl_pct, tp_pct, st
         return min(candidates,key=lambda i:abs(float(i.get('strike',0))/100-atm),default=None)
     def option_series(inst2):
         tok=str(inst2.get('token')); key=(tok,int(timeframe))
-        if key not in cache: cache[key]=_align_candles(angel.candles(inst2,interval,days))
+        if key not in cache:
+            cache[key]=_align_candles(angel.candles_range(inst2,interval,replay_start,replay_end) if replay_start and replay_end else angel.candles(inst2,interval,days))
         return cache[key]
     def at_or_after(series, ts):
         lo,hi=0,len(series)-1; ans=None
@@ -694,6 +746,18 @@ MATRIX_JOBS = {}
 MATRIX_JOBS_LOCK = threading.Lock()
 
 
+class _DBAdapter:
+    def __init__(self, conn, postgres=False):
+        self.conn=conn; self.postgres=postgres
+    def execute(self, sql, params=()):
+        if self.postgres:
+            sql=sql.replace('?', '%s')
+        return self.conn.execute(sql, params)
+    def commit(self): return self.conn.commit()
+    def close(self): return self.conn.close()
+
+
+
 class SimulationState:
     def __init__(self):
         self.lock=threading.Lock(); self.nifty_spot=23765.0; self.sensex_spot=81200.0; self.prev_close=23897.70; self.sensex_prev_close=0.0
@@ -703,8 +767,25 @@ class SimulationState:
         threading.Thread(target=self._tick_loop,daemon=True).start()
 
     DB_PATH=os.environ.get('SIM_DB_PATH', os.path.join(os.path.dirname(os.path.abspath(__file__)), 'simulator_state.db'))
+    DATABASE_URL=os.environ.get('DATABASE_URL','').strip()
 
     def _db(self):
+        # Render/production: use Neon PostgreSQL when DATABASE_URL is configured.
+        # Local development: keep SQLite as a zero-setup fallback.
+        if self.DATABASE_URL:
+            if psycopg is None:
+                raise RuntimeError('DATABASE_URL is set but psycopg is not installed.')
+            db=psycopg.connect(self.DATABASE_URL, connect_timeout=10)
+            stmts=[
+                "CREATE TABLE IF NOT EXISTS simulator_state (id INTEGER PRIMARY KEY CHECK(id=1), data TEXT NOT NULL)",
+                "CREATE TABLE IF NOT EXISTS research_runs (id BIGSERIAL PRIMARY KEY, created_at BIGINT NOT NULL, kind TEXT, strategy TEXT, underlying TEXT, mode TEXT, timeframe INTEGER, trade_type TEXT, days INTEGER, sl DOUBLE PRECISION, tp DOUBLE PRECISION, rr DOUBLE PRECISION, lot_multiplier INTEGER, result_json TEXT)",
+                "CREATE TABLE IF NOT EXISTS research_trades (id BIGSERIAL PRIMARY KEY, run_id BIGINT, created_at BIGINT NOT NULL, trade_json TEXT NOT NULL)",
+                "CREATE TABLE IF NOT EXISTS paper_trade_journal (id BIGSERIAL PRIMARY KEY, created_at BIGINT NOT NULL, trade_json TEXT NOT NULL)",
+                "CREATE TABLE IF NOT EXISTS historical_datasets (dataset_key TEXT PRIMARY KEY, saved_at BIGINT NOT NULL, meta_json TEXT NOT NULL, candles_json TEXT NOT NULL)"
+            ]
+            for sql in stmts: db.execute(sql)
+            db.commit()
+            return _DBAdapter(db, True)
         db_dir=os.path.dirname(os.path.abspath(self.DB_PATH))
         os.makedirs(db_dir, exist_ok=True)
         db=sqlite3.connect(self.DB_PATH, timeout=5)
@@ -712,16 +793,35 @@ class SimulationState:
         db.execute("CREATE TABLE IF NOT EXISTS research_runs (id INTEGER PRIMARY KEY AUTOINCREMENT, created_at INTEGER NOT NULL, kind TEXT, strategy TEXT, underlying TEXT, mode TEXT, timeframe INTEGER, trade_type TEXT, days INTEGER, sl REAL, tp REAL, rr REAL, lot_multiplier INTEGER, result_json TEXT)")
         db.execute("CREATE TABLE IF NOT EXISTS research_trades (id INTEGER PRIMARY KEY AUTOINCREMENT, run_id INTEGER, created_at INTEGER NOT NULL, trade_json TEXT NOT NULL)")
         db.execute("CREATE TABLE IF NOT EXISTS paper_trade_journal (id INTEGER PRIMARY KEY AUTOINCREMENT, created_at INTEGER NOT NULL, trade_json TEXT NOT NULL)")
-        cutoff=int(time.time())-30*86400
-        for table in ('research_runs','research_trades','paper_trade_journal'):
-            db.execute(f"DELETE FROM {table} WHERE created_at < ?",(cutoff,))
-        return db
+        db.execute("CREATE TABLE IF NOT EXISTS historical_datasets (dataset_key TEXT PRIMARY KEY, saved_at INTEGER NOT NULL, meta_json TEXT NOT NULL, candles_json TEXT NOT NULL)")
+        # Research/replay history is permanent by design. Nothing is auto-deleted.
+        return _DBAdapter(db, False)
+
+    def _historical_key(self, underlying, mode, timeframe, start_date, end_date):
+        return f'{str(underlying).upper()}|{str(mode).upper()}|{int(timeframe)}|{start_date}|{end_date}'
+
+    def _load_historical_dataset(self, underlying, mode, timeframe, start_date, end_date):
+        try:
+            key=self._historical_key(underlying,mode,timeframe,start_date,end_date); db=self._db(); row=db.execute('SELECT candles_json FROM historical_datasets WHERE dataset_key=?',(key,)).fetchone(); db.close()
+            return json.loads(row[0]) if row else []
+        except Exception: return []
+
+    def _store_historical_dataset(self, underlying, mode, timeframe, start_date, end_date, candles):
+        if not candles: return
+        try:
+            key=self._historical_key(underlying,mode,timeframe,start_date,end_date); db=self._db(); meta={'underlying':underlying,'mode':mode,'timeframe':timeframe,'start_date':start_date,'end_date':end_date,'candles':len(candles)}
+            db.execute('INSERT INTO historical_datasets(dataset_key,saved_at,meta_json,candles_json) VALUES(?,?,?,?) ON CONFLICT(dataset_key) DO UPDATE SET saved_at=excluded.saved_at,meta_json=excluded.meta_json,candles_json=excluded.candles_json',(key,int(time.time()),json.dumps(meta,separators=(',',':')),json.dumps(candles,separators=(',',':')))); db.commit(); db.close()
+        except Exception: pass
 
     def _store_research(self, kind, result, days=0, sl=0.6, tp=1.2, lot_multiplier=1):
         try:
             db=self._db(); now=int(time.time());
-            cur=db.execute("INSERT INTO research_runs(created_at,kind,strategy,underlying,mode,timeframe,trade_type,days,sl,tp,rr,lot_multiplier,result_json) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",(now,kind,result.get('strategy'),result.get('underlying'),result.get('mode'),result.get('timeframe'),result.get('trade_type','INTRADAY'),days,sl,tp,_rr_ratio(sl,tp),lot_multiplier,json.dumps(result,separators=(',',':'))))
-            rid=cur.lastrowid
+            if self.DATABASE_URL:
+                cur=db.execute("INSERT INTO research_runs(created_at,kind,strategy,underlying,mode,timeframe,trade_type,days,sl,tp,rr,lot_multiplier,result_json) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id",(now,kind,result.get('strategy'),result.get('underlying'),result.get('mode'),result.get('timeframe'),result.get('trade_type','INTRADAY'),days,sl,tp,_rr_ratio(sl,tp),lot_multiplier,json.dumps(result,separators=(',',':'))))
+                rid=cur.fetchone()[0]
+            else:
+                cur=db.execute("INSERT INTO research_runs(created_at,kind,strategy,underlying,mode,timeframe,trade_type,days,sl,tp,rr,lot_multiplier,result_json) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",(now,kind,result.get('strategy'),result.get('underlying'),result.get('mode'),result.get('timeframe'),result.get('trade_type','INTRADAY'),days,sl,tp,_rr_ratio(sl,tp),lot_multiplier,json.dumps(result,separators=(',',':'))))
+                rid=cur.lastrowid
             for t in result.get('trades_detail',[]): db.execute("INSERT INTO research_trades(run_id,created_at,trade_json) VALUES(?,?,?)",(rid,now,json.dumps(t,separators=(',',':'))))
             db.commit(); db.close(); return rid
         except Exception: return None
@@ -1236,6 +1336,39 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 candles=state._bot_underlying_candles(state.bot['underlying']); candles=candles[:-1] if len(candles)>1 else candles; signal,conf,meta=strategy_signal(candles,state.bot['strategy']) if len(candles)>=25 else ('HOLD',0.0,{})
                 state.bot['last_signal']=signal; state.bot['last_confidence']=conf; state.bot['signal_meta']=meta; state.bot['last_reason']=state._bot_reason(signal,meta) if meta else 'Waiting for enough candles…'
                 return self._send_json({'ok':True,'bot':state.bot,'paper_only':True})
+        if parsed.path=='/api/historical/replay_day':
+            p=parse_qs(parsed.query)
+            day=_parse_replay_date(p.get('date',[''])[0])
+            if not day: return self._send_json({'ok':False,'error':'Choose a valid trading date in YYYY-MM-DD format.'},400)
+            if day.weekday()>=5: return self._send_json({'ok':False,'error':'Selected date is a weekend. Choose an NSE trading day.'},400)
+            strategy=p.get('strategy',[state.bot.get('strategy','EMA_CROSS')])[0]
+            if strategy not in STRATEGIES: strategy='EMA_CROSS'
+            under=p.get('underlying',[state.bot.get('underlying','NIFTY')])[0].upper()
+            mode=p.get('mode',[state.bot.get('instrument_mode','INDEX')])[0]
+            trade_type=p.get('trade_type',['INTRADAY'])[0].upper(); trade_type='BTST' if trade_type=='BTST' else 'INTRADAY'
+            try: tf=max(60,min(3600,int(p.get('tf',['300'])[0]))); lots=max(1,min(20,int(p.get('lots',['1'])[0]))); sl=max(0.1,min(20,float(p.get('sl',[state.bot.get('stop_loss_pct',0.6)])[0]))); tp=max(0.1,min(50,float(p.get('tp',[state.bot.get('target_pct',1.2)])[0])))
+            except Exception: tf,lots,sl,tp=300,1,0.6,1.2
+            if not state.angel.enabled: return self._send_json({'ok':False,'error':'Historical replay needs Angel One historical market data. Enable ANGELONE_ENABLED.'},400)
+            inst=state.angel.find_index(under)
+            if not inst: return self._send_json({'ok':False,'error':f'Index instrument not found for {under}.'},400)
+            interval=TF_INTERVALS.get(tf,'FIVE_MINUTE')
+            end_day=_next_weekday(day) if trade_type=='BTST' else day
+            base=state._load_historical_dataset(under,mode,tf,day.isoformat(),end_day.isoformat())
+            data_source='Persistent historical dataset' if base else 'Angel One Historical API'
+            if not base:
+                base=state.angel.candles_range(inst,interval,day,end_day)
+                if base: state._store_historical_dataset(under,mode,tf,day.isoformat(),end_day.isoformat(),base)
+            # For a single-day intraday replay, strictly isolate the requested session.
+            if trade_type=='INTRADAY': base=[c for c in base if _session_date(c['time'])==day]
+            if mode=='INDEX':
+                r=backtest_strategy(base,strategy,sl,tp,state.bot.get('initial_balance',1000000.0),qty=lots,trade_type=trade_type)
+                r.update({'underlying':under,'mode':'INDEX','timeframe':tf,'lot_multiplier':lots})
+            else:
+                r=_option_backtest(strategy,under,mode,2 if trade_type=='BTST' else 1,sl,tp,state.bot.get('initial_balance',1000000.0),state.angel,tf,lots,trade_type,{},base_override=base,replay_start=day,replay_end=end_day)
+            if not r.get('ok'): return self._send_json(r,400)
+            r.update({'replay_day':day.isoformat(),'replay_end':end_day.isoformat(),'kind':'REPLAY_DAY','data_note':f'Exact historical session replay; {data_source}; paper-only; no Angel One order placement.'})
+            state._store_research('REPLAY_DAY',r,1 if trade_type=='INTRADAY' else 2,sl,tp,lots)
+            return self._send_json(r)
         if parsed.path=='/api/bot/replay':
             p=parse_qs(parsed.query)
             try:
@@ -1349,7 +1482,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 except Exception as e:
                     with MATRIX_JOBS_LOCK: MATRIX_JOBS[job_id].update({'status':'failed','error':str(e),'results':results,'errors':errors,'finished':time.time()})
             threading.Thread(target=run_matrix,daemon=True,name='research-matrix').start()
-            return self._send_json({'ok':True,'async':True,'job_id':job_id,'status':'running','total':len(tfs)*len(STRATEGIES)*len(lots),'days':days,'underlying':under,'mode':mode,'trade_type':trade_type,'starting_balance':state.bot.get('initial_balance',1000000.0),'retention_days':30,'note':'Matrix runs in the background to avoid HTTP/Render timeout. Research is paper-only; no Angel One orders are sent.'})
+            return self._send_json({'ok':True,'async':True,'job_id':job_id,'status':'running','total':len(tfs)*len(STRATEGIES)*len(lots),'days':days,'underlying':under,'mode':mode,'trade_type':trade_type,'starting_balance':state.bot.get('initial_balance',1000000.0),'retention_days':None,'permanent':True,'note':'Matrix runs in the background to avoid HTTP/Render timeout. Research is paper-only; no Angel One orders are sent.'})
         if parsed.path=='/api/research/matrix_status':
             p=parse_qs(parsed.query); job_id=p.get('job_id',[''])[0]
             with MATRIX_JOBS_LOCK: job=dict(MATRIX_JOBS.get(job_id,{}))
@@ -1420,7 +1553,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 out=[]
                 for row in rows:
                     out.append({'id':row[0],'created_at':row[1],'kind':row[2],'strategy':row[3],'underlying':row[4],'mode':row[5],'timeframe':row[6],'trade_type':row[7],'days':row[8],'sl':row[9],'tp':row[10],'rr':row[11],'lot_multiplier':row[12],'result':json.loads(row[13]) if row[13] else {}})
-                return self._send_json({'ok':True,'runs':out,'retention_days':30,'db_path':state.DB_PATH})
+                return self._send_json({'ok':True,'runs':out,'retention_days':None,'permanent':True,'db_path':state.DB_PATH})
             except Exception as e: return self._send_json({'ok':False,'error':str(e)},500)
         if parsed.path=='/api/research/export.csv':
             p=parse_qs(parsed.query); kind=p.get('kind',['runs'])[0].lower()
@@ -1431,14 +1564,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     w.writerow(['run_id','trade_id','stored_at','trade_json'])
                     rows=db.execute("SELECT run_id,id,created_at,trade_json FROM research_trades ORDER BY run_id DESC,id").fetchall()
                     for r in rows: w.writerow(r)
-                    filename='research_trades_30d.csv'
+                    filename='research_trades_all.csv'
                 else:
                     w.writerow(['run_id','created_at','kind','strategy','underlying','mode','timeframe_sec','trade_type','days','stop_pct','target_pct','rr','lot_multiplier','candles','trades','wins','losses','win_rate','net_pnl','return_pct','profit_factor','max_drawdown'])
                     rows=db.execute("SELECT id,created_at,kind,strategy,underlying,mode,timeframe,trade_type,days,sl,tp,rr,lot_multiplier,result_json FROM research_runs ORDER BY id DESC").fetchall()
                     for r in rows:
                         z=json.loads(r[13]) if r[13] else {}
                         w.writerow([r[0],r[1],r[2],r[3],r[4],r[5],r[6],r[7],r[8],r[9],r[10],r[11],r[12],z.get('candles'),z.get('trades'),z.get('wins'),z.get('losses'),z.get('win_rate'),z.get('net_pnl'),z.get('return_pct'),z.get('profit_factor'),z.get('max_drawdown')])
-                    filename='research_runs_30d.csv'
+                    filename='research_runs_all.csv'
                 db.close(); body=buf.getvalue().encode('utf-8-sig'); self.send_response(200); self.send_header('Content-Type','text/csv; charset=utf-8'); self.send_header('Content-Disposition','attachment; filename="'+filename+'"'); self.send_header('Content-Length',str(len(body))); self.end_headers(); self.wfile.write(body); return
             except Exception as e: return self._send_json({'ok':False,'error':str(e)},500)
         if parsed.path=='/api/research/trades':
