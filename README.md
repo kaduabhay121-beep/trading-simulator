@@ -1,15 +1,13 @@
-# TradeLab Paper Bot v2.10.5 — Historical Chart Trading Manual Risk Fix
+# TradeLab v2.10.6 — Historical Chart Trading P&L / Quantity / Saved Data Fix
 
-Based on v2.10.4. This release fixes historical manual chart trading so BUY/SELL orders do not inherit the live bot's 0.6%/1.2% SL/Target automatically.
-
-## Historical chart trading
-- Manual BUY/SELL trades default to **no automatic SL/Target**.
-- Optional **SL/Target** checkbox enables manual price-based SL and/or Target.
-- Entry candle is never checked for SL/Target immediately after placing a market trade; checks begin on the next revealed candle.
-- Unrealized P&L continues updating as candles advance.
-- BUY opens LONG; SELL opens SHORT; opposite order closes the current position.
-- Manual/EOD/SL/TARGET exit reasons remain stored permanently.
-- Paper/simulated execution only. No Angel One order placement is used.
-
-## Deploy
-Replace the current app files with `app.py`, `index.html`, and `requirements.txt`. Keep existing Render environment variables, including `DATABASE_URL` for Neon.
+## Fixes
+- Historical manual trades remain paper-only.
+- Historical manual SL/Target remain opt-in and do not inherit live bot risk settings.
+- Historical P&L is recalculated from the currently revealed candle price and position quantity on every candle advance.
+- Historical position is now synchronized with the main chart P&L overlay, including LONG/SHORT, quantity, entry, current P&L, SL and Target.
+- Overlay CLOSE works for historical positions.
+- Historical quantity now supports direct entry up to 100,000 units plus −/+ stepper buttons.
+- Quantity is preserved for the active historical position and is used in unrealized/realized P&L.
+- Added SAVED button in the historical controller to jump to Research History.
+- Historical research/trade records remain permanent when DATABASE_URL points to Neon PostgreSQL.
+- No Angel One order-placement API is used.

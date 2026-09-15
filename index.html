@@ -50,7 +50,7 @@ window.onerror = function(msg, src, line) { alert("FATAL JS ERROR: " + msg + " (
   /* Fast Trade Widget */
   .onchart-order-widget { position: absolute; top: 8px; left: 8px; z-index: 10; pointer-events: auto; }
   .historical-chart-toolbar{position:absolute;top:8px;left:8px;z-index:40;display:none;width:min(760px,calc(100% - 16px));background:rgba(8,12,20,.97);border:1px solid #26344a;border-radius:10px;padding:7px;box-shadow:0 8px 24px rgba(0,0,0,.35);touch-action:none;user-select:none;-webkit-user-select:none}
-  .historical-chart-toolbar.open{display:block}.historical-chart-toolbar.minimized{width:auto!important;max-width:calc(100% - 16px)!important;padding:0}.historical-chart-toolbar.minimized .hist-ct-row,.historical-chart-toolbar.minimized #histPositionStatus{display:none!important}.historical-chart-toolbar.maximized{left:8px!important;top:8px!important;right:8px!important;width:auto!important;max-height:calc(100% - 16px);overflow:auto}.hist-ct-actions{display:flex;gap:4px;margin-left:auto}.hist-ct-icon{width:24px;height:22px;border:1px solid #34445c;background:#111827;color:#dbeafe;border-radius:5px;font-weight:800;line-height:18px;padding:0;cursor:pointer}.hist-ct-icon:hover{background:#1e293b}
+  .historical-chart-toolbar.open{display:block}.historical-chart-toolbar.minimized{width:auto!important;max-width:calc(100% - 16px)!important;padding:0}.historical-chart-toolbar.minimized .hist-ct-row,.historical-chart-toolbar.minimized #histPositionStatus{display:none!important}.historical-chart-toolbar.maximized{left:8px!important;top:8px!important;right:8px!important;width:auto!important;max-height:calc(100% - 16px);overflow:auto}.hist-qty-stepper{display:flex;align-items:center;gap:2px}.hist-qty-input{width:78px!important;text-align:center}.hist-qty-btn{width:27px;height:28px;border:1px solid #334155;background:#111827;color:#e2e8f0;border-radius:5px;font-size:17px;font-weight:900;line-height:24px;padding:0;cursor:pointer}.hist-qty-btn:active{background:#1e293b}.hist-ct-actions.hist-ct-icon{width:24px;height:22px;border:1px solid #34445c;background:#111827;color:#dbeafe;border-radius:5px;font-weight:800;line-height:18px;padding:0;cursor:pointer}.hist-ct-icon:hover{background:#1e293b}
   .hist-ct-row{display:flex;gap:5px;align-items:center;flex-wrap:wrap}
   .hist-ct-handle{display:flex;align-items:center;justify-content:space-between;gap:8px;height:24px;margin:-2px -1px 4px;padding:0 5px;color:#94a3b8;font-size:9px;font-weight:900;letter-spacing:.5px;cursor:grab;border-bottom:1px solid #1d2939}
   .hist-ct-handle:active{cursor:grabbing}
@@ -196,7 +196,7 @@ canvas { width: 100% !important; height: 100% !important; display: block; }
         </div>
         <div class="hist-ct-row">
           <select id="histChartTf" class="hist-ct-select"><option value="60">1m</option><option value="180">3m</option><option value="300" selected>5m</option><option value="600">10m</option><option value="900">15m</option><option value="1800">30m</option><option value="3600">1h</option></select>
-          <input id="histChartQty" class="hist-ct-input" type="number" min="1" value="1" placeholder="Qty / units">
+          <div class="hist-qty-stepper" title="Historical trade quantity"><button type="button" class="hist-qty-btn" onclick="adjustHistoricalQty(-1)">−</button><input id="histChartQty" class="hist-ct-input hist-qty-input" type="number" min="1" max="100000" step="1" value="1" inputmode="numeric" placeholder="Qty / units" oninput="normalizeHistoricalQty()"><button type="button" class="hist-qty-btn" onclick="adjustHistoricalQty(1)">+</button></div>
           <button type="button" id="histLoadBtn" class="hist-ct-btn primary" onclick="safeHistoricalAction(event, startHistoricalChartTrading)">LOAD HISTORICAL</button>
           <button type="button" id="histExitBtn" class="hist-ct-btn" style="display:none" onclick="safeHistoricalAction(event, exitHistoricalChartTrading)">EXIT</button>
           <span id="histChartStatus" class="hist-ct-status">Historical mode off</span>
@@ -210,7 +210,7 @@ canvas { width: 100% !important; height: 100% !important; display: block; }
           <input id="histStopPrice" class="hist-ct-input" type="number" step="0.01" min="0" placeholder="SL price" style="display:none">
           <input id="histTargetPrice" class="hist-ct-input" type="number" step="0.01" min="0" placeholder="Target price" style="display:none">
           <button type="button" class="hist-ct-btn buy" onclick="safeHistoricalTrade(event,'BUY')">▲ BUY</button><button type="button" class="hist-ct-btn sell" onclick="safeHistoricalTrade(event,'SELL')">▼ SELL</button>
-          <button type="button" class="hist-ct-btn" onclick="safeHistoricalAction(event, finishHistoricalChartSession)">SAVE</button>
+          <button type="button" class="hist-ct-btn" onclick="safeHistoricalAction(event, finishHistoricalChartSession)">SAVE</button><button type="button" class="hist-ct-btn" onclick="safeHistoricalAction(event, openSavedHistoricalData)">SAVED</button>
         </div>
         <div id="histPositionStatus" class="hist-ct-status" style="display:none;margin-top:4px"></div>
       </div>
@@ -1517,37 +1517,26 @@ let activeEditBracket = 'SL';
 let activePosId = null;
 
 function updatePositionPills(data) {
-  const matchingPos = (typeof findMatchingPosition === 'function') ? findMatchingPosition() : null;
-
-  const overlayPill = document.getElementById('livePriceOverlayPill');
-  if (matchingPos) {
-    activePosId = matchingPos.id;
-    overlayPill.style.display = 'flex';
-    
-    const isP = matchingPos.pnl >= 0;
-    const pnlEl = document.getElementById('overlayPnl');
-    pnlEl.innerText = `${isP ? '+' : ''}₹${matchingPos.pnl.toFixed(2)}`;
-    pnlEl.style.color = isP ? 'var(--green)' : 'var(--red)';
-
-    const typeEl = document.getElementById('overlayPosType');
-    typeEl.innerText = matchingPos.action;
-    typeEl.style.background = matchingPos.action === 'BUY' ? 'rgba(30,58,138,0.7)' : 'rgba(127,29,29,0.7)';
-
-    const lSize = matchingPos.symbol.includes("SENSEX") ? 10 : 65;
-    const lots = Math.round(matchingPos.qty / lSize);
-    document.getElementById('overlayQty').innerText = `${matchingPos.qty} Qty (${lots}L)`;
-
-    document.getElementById('overlaySL').innerText = matchingPos.stop_loss ? `₹${matchingPos.stop_loss}` : 'Set';
-    document.getElementById('overlayTP').innerText = matchingPos.target ? `₹${matchingPos.target}` : 'Set';
-    document.getElementById('overlayTSL').innerText = matchingPos.trailing_sl ? `₹${matchingPos.trailing_sl}` : 'Set';
-
-    document.getElementById('btnOverlayClose').onclick = () => exitPosition(matchingPos.id);
-  } else {
-    activePosId = null;
-    overlayPill.style.display = 'none';
-  }
+  let matchingPos = null;
+  if (historicalChartMode && historicalReplay?.position) {
+    const p=historicalReplay.position, ltp=Number(historicalCurrentCandle()?.close||p.entry||0), entry=Number(p.entry||0), qty=Number(p.qty||0);
+    const pnl=(p.side==='SHORT'?(entry-ltp):(ltp-entry))*qty;
+    matchingPos={id:'hist',symbol:p.symbol||historicalReplay.contract_symbol||historicalReplay.underlying,action:p.side==='SHORT'?'SELL':'BUY',qty,buy_price:entry,ltp,pnl,stop_loss:Number(p.stop_loss||0),target:Number(p.target||0),trailing_sl:Number(p.trailing_sl||0)};
+  } else if (typeof findMatchingPosition === 'function') matchingPos=findMatchingPosition();
+  const overlayPill=document.getElementById('livePriceOverlayPill'); if(!overlayPill)return;
+  if(matchingPos){
+    activePosId=matchingPos.id; overlayPill.style.display='flex';
+    const isP=Number(matchingPos.pnl)>=0, pnlEl=document.getElementById('overlayPnl');
+    pnlEl.innerText=`${isP?'+':''}₹${Number(matchingPos.pnl||0).toFixed(2)}`; pnlEl.style.color=isP?'var(--green)':'var(--red)';
+    const typeEl=document.getElementById('overlayPosType'); typeEl.innerText=matchingPos.action; typeEl.style.background=matchingPos.action==='BUY'?'rgba(30,58,138,0.7)':'rgba(127,29,29,0.7)';
+    const lSize=String(matchingPos.symbol||'').includes('SENSEX')?10:65, lots=Math.round(Number(matchingPos.qty||0)/lSize);
+    document.getElementById('overlayQty').innerText=`${matchingPos.qty} Qty (${lots}L)`;
+    document.getElementById('overlaySL').innerText=matchingPos.stop_loss?`₹${matchingPos.stop_loss}`:'Set';
+    document.getElementById('overlayTP').innerText=matchingPos.target?`₹${matchingPos.target}`:'Set';
+    document.getElementById('overlayTSL').innerText=matchingPos.trailing_sl?`₹${matchingPos.trailing_sl}`:'Set';
+    document.getElementById('btnOverlayClose').onclick=()=> historicalChartMode ? historicalCloseAt(Number(historicalCurrentCandle()?.close||matchingPos.ltp),'MANUAL_EXIT',historicalCurrentCandle()) : exitPosition(matchingPos.id);
+  } else { activePosId=null; overlayPill.style.display='none'; }
 }
-
 function openBracketEdit(mode) {
   activeEditBracket = mode;
   const titles = { 'SL': 'Set Stop Loss Price (₹)', 'TP': 'Set Target Price (₹)', 'TSL': 'Set Trailing SL Gap (₹)' };
@@ -2226,6 +2215,20 @@ function historicalDefaultDate(){
   const y=now.getFullYear(),m=String(now.getMonth()+1).padStart(2,'0'),day=String(now.getDate()).padStart(2,'0');
   return previousHistoricalTradingDate(`${y}-${m}-${day}`);
 }
+function normalizeHistoricalQty(){
+  const el=document.getElementById('histChartQty'); if(!el)return 1;
+  let q=Math.floor(Number(el.value||1)); if(!Number.isFinite(q)||q<1)q=1; if(q>100000)q=100000; el.value=q;
+  if(historicalReplay && !historicalReplay.position) historicalReplay.qty=q; return q;
+}
+function adjustHistoricalQty(delta){
+  const el=document.getElementById('histChartQty'); if(!el)return;
+  let q=Math.floor(Number(el.value||1))+Number(delta||0); q=Math.max(1,Math.min(100000,q)); el.value=q;
+  if(historicalReplay && !historicalReplay.position) historicalReplay.qty=q;
+}
+function openSavedHistoricalData(){
+  const target=document.getElementById('researchHistory'); if(target){target.scrollIntoView({behavior:'smooth',block:'start'}); if(typeof loadResearchHistory==='function')loadResearchHistory();}
+  const st=document.getElementById('histChartStatus'); if(st)st.innerText='Saved data is in Research History / permanent Neon storage.';
+}
 function historicalCurrentCandle(){
   const h=historicalReplay; if(!h||!h.candles) return null;
   return h.candles[Math.max(0,Math.min(h.index,h.candles.length-1))]||null;
@@ -2264,6 +2267,7 @@ function updateHistoricalChartView(){
   historicalReplay.unrealized_pnl=Number(unreal||0);
   const totalPnl=Number(historicalReplay.realized_pnl||0)+historicalReplay.unrealized_pnl;
   if(document.getElementById('histPnl')){document.getElementById('histPnl').innerText=money(totalPnl);document.getElementById('histPnl').className=totalPnl>=0?'bot-good':'bot-bad';}
+  updatePositionPills();
   if(ps){ps.style.display=p?'block':'none'; if(p){const sl=p.stop_loss?` · SL ₹${Number(p.stop_loss).toFixed(2)}`:'';const tp=p.target?` · Target ₹${Number(p.target).toFixed(2)}`:'';ps.innerHTML=`OPEN ${p.side==='SHORT'?'SHORT':'LONG'} · ${p.qty} Qty · Entry ₹${Number(p.entry).toFixed(2)} · LTP ₹${Number(ch.ltp).toFixed(2)} · Unrealized ${money(unreal)}${sl}${tp}`;}}
   drawChart();
 }
@@ -2303,6 +2307,7 @@ async function startHistoricalChartTrading(){
     const r=await fetch(`/api/historical/chart_day?${q.toString()}`,{cache:'no-store'}),d=await r.json();
     if(!r.ok||!d.ok)throw new Error(d.error||`Historical chart failed (HTTP ${r.status})`);
     historicalReplay={session_id:d.session.session_id,run_id:d.run_id,date:d.replay_day,underlying:d.underlying,tf:d.timeframe,candles:d.candles_data,index:0,playing:false,speed:1,qty:Math.max(1,qty),position:d.session.position||null,trades:d.session.trades||[],realized_pnl:Number(d.session.realized_pnl||0),unrealized_pnl:0,balance:Number(d.session.balance||1000000),starting_balance:Number(d.session.starting_balance||1000000),max_drawdown:Number(d.session.max_drawdown||0),instrument_type:d.session.instrument_type||instrument,option_type:d.session.option_type||otype,expiry:d.session.expiry||ex,strike:Number(d.session.strike||st||0),contract_symbol:d.session.contract_symbol||'',display_symbol:d.session.display_symbol||under};
+    const qtyEl=document.getElementById('histChartQty'); if(qtyEl)qtyEl.value=Math.max(1,Math.min(100000,Math.floor(qty)));
     historicalChartMode=true; currentChartSymbol=(instrument==='OPTION'?(d.session.contract_symbol||'OPTION'):under); currentTimeframe=(tf/60)+'m'; currentTradeMode='MARKET';
     document.getElementById('historicalChartToolbar')?.classList.add('open');
     document.getElementById('histControls').style.display='flex'; document.getElementById('histExitBtn').style.display='inline-block';
@@ -2359,7 +2364,8 @@ async function historicalChartTrade(side){
   const h=historicalReplay,c=historicalCurrentCandle();
   if(!historicalChartMode||!h||!c){const st=document.getElementById('histChartStatus');if(st)st.innerText='Historical session is not loaded. Click LOAD HISTORICAL first.';return;}
   const price=Number(c.close);
-  const qty=Math.max(1,Number(document.getElementById('histChartQty')?.value||h.qty||1));
+  const qty=Math.max(1,Math.min(100000,Math.floor(Number(document.getElementById('histChartQty')?.value||h.qty||1))));
+  const qtyEl=document.getElementById('histChartQty'); if(qtyEl)qtyEl.value=qty;
   const action=String(side||'BUY').toUpperCase();
   // BUY opens LONG or closes SHORT; SELL opens SHORT or closes LONG.
   const existing=h.position;
