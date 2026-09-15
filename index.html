@@ -206,6 +206,9 @@ canvas { width: 100% !important; height: 100% !important; display: block; }
           <select id="histSpeed" class="hist-ct-select"><option value="1">1×</option><option value="2">2×</option><option value="5">5×</option><option value="10">10×</option></select>
           <span class="hist-ct-badge">REPLAY <b id="histProgress">0/0</b> · <b id="histReplayTime">—</b></span>
           <span class="hist-ct-badge">CAPITAL <b id="histCapital">₹10,00,000</b> · P&L <b id="histPnl">₹0</b></span>
+          <label class="hist-ct-badge" style="display:flex;align-items:center;gap:5px"><input id="histRiskEnabled" type="checkbox" onchange="toggleHistoricalRiskFields()"> SL/Target</label>
+          <input id="histStopPrice" class="hist-ct-input" type="number" step="0.01" min="0" placeholder="SL price" style="display:none">
+          <input id="histTargetPrice" class="hist-ct-input" type="number" step="0.01" min="0" placeholder="Target price" style="display:none">
           <button type="button" class="hist-ct-btn buy" onclick="safeHistoricalTrade(event,'BUY')">▲ BUY</button><button type="button" class="hist-ct-btn sell" onclick="safeHistoricalTrade(event,'SELL')">▼ SELL</button>
           <button type="button" class="hist-ct-btn" onclick="safeHistoricalAction(event, finishHistoricalChartSession)">SAVE</button>
         </div>
@@ -2261,12 +2264,16 @@ function updateHistoricalChartView(){
   historicalReplay.unrealized_pnl=Number(unreal||0);
   const totalPnl=Number(historicalReplay.realized_pnl||0)+historicalReplay.unrealized_pnl;
   if(document.getElementById('histPnl')){document.getElementById('histPnl').innerText=money(totalPnl);document.getElementById('histPnl').className=totalPnl>=0?'bot-good':'bot-bad';}
-  if(ps){ps.style.display=p?'block':'none'; if(p)ps.innerHTML=`OPEN ${p.side==='SHORT'?'SHORT':'LONG'} · ${p.qty} Qty · Entry ₹${Number(p.entry).toFixed(2)} · LTP ₹${Number(ch.ltp).toFixed(2)} · Unrealized ${money(unreal)} · SL ₹${Number(p.stop_loss||0).toFixed(2)} · Target ₹${Number(p.target||0).toFixed(2)}`;}
+  if(ps){ps.style.display=p?'block':'none'; if(p){const sl=p.stop_loss?` · SL ₹${Number(p.stop_loss).toFixed(2)}`:'';const tp=p.target?` · Target ₹${Number(p.target).toFixed(2)}`:'';ps.innerHTML=`OPEN ${p.side==='SHORT'?'SHORT':'LONG'} · ${p.qty} Qty · Entry ₹${Number(p.entry).toFixed(2)} · LTP ₹${Number(ch.ltp).toFixed(2)} · Unrealized ${money(unreal)}${sl}${tp}`;}}
   drawChart();
 }
 function toggleHistoricalPanel(){
   const panel=document.getElementById('historicalChartToolbar');
   if(panel) panel.classList.toggle('open');
+}
+function toggleHistoricalRiskFields(){
+  const on=!!document.getElementById('histRiskEnabled')?.checked;
+  ['histStopPrice','histTargetPrice'].forEach(id=>{const el=document.getElementById(id);if(el)el.style.display=on?'block':'none';});
 }
 function toggleHistoricalOptionFields(){
   const isOpt=document.getElementById('histChartInstrument')?.value==='OPTION';
@@ -2360,9 +2367,14 @@ async function historicalChartTrade(side){
     const st=document.getElementById('histChartStatus');if(st)st.innerText=`${action} ignored: ${existing.side} position already open.`;return;
   }
   const isClosing=existing && ((action==='SELL'&&existing.side==='LONG')||(action==='BUY'&&existing.side==='SHORT'));
-  const slPct=Number(document.getElementById('botSL')?.value||0.6),tpPct=Number(document.getElementById('botTP')?.value||1.2);
-  const sl=isClosing?Number(existing.stop_loss||0):(action==='BUY'?price*(1-slPct/100):price*(1+slPct/100));
-  const tp=isClosing?Number(existing.target||0):(action==='BUY'?price*(1+tpPct/100):price*(1-tpPct/100));
+  const riskOn=!!document.getElementById('histRiskEnabled')?.checked;
+  const manualSl=Number(document.getElementById('histStopPrice')?.value||0);
+  const manualTp=Number(document.getElementById('histTargetPrice')?.value||0);
+  const sl=isClosing?Number(existing.stop_loss||0):(riskOn?manualSl:0);
+  const tp=isClosing?Number(existing.target||0):(riskOn?manualTp:0);
+  if(!isClosing && riskOn && ((!sl&& !tp) || (action==='BUY' && sl>=price) || (action==='BUY' && tp && tp<=price) || (action==='SELL' && sl<=price) || (action==='SELL' && tp && tp>=price))){
+    const st=document.getElementById('histChartStatus');if(st)st.innerText='Invalid SL/Target for this side. Leave risk OFF for a manual trade, or enter valid prices.';return;
+  }
   try{
     const r=await fetch('/api/historical/chart_trade',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({session_id:h.session_id,action,qty:existing?Number(existing.qty):qty,price,stop_loss:sl,target:tp,trailing_sl:0,candle_time:c.time,candle_index:h.index})});
     const d=await r.json();if(!r.ok||!d.ok)throw new Error(d.error||`Historical ${action} failed`);

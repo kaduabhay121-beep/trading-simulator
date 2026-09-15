@@ -1836,8 +1836,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     session['position']=None; session['replay_index']=candle_index; state._append_historical_chart_trade(session,trade)
                     return self._send_json({'ok':True,'session':session,'trade':trade,'position':None,'paper_only':True})
                 side='LONG' if action=='BUY' else 'SHORT'
-                if side=='LONG': stop=sl or price*(1-float(session.get('stop_loss_pct',0.6))/100); target=tp or price*(1+float(session.get('target_pct',1.2))/100)
-                else: stop=sl or price*(1+float(session.get('stop_loss_pct',0.6))/100); target=tp or price*(1-float(session.get('target_pct',1.2))/100)
+                # Manual historical chart trades do NOT inherit the live bot's SL/TP.
+                # Risk controls are opt-in: zero means no automatic SL/Target.
+                stop=max(0.0,sl)
+                target=max(0.0,tp)
+                if stop or target:
+                    if side=='LONG' and ((stop and stop>=price) or (target and target<=price)): return self._send_json({'ok':False,'error':'For LONG, SL must be below entry and Target must be above entry.'},400)
+                    if side=='SHORT' and ((stop and stop<=price) or (target and target>=price)): return self._send_json({'ok':False,'error':'For SHORT, SL must be above entry and Target must be below entry.'},400)
                 pos={'side':side,'entry':price,'qty':qty,'stop_loss':stop,'target':target,'trailing_sl':tsl,'entry_time':candle_time,'entry_index':candle_index,'symbol':session.get('contract_symbol') or session.get('display_symbol') or session.get('underlying','NIFTY')}
                 session['position']=pos; session['status']='OPEN'; session['replay_index']=candle_index; state._save_historical_chart_session(session)
                 return self._send_json({'ok':True,'session':session,'position':pos,'paper_only':True})

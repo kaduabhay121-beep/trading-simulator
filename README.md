@@ -1,21 +1,15 @@
-# TradeLab v2.10 — Historical Chart Trading + Option Replay
+# TradeLab Paper Bot v2.10.5 — Historical Chart Trading Manual Risk Fix
 
-Builds on v2.9.1 Neon permanent research storage.
+Based on v2.10.4. This release fixes historical manual chart trading so BUY/SELL orders do not inherit the live bot's 0.6%/1.2% SL/Target automatically.
 
-## v2.10 fixes/enhancements
-- Historical chart now loads a full 1-minute session first and locally aggregates to 1m/3m/5m/10m/15m/30m/1h. This prevents the one-big-candle/single-candle replay problem.
-- Historical replay controls are on the Chart only: HIST, date, market, instrument, timeframe, LOAD, PREV, PLAY/PAUSE, NEXT, speed, BUY, SELL, SAVE.
-- Historical chart supports NIFTY and SENSEX index charts.
-- Historical chart supports NIFTY/SENSEX option charts (CE/PE), expiry and strike selection.
-- Option contract candles are fetched from Angel One historical data using the current instrument master. Recent active contracts are supported; expired F&O contracts are not guaranteed because Angel One's current scrip master does not expose expired contracts.
-- Historical chart trades remain paper-only. No Angel One order placement API is called.
-- Historical chart sessions and trades remain permanently stored in the configured Neon database (or SQLite fallback locally).
+## Historical chart trading
+- Manual BUY/SELL trades default to **no automatic SL/Target**.
+- Optional **SL/Target** checkbox enables manual price-based SL and/or Target.
+- Entry candle is never checked for SL/Target immediately after placing a market trade; checks begin on the next revealed candle.
+- Unrealized P&L continues updating as candles advance.
+- BUY opens LONG; SELL opens SHORT; opposite order closes the current position.
+- Manual/EOD/SL/TARGET exit reasons remain stored permanently.
+- Paper/simulated execution only. No Angel One order placement is used.
 
 ## Deploy
-Upload these files to the `trading-simulator` GitHub repository on `main`:
-- app.py
-- index.html
-- requirements.txt
-- README.md
-
-Do not upload this build to the Android repository.
+Replace the current app files with `app.py`, `index.html`, and `requirements.txt`. Keep existing Render environment variables, including `DATABASE_URL` for Neon.
