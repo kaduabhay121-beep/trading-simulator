@@ -49,19 +49,22 @@ window.onerror = function(msg, src, line) { alert("FATAL JS ERROR: " + msg + " (
 
   /* Fast Trade Widget */
   .onchart-order-widget { position: absolute; top: 8px; left: 8px; z-index: 10; pointer-events: auto; }
-  .historical-chart-toolbar{position:absolute;top:8px;left:8px;right:8px;z-index:40;display:none;background:rgba(8,12,20,.96);border:1px solid #26344a;border-radius:10px;padding:7px;box-shadow:0 8px 24px rgba(0,0,0,.35)}
+  .historical-chart-toolbar{position:absolute;top:8px;left:8px;z-index:40;display:none;width:min(760px,calc(100% - 16px));background:rgba(8,12,20,.97);border:1px solid #26344a;border-radius:10px;padding:7px;box-shadow:0 8px 24px rgba(0,0,0,.35);touch-action:none;user-select:none;-webkit-user-select:none}
   .historical-chart-toolbar.open{display:block}
   .hist-ct-row{display:flex;gap:5px;align-items:center;flex-wrap:wrap}
+  .hist-ct-handle{display:flex;align-items:center;justify-content:space-between;gap:8px;height:24px;margin:-2px -1px 4px;padding:0 5px;color:#94a3b8;font-size:9px;font-weight:900;letter-spacing:.5px;cursor:grab;border-bottom:1px solid #1d2939}
+  .hist-ct-handle:active{cursor:grabbing}
+  .hist-ct-grip{font-size:14px;line-height:1;color:#64748b}
   .hist-ct-row+.hist-ct-row{margin-top:5px}
   .hist-ct-select,.hist-ct-input{height:30px;background:#111827;color:#e5e7eb;border:1px solid #334155;border-radius:7px;padding:0 8px;font-size:10px;font-weight:800;min-width:76px}
   .hist-ct-input{min-width:105px}
-  .hist-ct-btn{height:30px;border:1px solid #334155;background:#172033;color:#e5e7eb;border-radius:7px;padding:0 9px;font-size:10px;font-weight:900}
+  .hist-ct-btn:disabled{opacity:.45;cursor:not-allowed}.hist-ct-btn{height:30px;border:1px solid #334155;background:#172033;color:#e5e7eb;border-radius:7px;padding:0 9px;font-size:10px;font-weight:900}
   .hist-ct-btn.primary{background:#2563eb;border-color:#3b82f6;color:white}
   .hist-ct-btn.buy{background:#059669;border-color:#10b981;color:white}
   .hist-ct-btn.sell{background:#dc2626;border-color:#ef4444;color:white}
   .hist-ct-status{font-size:9px;color:#94a3b8;flex:1;min-width:150px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .hist-ct-badge{font-size:9px;font-weight:900;color:#22c55e;border:1px solid #14532d;background:#052e16;padding:6px 8px;border-radius:7px}
-  @media(max-width:600px){.historical-chart-toolbar{top:44px}.hist-ct-select,.hist-ct-input{flex:1;min-width:0}.hist-ct-btn{flex:0 0 auto}.hist-ct-status{min-width:110px}}
+  @media(max-width:600px){.historical-chart-toolbar{top:44px;right:auto;width:calc(100% - 16px)}.hist-ct-select,.hist-ct-input{flex:1;min-width:0}.hist-ct-btn{flex:0 0 auto}.hist-ct-status{min-width:110px}}
   .idx-title-row { font-size: 11px; font-weight: 800; color: #cbd5e1; display: flex; align-items: center; gap: 4px; }
   .idx-pill { background: #1e293b; padding: 1px 5px; border-radius: 8px; font-size: 9px; color: #94a3b8; }
   .idx-price-sub { font-size: 11px; color: var(--green); font-weight: 700; margin: 2px 0 4px 0; }
@@ -182,6 +185,7 @@ canvas { width: 100% !important; height: 100% !important; display: block; }
     <div class="chart-viewport" id="chartViewport">
       <!-- Historical Chart Trading controls live on the chart only -->
       <div id="historicalChartToolbar" class="historical-chart-toolbar">
+        <div id="historicalChartHandle" class="hist-ct-handle" title="Drag to move historical controls"><span>⋮⋮ HISTORICAL CHART TRADING</span><span class="hist-ct-grip">⠿</span></div>
         <div class="hist-ct-row">
           <input id="histChartDate" class="hist-ct-input" type="date" title="Historical trading day">
           <select id="histChartUnderlying" class="hist-ct-select"><option value="NIFTY">NIFTY</option><option value="SENSEX">SENSEX</option></select>
@@ -193,17 +197,17 @@ canvas { width: 100% !important; height: 100% !important; display: block; }
         <div class="hist-ct-row">
           <select id="histChartTf" class="hist-ct-select"><option value="60">1m</option><option value="180">3m</option><option value="300" selected>5m</option><option value="600">10m</option><option value="900">15m</option><option value="1800">30m</option><option value="3600">1h</option></select>
           <input id="histChartQty" class="hist-ct-input" type="number" min="1" value="1" placeholder="Qty / units">
-          <button id="histLoadBtn" class="hist-ct-btn primary" onclick="startHistoricalChartTrading()">LOAD HISTORICAL</button>
-          <button id="histExitBtn" class="hist-ct-btn" style="display:none" onclick="exitHistoricalChartTrading()">EXIT</button>
+          <button type="button" id="histLoadBtn" class="hist-ct-btn primary" onclick="safeHistoricalAction(event, startHistoricalChartTrading)">LOAD HISTORICAL</button>
+          <button type="button" id="histExitBtn" class="hist-ct-btn" style="display:none" onclick="safeHistoricalAction(event, exitHistoricalChartTrading)">EXIT</button>
           <span id="histChartStatus" class="hist-ct-status">Historical mode off</span>
         </div>
         <div class="hist-ct-row" id="histControls" style="display:none">
-          <button class="hist-ct-btn" onclick="historicalPrevCandle()">◀ PREV</button><button id="histPlayBtn" class="hist-ct-btn primary" onclick="toggleHistoricalPlay()">▶ PLAY</button><button class="hist-ct-btn" onclick="historicalNextCandle()">NEXT ▶</button>
+          <button type="button" class="hist-ct-btn" onclick="safeHistoricalAction(event, historicalPrevCandle)">◀ PREV</button><button type="button" id="histPlayBtn" class="hist-ct-btn primary" onclick="safeHistoricalAction(event, toggleHistoricalPlay)">▶ PLAY</button><button type="button" class="hist-ct-btn" onclick="safeHistoricalAction(event, historicalNextCandle)">NEXT ▶</button>
           <select id="histSpeed" class="hist-ct-select"><option value="1">1×</option><option value="2">2×</option><option value="5">5×</option><option value="10">10×</option></select>
           <span class="hist-ct-badge">REPLAY <b id="histProgress">0/0</b> · <b id="histReplayTime">—</b></span>
           <span class="hist-ct-badge">CAPITAL <b id="histCapital">₹10,00,000</b> · P&L <b id="histPnl">₹0</b></span>
-          <button class="hist-ct-btn buy" onclick="historicalChartTrade('BUY')">▲ BUY</button><button class="hist-ct-btn sell" onclick="historicalChartTrade('SELL')">▼ SELL</button>
-          <button class="hist-ct-btn" onclick="finishHistoricalChartSession()">SAVE</button>
+          <button type="button" class="hist-ct-btn buy" onclick="safeHistoricalTrade(event,'BUY')">▲ BUY</button><button type="button" class="hist-ct-btn sell" onclick="safeHistoricalTrade(event,'SELL')">▼ SELL</button>
+          <button type="button" class="hist-ct-btn" onclick="safeHistoricalAction(event, finishHistoricalChartSession)">SAVE</button>
         </div>
         <div id="histPositionStatus" class="hist-ct-status" style="display:none;margin-top:4px"></div>
       </div>
@@ -217,11 +221,11 @@ canvas { width: 100% !important; height: 100% !important; display: block; }
         <div class="idx-price-sub" id="onChartPriceSub">23,850.00 +0.00 (+0.00%)</div>
         
         <div class="instant-trade-box">
-          <button class="btn-trade-side sell" onclick="triggerDirectTrade('SELL')">
+          <button type="button" class="btn-trade-side sell" onclick="safeDirectTrade(event,'SELL')">
             <span id="btnSellLTP">23,850.00</span>
             <span id="btnSellLabel">SELL</span>
           </button>
-          <button class="btn-trade-side buy" onclick="triggerDirectTrade('BUY')">
+          <button type="button" class="btn-trade-side buy" onclick="safeDirectTrade(event,'BUY')">
             <span id="btnBuyLTP">23,850.00</span>
             <span id="btnBuyLabel">BUY</span>
           </button>
@@ -2135,6 +2139,55 @@ async function openResearchRun(runId){
   }catch(e){alert(e.message||'Trade history unavailable')}
 }
 
+// Historical control window: keep it above the canvas and make it draggable on touch/mouse.
+(function initHistoricalControlWindow(){
+  const panel=document.getElementById('historicalChartToolbar'), handle=document.getElementById('historicalChartHandle');
+  if(!panel||!handle) return;
+  let dragging=false, startX=0, startY=0, baseLeft=0, baseTop=0;
+  const clamp=()=>{
+    const parent=panel.offsetParent||panel.parentElement;
+    const pw=parent?.clientWidth||window.innerWidth, ph=parent?.clientHeight||window.innerHeight;
+    const maxX=Math.max(0,pw-panel.offsetWidth-8), maxY=Math.max(0,ph-panel.offsetHeight-8);
+    baseLeft=Math.max(8,Math.min(baseLeft,maxX)); baseTop=Math.max(8,Math.min(baseTop,maxY));
+    panel.style.left=baseLeft+'px'; panel.style.top=baseTop+'px'; panel.style.right='auto';
+  };
+  const down=e=>{
+    if(e.pointerType==='mouse' && e.button!==0) return;
+    dragging=true; const pt=e.touches?e.touches[0]:e; startX=pt.clientX; startY=pt.clientY;
+    const r=panel.getBoundingClientRect(); const pr=(panel.offsetParent||panel.parentElement).getBoundingClientRect();
+    baseLeft=r.left-pr.left; baseTop=r.top-pr.top; panel.setPointerCapture?.(e.pointerId);
+    e.preventDefault(); e.stopPropagation();
+  };
+  const move=e=>{
+    if(!dragging)return; const pt=e.touches?e.touches[0]:e; baseLeft+=(pt.clientX-startX); baseTop+=(pt.clientY-startY); startX=pt.clientX; startY=pt.clientY; clamp(); e.preventDefault(); e.stopPropagation();
+  };
+  const up=e=>{dragging=false; e.stopPropagation();};
+  handle.addEventListener('pointerdown',down,{passive:false}); handle.addEventListener('pointermove',move,{passive:false}); handle.addEventListener('pointerup',up,{passive:false}); handle.addEventListener('pointercancel',up,{passive:false});
+  handle.addEventListener('touchstart',down,{passive:false}); handle.addEventListener('touchmove',move,{passive:false}); handle.addEventListener('touchend',up,{passive:false});
+  // Any interaction inside the control window must never reach the chart gesture handler.
+  panel.addEventListener('pointerdown',e=>e.stopPropagation(),{passive:true});
+  panel.addEventListener('pointermove',e=>{if(!dragging)e.stopPropagation();},{passive:true});
+  panel.addEventListener('touchstart',e=>e.stopPropagation(),{passive:false});
+  panel.addEventListener('touchmove',e=>{if(!dragging)e.stopPropagation();},{passive:false});
+  panel.addEventListener('touchend',e=>e.stopPropagation(),{passive:false});
+  window.addEventListener('resize',()=>{if(panel.classList.contains('open'))clamp();});
+})();
+
+let historicalTradeBusy=false;
+function safeHistoricalAction(e,fn){ e?.preventDefault?.(); e?.stopPropagation?.(); if(typeof fn==='function') return fn(); }
+async function safeHistoricalTrade(e,side){
+  e?.preventDefault?.(); e?.stopPropagation?.();
+  if(historicalTradeBusy)return;
+  historicalTradeBusy=true;
+  const btns=document.querySelectorAll('#historicalChartToolbar .hist-ct-btn.buy,#historicalChartToolbar .hist-ct-btn.sell'); btns.forEach(b=>b.disabled=true);
+  try{await historicalChartTrade(side);}finally{historicalTradeBusy=false;btns.forEach(b=>b.disabled=false);}
+}
+async function safeDirectTrade(e,side){
+  e?.preventDefault?.(); e?.stopPropagation?.();
+  if(historicalChartMode){return safeHistoricalTrade(e,side);}
+  return triggerDirectTrade(side);
+}
+
 function historicalDefaultDate(){
   const d=new Date(); d.setDate(d.getDate()-1);
   while(d.getDay()===0||d.getDay()===6)d.setDate(d.getDate()-1);
@@ -2243,12 +2296,13 @@ async function historicalCheckPosition(){
   await historicalCloseAt(exitPrice,reason,c);
 }
 async function historicalChartTrade(side){
-  const h=historicalReplay,c=historicalCurrentCandle(); if(!h||!c)return;
-  if(side==='SELL'){if(!h.position){alert('No historical long position is open.');return;} await historicalCloseAt(Number(c.close),'MANUAL_EXIT',c);return;}
+  const h=historicalReplay,c=historicalCurrentCandle();
+  if(!historicalChartMode||!h||!c){const st=document.getElementById('histChartStatus');if(st)st.innerText='Historical session is not loaded. Click LOAD HISTORICAL first.';return;}
+  if(side==='SELL'){if(!h.position){const st=document.getElementById('histChartStatus');if(st)st.innerText='SELL ignored: no historical long position is open.';return;} await historicalCloseAt(Number(c.close),'MANUAL_EXIT',c);const st=document.getElementById('histChartStatus');if(st)st.innerText=`HIST SELL / EXIT · ₹${Number(c.close).toFixed(2)} · ${replayLogTime(c.time)}`;return;}
   if(h.position){alert('A historical position is already open.');return;}
   const qty=Math.max(1,Number(document.getElementById('histChartQty')?.value||h.qty||1));
   const price=Number(c.close); const slPct=Number(document.getElementById('botSL')?.value||0.6),tpPct=Number(document.getElementById('botTP')?.value||1.2); const sl=Number(document.getElementById('inputLomSL')?.value||price*(1-slPct/100)); const tp=Number(document.getElementById('inputLomTarget')?.value||price*(1+tpPct/100));
-  try{const r=await fetch('/api/historical/chart_trade',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({session_id:h.session_id,action:'BUY',qty,price,stop_loss:sl,target:tp,trailing_sl:0,candle_time:c.time,candle_index:h.index})});const d=await r.json();if(!r.ok||!d.ok)throw new Error(d.error||'Historical BUY failed');h.position=d.position;h.qty=qty;playSound('ORDER_PLACED');updateHistoricalChartView();}catch(e){alert(e.message||e)}
+  try{const r=await fetch('/api/historical/chart_trade',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({session_id:h.session_id,action:'BUY',qty,price,stop_loss:sl,target:tp,trailing_sl:0,candle_time:c.time,candle_index:h.index})});const d=await r.json();if(!r.ok||!d.ok)throw new Error(d.error||'Historical BUY failed');h.position=d.position;h.qty=qty;playSound('ORDER_PLACED');const st=document.getElementById('histChartStatus');if(st)st.innerText=`HIST BUY filled · ₹${price.toFixed(2)} · ${qty} Qty · ${replayLogTime(c.time)}`;updateHistoricalChartView();}catch(e){const st=document.getElementById('histChartStatus');if(st)st.innerText='Historical BUY failed: '+(e.message||e);alert(e.message||e)}
 }
 async function historicalChartLimitTrade(){
   const h=historicalReplay,c=historicalCurrentCandle();if(!h||!c)return;
