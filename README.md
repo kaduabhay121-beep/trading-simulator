@@ -1,26 +1,21 @@
-# TradeLab v2.10 — Historical Chart Trading
+# TradeLab v2.10 — Historical Chart Trading + Option Replay
 
-v2.10 adds interactive, candle-by-candle historical chart trading to the existing TradeLab paper-trading simulator.
+Builds on v2.9.1 Neon permanent research storage.
 
-## What is new
-- Load an exact previous NSE/BSE trading day from Angel One historical candles.
-- Historical chart mode for NIFTY and SENSEX.
-- 1m / 3m / 5m / 10m / 15m / 30m / 1h replay timeframes.
-- Future candles remain hidden until the user advances the replay.
-- PREV / PLAY / PAUSE / NEXT controls with 1x / 2x / 5x / 10x speed.
-- Historical BUY opens a simulated long position at the revealed candle close.
-- Historical SELL closes the simulated long position.
-- Long-press limit-order workflow can be used in historical mode; the order fills only if the revealed candle touches the requested price.
-- Stop-loss and target are checked against each newly revealed candle.
-- Historical P&L and session capital are separate from the live paper account.
-- Every historical chart trade is permanently stored in the research database.
-- Historical replay sessions and exact-day candle datasets remain permanently retained.
-- Existing live Angel One WebSocket chart, paper trading, bot, research matrix, replay, and Neon persistence are preserved.
+## v2.10 fixes/enhancements
+- Historical chart now loads a full 1-minute session first and locally aggregates to 1m/3m/5m/10m/15m/30m/1h. This prevents the one-big-candle/single-candle replay problem.
+- Historical replay controls are on the Chart only: HIST, date, market, instrument, timeframe, LOAD, PREV, PLAY/PAUSE, NEXT, speed, BUY, SELL, SAVE.
+- Historical chart supports NIFTY and SENSEX index charts.
+- Historical chart supports NIFTY/SENSEX option charts (CE/PE), expiry and strike selection.
+- Option contract candles are fetched from Angel One historical data using the current instrument master. Recent active contracts are supported; expired F&O contracts are not guaranteed because Angel One's current scrip master does not expose expired contracts.
+- Historical chart trades remain paper-only. No Angel One order placement API is called.
+- Historical chart sessions and trades remain permanently stored in the configured Neon database (or SQLite fallback locally).
 
-## Storage
-- `DATABASE_URL` -> PostgreSQL/Neon on Render.
-- `SIM_DB_PATH` -> local SQLite fallback.
-- No automatic 30-day deletion.
+## Deploy
+Upload these files to the `trading-simulator` GitHub repository on `main`:
+- app.py
+- index.html
+- requirements.txt
+- README.md
 
-## Safety
-Angel One is used only for market/historical data. This build does **not** call Angel One order-placement APIs. Historical chart BUY/SELL actions are simulator-only and are stored as paper trades.
+Do not upload this build to the Android repository.

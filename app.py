@@ -609,6 +609,26 @@ def backtest_strategy(candles, strategy, sl_pct=0.6, tp_pct=1.2, starting_balanc
 def _align_candles(rows):
     return sorted([dict(x) for x in (rows or [])], key=lambda x:int(x.get('time',0)))
 
+def _resample_candles(rows, timeframe_seconds):
+    """Resample 1-minute historical candles locally so replay always gets a full session."""
+    rows=_align_candles(rows)
+    tf=max(60,int(timeframe_seconds or 60))
+    if tf==60: return rows
+    out=[]; buckets={}
+    for c in rows:
+        dt=datetime.fromtimestamp(int(c['time']), IST)
+        # Align intraday buckets to the NSE session open (09:15), not midnight.
+        minutes=(dt.hour*60+dt.minute)-(9*60+15)
+        if minutes < 0: continue
+        bucket_minutes=(minutes//(tf//60))*(tf//60)
+        bdt=dt.replace(hour=0,minute=0,second=0,microsecond=0)+timedelta(minutes=9*60+15+bucket_minutes)
+        key=int(bdt.timestamp())
+        buckets.setdefault(key,[]).append(c)
+    for key,arr in sorted(buckets.items()):
+        if not arr: continue
+        out.append({'time':key,'is_prev_day':False,'open':float(arr[0]['open']),'high':max(float(x['high']) for x in arr),'low':min(float(x['low']) for x in arr),'close':float(arr[-1]['close']),'volume':int(sum(float(x.get('volume',0) or 0) for x in arr))})
+    return out
+
 def _option_backtest(strategy, underlying, option_mode, days, sl_pct, tp_pct, starting_balance, angel, timeframe=60, lot_multiplier=1, trade_type='INTRADAY', shared_cache=None, base_override=None, replay_start=None, replay_end=None):
     inst=angel.find_index(underlying); interval=TF_INTERVALS.get(int(timeframe),'ONE_MINUTE')
     base=_align_candles(base_override if base_override is not None else (angel.candles_range(inst,interval,replay_start,replay_end) if replay_start and replay_end else (angel.candles(inst,interval,days) if inst else [])))
@@ -1381,32 +1401,106 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 candles=state._bot_underlying_candles(state.bot['underlying']); candles=candles[:-1] if len(candles)>1 else candles; signal,conf,meta=strategy_signal(candles,state.bot['strategy']) if len(candles)>=25 else ('HOLD',0.0,{})
                 state.bot['last_signal']=signal; state.bot['last_confidence']=conf; state.bot['signal_meta']=meta; state.bot['last_reason']=state._bot_reason(signal,meta) if meta else 'Waiting for enough candles…'
                 return self._send_json({'ok':True,'bot':state.bot,'paper_only':True})
+        if parsed.path=='/api/historical/option_contracts':
+            p=parse_qs(parsed.query); date=p.get('date',[''])[0] or datetime.now(IST).date().isoformat(); under=p.get('underlying',['NIFTY'])[0].upper()
+            day=_parse_replay_date(date)
+            if not day: return self._send_json({'ok':False,'error':'Invalid date.'},400)
+            seg='BFO' if under=='SENSEX' else 'NFO'; grouped={}
+            for x in state.angel.instruments:
+                if str(x.get('exch_seg','')).upper()!=seg or str(x.get('name','')).upper()!=under or str(x.get('instrumenttype','')).upper()!='OPTIDX': continue
+                e=str(x.get('expiry','')).upper().strip()
+                if not e: continue
+                try: ed=(datetime.strptime(e,'%d%b%Y') if len(e)==9 else datetime.strptime(e,'%d%b%y')).date()
+                except Exception: continue
+                if ed<day: continue
+                grouped.setdefault(e,[]).append(x)
+            expiries=sorted(grouped.keys(), key=lambda e:(datetime.strptime(e,'%d%b%Y') if len(e)==9 else datetime.strptime(e,'%d%b%y')).date())
+            if not expiries: return self._send_json({'ok':False,'error':f'No current {seg} option expiries are available for {under}.'},404)
+            exp=expiries[0]; strikes=sorted({round(float(x.get('strike',0))/100,2) for x in grouped.get(exp,[]) if float(x.get('strike',0) or 0)>0})
+            return self._send_json({'ok':True,'underlying':under,'exchange':seg,'expiries':expiries[:8],'selected_expiry':exp,'strikes':strikes,'paper_only':True})
         if parsed.path=='/api/historical/chart_day':
             p=parse_qs(parsed.query)
             date=p.get('date',[''])[0] or datetime.now(IST).date().isoformat()
             under=p.get('underlying',['NIFTY'])[0].upper(); mode=p.get('mode',['INDEX'])[0].upper(); trade_type=p.get('trade_type',['INTRADAY'])[0].upper()
+            instrument_type=p.get('instrument_type',['INDEX'])[0].upper()
+            option_type=p.get('option_type',['CE'])[0].upper()
+            expiry=str(p.get('expiry',[''])[0]).upper().strip()
+            strike_raw=str(p.get('strike',[''])[0]).strip()
             try: tf=max(60,min(3600,int(p.get('tf',['300'])[0])))
             except Exception: tf=300
+            if instrument_type not in ('INDEX','OPTION'): instrument_type='INDEX'
+            if option_type not in ('CE','PE'): option_type='CE'
             day=_parse_replay_date(date)
             if not day: return self._send_json({'ok':False,'error':'Invalid historical date. Use YYYY-MM-DD.'},400)
             if day.weekday()>=5: return self._send_json({'ok':False,'error':'Selected date is a weekend. Choose an NSE/BSE trading day.'},400)
             if not state.angel.enabled: return self._send_json({'ok':False,'error':'Historical chart trading needs Angel One historical market data. Enable ANGELONE_ENABLED.'},400)
-            interval=TF_INTERVALS.get(tf,'FIVE_MINUTE'); start_day=day.isoformat(); end_day=day.isoformat()
-            base=state._load_historical_dataset(under,mode,tf,start_day,end_day)
-            data_source='Persistent historical dataset' if base else 'Angel One Historical API'
-            if not base:
-                inst=state.angel.find_index(under)
-                base=state.angel.candles_range(inst,interval,day,day) if inst else []
-                if base: state._store_historical_dataset(under,mode,tf,start_day,end_day,base)
-            base=_align_candles(base)
-            if not base: return self._send_json({'ok':False,'error':f'No historical candles returned for {under} on {date}. Angel One may not have data for that session.'},404)
-            sid=p.get('session_id',[''])[0].strip()
-            session=state._get_historical_chart_session(sid) if sid else None
-            if session and (session.get('replay_day')!=date or session.get('underlying')!=under or int(session.get('timeframe',tf))!=tf): session=None
-            if not session: session=state._create_historical_chart_session(date,under,mode,tf,trade_type,1000000.0)
-            session['candles']=len(base); session['data_source']=data_source; state._save_historical_chart_session(session)
-            result={'ok':True,'session':session,'run_id':session.get('run_id'),'replay_day':date,'underlying':under,'mode':mode,'trade_type':trade_type,'timeframe':tf,'interval':interval,'candles':len(base),'data_source':data_source,'candles_data':base,'paper_only':True,'note':'Historical chart trading is simulated only. No Angel One order-placement API is called.'}
-            return self._send_json(result)
+            try:
+                base_inst=state.angel.find_index(under)
+                if not base_inst: return self._send_json({'ok':False,'error':f'Index instrument not found for {under}.'},400)
+                # Always fetch the 1-minute session first, then resample locally. This avoids the
+                # occasional single-candle response and gives a deterministic replay timeline.
+                start_day=day.isoformat(); end_day=day.isoformat()
+                base_key=state._historical_key(under,'INDEX_1M',60,start_day,end_day)
+                base=state._load_historical_dataset(under,'INDEX_1M',60,start_day,end_day)
+                data_source='Persistent historical dataset' if base else 'Angel One Historical API'
+                if len(base)<20:
+                    base=state.angel.candles_range(base_inst,'ONE_MINUTE',day,day)
+                    if base: state._store_historical_dataset(under,'INDEX_1M',60,start_day,end_day,base)
+                base=[c for c in _align_candles(base) if _session_date(c['time'])==day]
+                if len(base)<2: return self._send_json({'ok':False,'error':f'Only {len(base)} underlying candle(s) were returned for {date}. Historical source did not return a complete session.'},404)
+
+                contract=None; raw=base
+                if instrument_type=='OPTION':
+                    seg='BFO' if under=='SENSEX' else 'NFO'
+                    # Current instrument master is refreshed daily. For recent replay dates, choose
+                    # the nearest listed expiry that was still valid on the selected day.
+                    candidates=[]
+                    for x in state.angel.instruments:
+                        if str(x.get('exch_seg','')).upper()!=seg or str(x.get('name','')).upper()!=under or str(x.get('instrumenttype','')).upper()!='OPTIDX': continue
+                        e=str(x.get('expiry','')).upper().strip()
+                        if not e: continue
+                        try: ed=(datetime.strptime(e,'%d%b%Y') if len(e)==9 else datetime.strptime(e,'%d%b%y')).date()
+                        except Exception: continue
+                        if ed>=day: candidates.append((ed,e,x))
+                    if expiry:
+                        exact=[x for x in candidates if x[1]==expiry]
+                        if exact: candidates=exact
+                    if not candidates: return self._send_json({'ok':False,'error':f'No live {seg} option contract is available for {under} on {date}. Angel One does not expose expired F&O contracts through the current scrip master.'},404)
+                    candidates.sort(key=lambda z:z[0]); chosen_expiry=candidates[0][1]
+                    opts=[z[2] for z in candidates if z[1]==chosen_expiry]
+                    spot=float(next((c['open'] for c in base if datetime.fromtimestamp(c['time'],IST).time()>=dtime(9,15)),base[0]['close']))
+                    step=100 if under=='SENSEX' else 50
+                    atm=round(spot/step)*step
+                    if strike_raw:
+                        try: wanted=float(strike_raw)
+                        except Exception: wanted=atm
+                    else: wanted=atm
+                    strikes=sorted({round(float(x.get('strike',0))/100,2) for x in opts if float(x.get('strike',0) or 0)>0})
+                    if not strikes: return self._send_json({'ok':False,'error':'No strikes available for the selected expiry.'},404)
+                    wanted=min(strikes,key=lambda z:abs(z-wanted))
+                    matches=[x for x in opts if abs(float(x.get('strike',0))/100-wanted)<0.01 and str(x.get('symbol','')).upper().endswith(option_type)]
+                    if not matches: return self._send_json({'ok':False,'error':f'No {option_type} contract found for {under} {chosen_expiry} {wanted:g}.'},404)
+                    contract=matches[0]
+                    opt_key=state._historical_key(str(contract.get('symbol')),seg+'_1M',60,start_day,end_day)
+                    raw=state._load_historical_dataset(str(contract.get('symbol')),seg+'_1M',60,start_day,end_day)
+                    if len(raw)<2:
+                        raw=state.angel.candles_range(contract,'ONE_MINUTE',day,day)
+                        if raw: state._store_historical_dataset(str(contract.get('symbol')),seg+'_1M',60,start_day,end_day,raw)
+                    raw=[c for c in _align_candles(raw) if _session_date(c['time'])==day]
+                    if len(raw)<2: return self._send_json({'ok':False,'error':f'Only {len(raw)} candles were returned for option {contract.get("symbol")}. The selected historical option series is unavailable/incomplete.'},404)
+
+                candles=_resample_candles(raw,tf)
+                if len(candles)<2: return self._send_json({'ok':False,'error':f'Historical chart contains only {len(candles)} candle(s) after {tf//60}m aggregation.'},404)
+                sid=p.get('session_id',[''])[0].strip(); session=state._get_historical_chart_session(sid) if sid else None
+                session_mode=instrument_type if instrument_type=='OPTION' else 'INDEX'
+                if session and (session.get('replay_day')!=date or session.get('underlying')!=under or int(session.get('timeframe',tf))!=tf or session.get('mode')!=session_mode or session.get('option_type')!=option_type or session.get('expiry')!=((contract or {}).get('expiry','')) or session.get('strike')!=((round(float(contract.get('strike',0))/100,2) if contract else 0))): session=None
+                if not session: session=state._create_historical_chart_session(date,under,session_mode,tf,trade_type,1000000.0)
+                session['candles']=len(candles); session['data_source']=data_source; session['instrument_type']=instrument_type; session['option_type']=option_type if instrument_type=='OPTION' else ''; session['expiry']=(contract or {}).get('expiry',''); session['strike']=round(float((contract or {}).get('strike',0))/100,2) if contract else 0; session['contract_symbol']=(contract or {}).get('symbol',''); session['exchange']=str((contract or {}).get('exch_seg',base_inst.get('exch_seg','NSE'))).upper(); session['display_symbol']=((contract or {}).get('symbol') or ('NIFTY 50' if under=='NIFTY' else 'SENSEX'))
+                state._save_historical_chart_session(session)
+                result={'ok':True,'session':session,'run_id':session.get('run_id'),'replay_day':date,'underlying':under,'mode':session_mode,'trade_type':trade_type,'timeframe':tf,'interval':TF_INTERVALS.get(tf,'FIVE_MINUTE'),'candles':len(candles),'data_source':data_source,'candles_data':candles,'paper_only':True,'contract':contract,'option_type':option_type if instrument_type=='OPTION' else '', 'expiry':session.get('expiry',''),'strike':session.get('strike',0),'display_symbol':session.get('display_symbol'),'note':'Historical chart trading is simulated only. No Angel One order-placement API is called.'}
+                return self._send_json(result)
+            except Exception as e:
+                return self._send_json({'ok':False,'error':f'Historical chart load failed: {e}'},500)
         if parsed.path=='/api/historical/chart_session':
             p=parse_qs(parsed.query); sid=p.get('session_id',[''])[0].strip(); session=state._get_historical_chart_session(sid) if sid else None
             if not session: return self._send_json({'ok':False,'error':'Historical chart session not found.'},404)
@@ -1694,12 +1788,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 pos=session.get('position')
                 if action=='BUY':
                     if pos: return self._send_json({'ok':False,'error':'A historical position is already open. Close it before buying again.'},400)
-                    pos={'side':'LONG','entry':price,'qty':qty,'stop_loss':sl,'target':tp,'trailing_sl':tsl,'entry_time':candle_time,'entry_index':candle_index,'symbol':session.get('underlying','NIFTY')}
+                    pos={'side':'LONG','entry':price,'qty':qty,'stop_loss':sl,'target':tp,'trailing_sl':tsl,'entry_time':candle_time,'entry_index':candle_index,'symbol':session.get('contract_symbol') or session.get('display_symbol') or session.get('underlying','NIFTY')}
                     session['position']=pos; session['status']='OPEN'; session['replay_index']=candle_index; state._save_historical_chart_session(session)
                     return self._send_json({'ok':True,'session':session,'position':pos,'paper_only':True})
                 if action=='SELL':
                     if not pos: return self._send_json({'ok':False,'error':'No historical long position is open.'},400)
-                    pnl=(price-float(pos['entry']))*int(pos['qty']); trade={'symbol':pos.get('symbol',session.get('underlying','NIFTY')),'action':'BUY','qty':int(pos['qty']),'entry':round(float(pos['entry']),2),'exit':round(price,2),'entry_time':pos.get('entry_time',0),'exit_time':candle_time,'entry_index':pos.get('entry_index',0),'exit_index':candle_index,'pnl':round(pnl,2),'reason':str(payload.get('reason','MANUAL_EXIT')),'rr':round((float(pos.get('target',0))-float(pos.get('entry',0)))/max(float(pos.get('entry',0))-float(pos.get('stop_loss',0)),0.01),2) if pos.get('stop_loss') and pos.get('target') else 0.0,'session':'HISTORICAL_CHART'}
+                    pnl=(price-float(pos['entry']))*int(pos['qty']); trade={'symbol':pos.get('symbol',session.get('contract_symbol') or session.get('display_symbol') or session.get('underlying','NIFTY')),'action':'BUY','qty':int(pos['qty']),'entry':round(float(pos['entry']),2),'exit':round(price,2),'entry_time':pos.get('entry_time',0),'exit_time':candle_time,'entry_index':pos.get('entry_index',0),'exit_index':candle_index,'pnl':round(pnl,2),'reason':str(payload.get('reason','MANUAL_EXIT')),'rr':round((float(pos.get('target',0))-float(pos.get('entry',0)))/max(float(pos.get('entry',0))-float(pos.get('stop_loss',0)),0.01),2) if pos.get('stop_loss') and pos.get('target') else 0.0,'session':'HISTORICAL_CHART'}
                     session['position']=None; session['replay_index']=candle_index; state._append_historical_chart_trade(session,trade)
                     return self._send_json({'ok':True,'session':session,'trade':trade,'paper_only':True})
                 return self._send_json({'ok':False,'error':'Only BUY to open and SELL to close are supported in historical chart mode.'},400)
@@ -1709,7 +1803,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 if not session: return self._send_json({'ok':False,'error':'Historical chart session not found.'},404)
                 pos=session.get('position')
                 if not pos: return self._send_json({'ok':False,'error':'No historical position is open.'},400)
-                pnl=(price-float(pos['entry']))*int(pos['qty']); trade={'symbol':pos.get('symbol',session.get('underlying','NIFTY')),'action':'BUY','qty':int(pos['qty']),'entry':round(float(pos['entry']),2),'exit':round(price,2),'entry_time':pos.get('entry_time',0),'exit_time':candle_time,'entry_index':pos.get('entry_index',0),'exit_index':candle_index,'pnl':round(pnl,2),'reason':reason,'rr':round((float(pos.get('target',0))-float(pos.get('entry',0)))/max(float(pos.get('entry',0))-float(pos.get('stop_loss',0)),0.01),2) if pos.get('stop_loss') and pos.get('target') else 0.0,'session':'HISTORICAL_CHART'}
+                pnl=(price-float(pos['entry']))*int(pos['qty']); trade={'symbol':pos.get('symbol',session.get('contract_symbol') or session.get('display_symbol') or session.get('underlying','NIFTY')),'action':'BUY','qty':int(pos['qty']),'entry':round(float(pos['entry']),2),'exit':round(price,2),'entry_time':pos.get('entry_time',0),'exit_time':candle_time,'entry_index':pos.get('entry_index',0),'exit_index':candle_index,'pnl':round(pnl,2),'reason':reason,'rr':round((float(pos.get('target',0))-float(pos.get('entry',0)))/max(float(pos.get('entry',0))-float(pos.get('stop_loss',0)),0.01),2) if pos.get('stop_loss') and pos.get('target') else 0.0,'session':'HISTORICAL_CHART'}
                 session['position']=None; session['replay_index']=candle_index; state._append_historical_chart_trade(session,trade)
                 return self._send_json({'ok':True,'session':session,'trade':trade,'paper_only':True})
             if parsed.path=='/api/historical/chart_finish':

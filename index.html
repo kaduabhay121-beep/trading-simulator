@@ -49,6 +49,19 @@ window.onerror = function(msg, src, line) { alert("FATAL JS ERROR: " + msg + " (
 
   /* Fast Trade Widget */
   .onchart-order-widget { position: absolute; top: 8px; left: 8px; z-index: 10; pointer-events: auto; }
+  .historical-chart-toolbar{position:absolute;top:8px;left:8px;right:8px;z-index:40;display:none;background:rgba(8,12,20,.96);border:1px solid #26344a;border-radius:10px;padding:7px;box-shadow:0 8px 24px rgba(0,0,0,.35)}
+  .historical-chart-toolbar.open{display:block}
+  .hist-ct-row{display:flex;gap:5px;align-items:center;flex-wrap:wrap}
+  .hist-ct-row+.hist-ct-row{margin-top:5px}
+  .hist-ct-select,.hist-ct-input{height:30px;background:#111827;color:#e5e7eb;border:1px solid #334155;border-radius:7px;padding:0 8px;font-size:10px;font-weight:800;min-width:76px}
+  .hist-ct-input{min-width:105px}
+  .hist-ct-btn{height:30px;border:1px solid #334155;background:#172033;color:#e5e7eb;border-radius:7px;padding:0 9px;font-size:10px;font-weight:900}
+  .hist-ct-btn.primary{background:#2563eb;border-color:#3b82f6;color:white}
+  .hist-ct-btn.buy{background:#059669;border-color:#10b981;color:white}
+  .hist-ct-btn.sell{background:#dc2626;border-color:#ef4444;color:white}
+  .hist-ct-status{font-size:9px;color:#94a3b8;flex:1;min-width:150px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .hist-ct-badge{font-size:9px;font-weight:900;color:#22c55e;border:1px solid #14532d;background:#052e16;padding:6px 8px;border-radius:7px}
+  @media(max-width:600px){.historical-chart-toolbar{top:44px}.hist-ct-select,.hist-ct-input{flex:1;min-width:0}.hist-ct-btn{flex:0 0 auto}.hist-ct-status{min-width:110px}}
   .idx-title-row { font-size: 11px; font-weight: 800; color: #cbd5e1; display: flex; align-items: center; gap: 4px; }
   .idx-pill { background: #1e293b; padding: 1px 5px; border-radius: 8px; font-size: 9px; color: #94a3b8; }
   .idx-price-sub { font-size: 11px; color: var(--green); font-weight: 700; margin: 2px 0 4px 0; }
@@ -147,7 +160,7 @@ canvas { width: 100% !important; height: 100% !important; display: block; }
         <div id="tabsContainer" style="display: flex; gap: 6px;">
           <div class="tab-capsule active" onclick="switchChartSymbol('NIFTY')">Nifty 50</div>
         </div>
-        <button class="btn-new-tab" onclick="openStrikeModal()">+ New</button>
+        <button class="btn-new-tab" onclick="openStrikeModal()">+ New</button><button class="btn-new-tab" id="histChartToggleBtn" onclick="toggleHistoricalPanel()">HIST</button>
       </div>
       <div style="font-size: 11px; font-weight: 800; color: var(--blue);" id="headerBal">₹100,000</div>
     </div>
@@ -167,6 +180,34 @@ canvas { width: 100% !important; height: 100% !important; display: block; }
 
     <!-- Canvas Viewport -->
     <div class="chart-viewport" id="chartViewport">
+      <!-- Historical Chart Trading controls live on the chart only -->
+      <div id="historicalChartToolbar" class="historical-chart-toolbar">
+        <div class="hist-ct-row">
+          <input id="histChartDate" class="hist-ct-input" type="date" title="Historical trading day">
+          <select id="histChartUnderlying" class="hist-ct-select"><option value="NIFTY">NIFTY</option><option value="SENSEX">SENSEX</option></select>
+          <select id="histChartInstrument" class="hist-ct-select" onchange="toggleHistoricalOptionFields()"><option value="INDEX">INDEX</option><option value="OPTION">OPTION</option></select>
+          <select id="histChartOptionType" class="hist-ct-select" style="display:none"><option value="CE">CALL (CE)</option><option value="PE">PUT (PE)</option></select>
+          <select id="histChartExpiry" class="hist-ct-select" style="display:none"></select>
+          <select id="histChartStrike" class="hist-ct-select" style="display:none"></select>
+        </div>
+        <div class="hist-ct-row">
+          <select id="histChartTf" class="hist-ct-select"><option value="60">1m</option><option value="180">3m</option><option value="300" selected>5m</option><option value="600">10m</option><option value="900">15m</option><option value="1800">30m</option><option value="3600">1h</option></select>
+          <input id="histChartQty" class="hist-ct-input" type="number" min="1" value="1" placeholder="Qty / units">
+          <button id="histLoadBtn" class="hist-ct-btn primary" onclick="startHistoricalChartTrading()">LOAD HISTORICAL</button>
+          <button id="histExitBtn" class="hist-ct-btn" style="display:none" onclick="exitHistoricalChartTrading()">EXIT</button>
+          <span id="histChartStatus" class="hist-ct-status">Historical mode off</span>
+        </div>
+        <div class="hist-ct-row" id="histControls" style="display:none">
+          <button class="hist-ct-btn" onclick="historicalPrevCandle()">◀ PREV</button><button id="histPlayBtn" class="hist-ct-btn primary" onclick="toggleHistoricalPlay()">▶ PLAY</button><button class="hist-ct-btn" onclick="historicalNextCandle()">NEXT ▶</button>
+          <select id="histSpeed" class="hist-ct-select"><option value="1">1×</option><option value="2">2×</option><option value="5">5×</option><option value="10">10×</option></select>
+          <span class="hist-ct-badge">REPLAY <b id="histProgress">0/0</b> · <b id="histReplayTime">—</b></span>
+          <span class="hist-ct-badge">CAPITAL <b id="histCapital">₹10,00,000</b> · P&L <b id="histPnl">₹0</b></span>
+          <button class="hist-ct-btn buy" onclick="historicalChartTrade('BUY')">▲ BUY</button><button class="hist-ct-btn sell" onclick="historicalChartTrade('SELL')">▼ SELL</button>
+          <button class="hist-ct-btn" onclick="finishHistoricalChartSession()">SAVE</button>
+        </div>
+        <div id="histPositionStatus" class="hist-ct-status" style="display:none;margin-top:4px"></div>
+      </div>
+
       <!-- Fast Trade Widget -->
       <div class="onchart-order-widget">
         <div class="idx-title-row">
@@ -370,18 +411,7 @@ canvas { width: 100% !important; height: 100% !important; display: block; }
         <div class="bot-row2"><button class="bot-small-btn bot-test" style="width:100%" onclick="loadHistoricalReplayHistory()">VIEW SAVED SESSIONS</button><button class="bot-small-btn bot-test" style="width:100%" onclick="downloadResearch('runs')">EXPORT ALL RESEARCH</button></div>
         <div id="historicalReplayHistory" class="bot-reason">Every historical replay is retained in the Research History database.</div>
         <div class="bot-card-title" style="margin-top:12px">📅 Historical Chart Trading · v2.10</div>
-        <div class="bot-reason">Load a previous trading day, then trade it candle-by-candle. Future candles stay hidden until you advance the replay. BUY opens a paper long; SELL closes it. SL/Target are checked against each revealed candle.</div>
-        <div class="bot-row2"><input id="histChartDate" class="bot-input" type="date" title="Historical chart day"><select id="histChartTf" class="bot-select"><option value="60">1m</option><option value="180">3m</option><option value="300" selected>5m</option><option value="600">10m</option><option value="900">15m</option><option value="1800">30m</option><option value="3600">1h</option></select></div>
-        <div class="bot-row2"><select id="histChartUnderlying" class="bot-select"><option value="NIFTY">NIFTY</option><option value="SENSEX">SENSEX</option></select><input id="histChartQty" class="bot-input" type="number" min="1" value="1" placeholder="Qty / units"></div>
-        <div class="bot-row2"><button id="histLoadBtn" class="bot-small-btn bot-test" style="width:100%" onclick="startHistoricalChartTrading()">📅 LOAD HISTORICAL CHART</button><button id="histExitBtn" class="bot-small-btn" style="width:100%;display:none" onclick="exitHistoricalChartTrading()">EXIT HISTORICAL MODE</button></div>
-        <div id="histChartStatus" class="bot-reason">Not loaded. Your live chart remains unchanged until you enter historical mode.</div>
-        <div class="bot-row2" id="histControls" style="display:none"><button class="bot-small-btn bot-test" onclick="historicalPrevCandle()">◀ PREV</button><button id="histPlayBtn" class="bot-small-btn bot-test" onclick="toggleHistoricalPlay()">▶ PLAY</button><button class="bot-small-btn bot-test" onclick="historicalNextCandle()">NEXT ▶</button><select id="histSpeed" class="bot-select"><option value="1">1×</option><option value="2">2×</option><option value="5">5×</option><option value="10">10×</option></select></div>
-        <div class="bot-row2" id="histProgressRow" style="display:none"><div class="bot-mini" style="width:100%">Replay <b id="histProgress">0 / 0</b> · Time <b id="histReplayTime">—</b></div></div>
-        <div class="bot-row2" id="histStatsRow" style="display:none"><div class="bot-mini">Capital <b id="histCapital">₹10,00,000</b></div><div class="bot-mini">P&L <b id="histPnl">₹0</b></div></div>
-        <div id="histPositionStatus" class="bot-reason" style="display:none"></div>
-        <div class="bot-card-title" style="margin-top:10px">Historical chart trades · Permanent</div>
-        <div id="histTradeLog" class="bot-reason">Trades from historical chart sessions are stored permanently in the research database.</div>
-        <div class="bot-row2"><button class="bot-small-btn bot-test" style="width:100%" onclick="loadHistoricalChartTradeLog()">VIEW SESSION TRADES</button><button class="bot-small-btn bot-test" style="width:100%" onclick="finishHistoricalChartSession()">SAVE / FINISH SESSION</button></div>
+        <div class="bot-reason">Historical chart trading controls are now on the Chart tab only. Open <b>HIST</b> on the chart to choose the date, index or option contract, timeframe and replay controls.</div>
         <div class="bot-card-title" style="margin-top:12px">Strategy Intelligence</div>
         <div class="bot-row2"><button class="bot-small-btn bot-test" style="width:100%" onclick="runStrategyIntelligence()">🏆 AUTO-RANK BEST SETUPS</button><button class="bot-small-btn bot-test" style="width:100%" onclick="runWalkForward()">🧪 WALK-FORWARD TEST</button></div>
         <div id="intelligenceResult" class="bot-reason">Rank stored matrix results by profitability, consistency, drawdown, profit factor and sample size.</div><div id="intelligenceTable"></div>
@@ -2123,7 +2153,7 @@ function historicalChartPayload(){
   const candles=historicalVisibleCandles();
   const closes=candles.map(c=>c.close);
   const ema9=calcEmaLocal(closes,9), ema15=calcEmaLocal(closes,15), vwap=calcVwapLocal(candles);
-  return {symbol:h.underlying,display_title:h.underlying==='SENSEX'?'SENSEX':'NIFTY 50',timeframe:(h.tf/60)+'m',ltp:Number(candles[candles.length-1]?.close||0),countdown:'HIST',candles,ema9_series:ema9,ema15_series:ema15,ema9:ema9[ema9.length-1]||0,ema15:ema15[ema15.length-1]||0,vwap_series:vwap,vwap:vwap[vwap.length-1]||0,strategy_markers:[],greeks:{delta:0,gamma:0,theta:0,vega:0,iv:0}};
+  return {symbol:h.contract_symbol||h.underlying,display_title:h.contract_symbol|| (h.underlying==='SENSEX'?'SENSEX':'NIFTY 50'),timeframe:(h.tf/60)+'m',ltp:Number(candles[candles.length-1]?.close||0),countdown:'HIST',candles,ema9_series:ema9,ema15_series:ema15,ema9:ema9[ema9.length-1]||0,ema15:ema15[ema15.length-1]||0,vwap_series:vwap,vwap:vwap[vwap.length-1]||0,strategy_markers:[],greeks:{delta:0,gamma:0,theta:0,vega:0,iv:0}};
 }
 function calcVwapLocal(candles){let pv=0,v=0,out=[]; for(const c of candles){const q=Math.max(Number(c.volume||0),1);pv+=((c.high+c.low+c.close)/3)*q;v+=q;out.push(Number((pv/v).toFixed(2)));}return out;}
 function updateHistoricalChartView(){
@@ -2146,23 +2176,49 @@ function updateHistoricalChartView(){
   if(ps){ps.style.display=p?'block':'none'; if(p)ps.innerHTML=`OPEN LONG · ${p.qty} Qty · Entry ₹${Number(p.entry).toFixed(2)} · SL ₹${Number(p.stop_loss||0).toFixed(2)} · Target ₹${Number(p.target||0).toFixed(2)}`;}
   drawChart();
 }
-async function startHistoricalChartTrading(){
-  const date=document.getElementById('histChartDate')?.value||historicalDefaultDate(),tf=Number(document.getElementById('histChartTf')?.value||300),under=document.getElementById('histChartUnderlying')?.value||'NIFTY',qty=Number(document.getElementById('histChartQty')?.value||1),out=document.getElementById('histChartStatus');
-  if(out)out.innerText=`Loading ${under} historical candles for ${date}…`;
+function toggleHistoricalPanel(){
+  const panel=document.getElementById('historicalChartToolbar');
+  if(panel) panel.classList.toggle('open');
+}
+function toggleHistoricalOptionFields(){
+  const isOpt=document.getElementById('histChartInstrument')?.value==='OPTION';
+  ['histChartOptionType','histChartExpiry','histChartStrike'].forEach(id=>{const el=document.getElementById(id);if(el)el.style.display=isOpt?'block':'none';});
+  if(isOpt) loadHistoricalOptionContracts();
+}
+async function loadHistoricalOptionContracts(){
+  const date=document.getElementById('histChartDate')?.value||historicalDefaultDate(), under=document.getElementById('histChartUnderlying')?.value||'NIFTY';
   try{
-    const r=await fetch(`/api/historical/chart_day?date=${encodeURIComponent(date)}&tf=${tf}&underlying=${under}&mode=INDEX&trade_type=INTRADAY`,{cache:'no-store'}),d=await r.json();
+    const r=await fetch(`/api/historical/option_contracts?date=${encodeURIComponent(date)}&underlying=${encodeURIComponent(under)}`,{cache:'no-store'}),d=await r.json();
+    if(!r.ok||!d.ok) throw new Error(d.error||'Option contracts unavailable');
+    const ex=document.getElementById('histChartExpiry'), st=document.getElementById('histChartStrike');
+    if(ex){ex.innerHTML=d.expiries.map(x=>`<option value="${x}">${x}</option>`).join('');ex.value=d.selected_expiry||d.expiries[0]||'';}
+    if(st){st.innerHTML=d.strikes.map(x=>`<option value="${x}">${Number(x).toLocaleString('en-IN',{maximumFractionDigits:2})}</option>`).join('');
+      const spotStrike=Number(st.dataset.keep||0); if(spotStrike && [...st.options].some(o=>Number(o.value)===spotStrike)) st.value=String(spotStrike);
+      else { const vals=d.strikes||[]; if(vals.length) st.value=String(vals[Math.floor(vals.length/2)]); }
+    }
+  }catch(e){const st=document.getElementById('histChartStatus');if(st)st.innerText=e.message||'Option contracts unavailable';}
+}
+async function startHistoricalChartTrading(){
+  const date=document.getElementById('histChartDate')?.value||historicalDefaultDate(),tf=Number(document.getElementById('histChartTf')?.value||300),under=document.getElementById('histChartUnderlying')?.value||'NIFTY',qty=Number(document.getElementById('histChartQty')?.value||1),instrument=document.getElementById('histChartInstrument')?.value||'INDEX',otype=document.getElementById('histChartOptionType')?.value||'CE',expiry=document.getElementById('histChartExpiry')?.value||'',strike=document.getElementById('histChartStrike')?.value||'',out=document.getElementById('histChartStatus');
+  if(out)out.innerText=`Loading ${instrument==='OPTION'?under+' '+otype+' option':under} historical candles for ${date}…`;
+  try{
+    if(instrument==='OPTION' && !expiry) await loadHistoricalOptionContracts();
+    const ex=document.getElementById('histChartExpiry')?.value||expiry, st=document.getElementById('histChartStrike')?.value||strike;
+    const q=new URLSearchParams({date,tf:String(tf),underlying:under,mode:instrument,trade_type:'INTRADAY',instrument_type:instrument,option_type:otype,expiry:ex,strike:st});
+    const r=await fetch(`/api/historical/chart_day?${q.toString()}`,{cache:'no-store'}),d=await r.json();
     if(!r.ok||!d.ok)throw new Error(d.error||`Historical chart failed (HTTP ${r.status})`);
-    historicalReplay={session_id:d.session.session_id,run_id:d.run_id,date:d.replay_day,underlying:d.underlying,tf:d.timeframe,candles:d.candles_data,index:0,playing:false,speed:1,qty:Math.max(1,qty),position:d.session.position||null,trades:d.session.trades||[],realized_pnl:Number(d.session.realized_pnl||0),balance:Number(d.session.balance||1000000),starting_balance:Number(d.session.starting_balance||1000000),max_drawdown:Number(d.session.max_drawdown||0)};
-    historicalChartMode=true; currentChartSymbol=under; currentTimeframe=(tf/60)+'m'; currentTradeMode='MARKET';
-    document.getElementById('histControls').style.display='flex'; document.getElementById('histProgressRow').style.display='flex'; document.getElementById('histStatsRow').style.display='flex'; document.getElementById('histExitBtn').style.display='block';
-    if(out)out.innerText=`HISTORICAL MODE · ${date} · ${under} · ${tf/60}m · ${historicalReplay.candles.length} candles · ${d.data_source}. Paper-only.`;
+    historicalReplay={session_id:d.session.session_id,run_id:d.run_id,date:d.replay_day,underlying:d.underlying,tf:d.timeframe,candles:d.candles_data,index:0,playing:false,speed:1,qty:Math.max(1,qty),position:d.session.position||null,trades:d.session.trades||[],realized_pnl:Number(d.session.realized_pnl||0),balance:Number(d.session.balance||1000000),starting_balance:Number(d.session.starting_balance||1000000),max_drawdown:Number(d.session.max_drawdown||0),instrument_type:d.session.instrument_type||instrument,option_type:d.session.option_type||otype,expiry:d.session.expiry||ex,strike:Number(d.session.strike||st||0),contract_symbol:d.session.contract_symbol||'',display_symbol:d.session.display_symbol||under};
+    historicalChartMode=true; currentChartSymbol=(instrument==='OPTION'?(d.session.contract_symbol||'OPTION'):under); currentTimeframe=(tf/60)+'m'; currentTradeMode='MARKET';
+    document.getElementById('historicalChartToolbar')?.classList.add('open');
+    document.getElementById('histControls').style.display='flex'; document.getElementById('histExitBtn').style.display='inline-block';
+    if(out)out.innerText=`HISTORICAL · ${date} · ${d.session.display_symbol||under} · ${tf/60}m · ${historicalReplay.candles.length} candles · paper-only`;
     updateHistoricalChartView();
   }catch(e){if(out)out.innerText=e.message||'Historical chart unavailable';}
 }
 function exitHistoricalChartTrading(){
   if(historicalReplay?.playing) toggleHistoricalPlay(true);
-  historicalChartMode=false; historicalReplay=null; document.getElementById('histControls').style.display='none'; document.getElementById('histProgressRow').style.display='none'; document.getElementById('histStatsRow').style.display='none'; document.getElementById('histExitBtn').style.display='none';
-  document.getElementById('histChartStatus').innerText='Historical mode closed. Live chart restored.'; fetchMarket(true);
+  historicalChartMode=false; historicalReplay=null; const hc=document.getElementById('histControls'); if(hc)hc.style.display='none'; const hp=document.getElementById('histProgressRow'); if(hp)hp.style.display='none'; const hs=document.getElementById('histStatsRow'); if(hs)hs.style.display='none'; const he=document.getElementById('histExitBtn'); if(he)he.style.display='none';
+  document.getElementById('histChartStatus').innerText='Historical mode closed. Live chart restored.'; document.getElementById('historicalChartToolbar')?.classList.remove('open'); fetchMarket(true);
 }
 function historicalPrevCandle(){if(!historicalReplay)return;historicalReplay.index=Math.max(0,historicalReplay.index-1);updateHistoricalChartView();}
 async function historicalNextCandle(){
@@ -2290,6 +2346,8 @@ async function resetAccount() {
 
 resizeCanvas();
 const histDateEl=document.getElementById('histChartDate'); if(histDateEl) histDateEl.value=historicalDefaultDate();
+const histUnderEl=document.getElementById('histChartUnderlying'); if(histUnderEl) histUnderEl.addEventListener('change',()=>{if(document.getElementById('histChartInstrument')?.value==='OPTION')loadHistoricalOptionContracts();});
+const histDateEl2=document.getElementById('histChartDate'); if(histDateEl2) histDateEl2.addEventListener('change',()=>{if(document.getElementById('histChartInstrument')?.value==='OPTION')loadHistoricalOptionContracts();});
 const replayDateEl=document.getElementById('replayDate'); if(replayDateEl && !replayDateEl.value) replayDateEl.value=historicalDefaultDate();
 renderTabs();
 renderWatchlist();
