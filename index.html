@@ -211,7 +211,7 @@ canvas { width: 100% !important; height: 100% !important; display: block; }
     <div class="chart-viewport" id="chartViewport">
       <!-- Historical Chart Trading controls live on the chart only -->
       <div id="historicalChartToolbar" class="historical-chart-toolbar">
-        <div id="historicalChartHandle" class="hist-ct-handle" title="Drag to move historical controls"><span>⋮⋮ HISTORICAL CHART TRADING · V2.11.6</span><span class="hist-ct-actions"><button type="button" id="histMinBtn" class="hist-ct-icon" title="Minimize" aria-label="Minimize">—</button><button type="button" id="histMaxBtn" class="hist-ct-icon" title="Maximize" aria-label="Maximize">□</button></span></div>
+        <div id="historicalChartHandle" class="hist-ct-handle" title="Drag to move historical controls"><span>⋮⋮ HISTORICAL CHART TRADING · V2.12.1</span><span class="hist-ct-actions"><button type="button" id="histMinBtn" class="hist-ct-icon" title="Minimize" aria-label="Minimize">—</button><button type="button" id="histMaxBtn" class="hist-ct-icon" title="Maximize" aria-label="Maximize">□</button></span></div>
         <div class="hist-ct-row">
           <input id="histChartDate" class="hist-ct-input" type="date" title="Historical trading day">
           <select id="histChartUnderlying" class="hist-ct-select"><option value="NIFTY">NIFTY</option><option value="SENSEX">SENSEX</option></select>
@@ -637,7 +637,13 @@ let panOffsetFloat = 0;
 let verticalPanOffset = 0;
 
 let configInd = { ema9: true, ema15: true, vwap: true, vol: true, signals: true };
-let userWatchlist = JSON.parse(localStorage.getItem('sim_watchlist') || '["NIFTY", "BANKNIFTY", "SENSEX"]');
+let userWatchlist = (() => {
+  try {
+    const saved = JSON.parse(localStorage.getItem('sim_watchlist') || 'null');
+    if (Array.isArray(saved) && saved.length) return saved;
+  } catch (_) {}
+  return ['NIFTY','SENSEX'];
+})();
 
 let priceScaleZoomFactor = 1.0;
 let dragMode = 'none';
@@ -855,11 +861,10 @@ viewport.addEventListener('touchmove', e => {
         const chartH = Math.max(chartBottom - chartTop, 50);
         const pRange = (smoothMaxP && smoothMinP) ? (smoothMaxP - smoothMinP) : 80;
         const shiftPrice = dy * (pRange / chartH);
+        // Keep one authoritative vertical pan state. drawChart() applies
+        // verticalPanOffset to the auto-fit bounds, so do not mutate the
+        // historical bounds separately or the next draw would cancel the drag.
         verticalPanOffset += shiftPrice;
-        if (historicalChartMode && historicalYMin !== null && historicalYMax !== null) {
-          historicalYMin += shiftPrice;
-          historicalYMax += shiftPrice;
-        }
         dragStartY = touchY; redraw = true;
       }
       if (redraw) drawChart();
@@ -1193,8 +1198,8 @@ function toggleWatchlist(symId) {
 }
 
 function renderWatchlist() {
-  if (!marketCache) return;
   const container = document.getElementById('watchlistItemsContainer');
+  if (!container) return;
   let html = '';
 
   userWatchlist.forEach(item => {
@@ -1204,20 +1209,20 @@ function renderWatchlist() {
     
     if (item === 'NIFTY') {
       name = 'NIFTY 50 (Index)';
-      ltp = marketCache.nifty_spot;
+      ltp = Number(marketCache?.nifty_spot || 0);
     } else if (item === 'BANKNIFTY') {
       name = 'BANK NIFTY (Index)';
-      ltp = marketCache.banknifty_spot;
+      ltp = Number(marketCache?.banknifty_spot || 0);
     } else if (item === 'SENSEX') {
       name = 'SENSEX (Index)';
-      ltp = marketCache.sensex_spot;
+      ltp = Number(marketCache?.sensex_spot || 0);
     } else if (isOpt) {
       const parts = item.split('_');
       const strike = parseFloat(parts[1]);
       const type = parts[2];
       const prefix = parts[0];
       name = `${prefix} ${Math.round(strike)} ${type}`;
-      const row = marketCache.chain.find(c => c.strike === strike);
+      const row = (marketCache?.chain || []).find(c => Number(c.strike) === Number(strike));
       if (row) ltp = type === 'CE' ? row.ce_ltp : row.pe_ltp;
     }
 
@@ -1235,7 +1240,7 @@ function renderWatchlist() {
       </div>
     `;
   });
-  container.innerHTML = html;
+  container.innerHTML = html || '<div style="text-align:center;color:var(--text-sub);padding:16px;">Wishlist is empty. Tap ★ on an option-chain contract to add it.</div>';
 }
 
 // Fetch Engine
@@ -1262,7 +1267,14 @@ async function fetchMarket(force=false) {
     if (data.sounds && data.sounds.length > 0) data.sounds.forEach(s => playSound(s));
     updateUI(data);
     const d = document.getElementById('debugOverlay');
-    if (d) d.style.display = 'none';
+    if (d) {
+      const emptyChart = !Array.isArray(data.chart?.candles) || data.chart.candles.length === 0;
+      const emptyChain = !Array.isArray(data.chain) || data.chain.length === 0;
+      if (emptyChart || emptyChain) {
+        d.style.display='block';
+        d.innerText = `${emptyChart ? 'Chart candles unavailable' : ''}${emptyChart && emptyChain ? ' • ' : ''}${emptyChain ? 'Option chain unavailable' : ''}${data.market_error ? ' • ' + data.market_error : ''}`;
+      } else d.style.display='none';
+    }
   } catch (err) {
     if (err?.name==='AbortError') return;
     console.error(err);
@@ -1547,6 +1559,10 @@ function calcEmaLocal(values, period) {
 }
 function updateLocalCountdown() {
   if (!marketCache?.chart) return;
+  if (historicalChartMode) {
+    marketCache.chart.countdown='HIST';
+    return;
+  }
   const status=String(marketCache.chart.market_status||'OPEN');
   if(status!=='OPEN'){
     marketCache.chart.countdown=status.replace('_',' ');
@@ -1665,7 +1681,7 @@ function renderOptionChain(data) {
         </td>
       </tr>`;
   });
-  document.getElementById('chainBody').innerHTML = chainHtml;
+  document.getElementById('chainBody').innerHTML = chainHtml || '<tr><td colspan="5" style="text-align:center;color:var(--text-sub);padding:20px;">Option chain unavailable — waiting for Angel One instrument/quote data.</td></tr>';
 }
 
 // Position Overlay & Brackets
@@ -2558,7 +2574,11 @@ function updateHistoricalChartView(){
   marketCache.chart=historicalChartPayload();
   const ch=marketCache.chart, c=historicalCurrentCandle();
   const idx=Math.max(0,historicalReplay.index), total=historicalReplay.candles.length;
-  document.getElementById('onChartSymbol').innerText=`${ch.display_title} • ${historicalReplay.tf/60}m • HISTORICAL`;
+  const histTfLabel = `${historicalReplay.tf/60}m`;
+  document.getElementById('onChartSymbol').innerText=`${ch.display_title} • ${histTfLabel} • HISTORICAL`;
+  document.getElementById('tfDisplay').innerText=`${histTfLabel} ▾`;
+  ch.market_status='HISTORICAL';
+  ch.countdown='HIST';
   document.getElementById('onChartPriceSub').innerText=`${ch.ltp.toFixed(2)} · ${historicalReplay.date}`;
   document.getElementById('chainSpotBadge').innerText=`HIST: ${ch.ltp.toFixed(2)}`;
   document.getElementById('btnSellLTP').innerText=ch.ltp.toFixed(2); document.getElementById('btnBuyLTP').innerText=ch.ltp.toFixed(2);
@@ -2644,7 +2664,7 @@ function diagnosticPreviousTradingDayFromError(msg){
 function exitHistoricalChartTrading(){
   if(historicalReplay?.playing) toggleHistoricalPlay(true);
   historicalChartMode=false; historicalReplay=null; resetHistoricalViewport(); const hc=document.getElementById('histControls'); if(hc)hc.style.display='none'; const hrc=document.getElementById('histRiskControls'); if(hrc)hrc.style.display='none'; const hp=document.getElementById('histProgressRow'); if(hp)hp.style.display='none'; const hs=document.getElementById('histStatsRow'); if(hs)hs.style.display='none'; const he=document.getElementById('histExitBtn'); if(he)he.style.display='none';
-  document.getElementById('histChartStatus').innerText='Historical mode closed. Live chart restored.'; document.getElementById('historicalChartToolbar')?.classList.remove('open'); fetchMarket(true);
+  document.getElementById('histChartStatus').innerText='Historical mode closed. Live chart restored.'; document.getElementById('historicalChartToolbar')?.classList.remove('open'); document.getElementById('tfDisplay').innerText=`${currentTimeframe} ▾`; fetchMarket(true);
 }
 function historicalZoomIn(){ if(!historicalReplay)return; visibleCandleCount=Math.max(10,Math.round(visibleCandleCount*0.8)); panOffsetFloat=Math.min(Math.max(0,historicalReplay.candles.length-visibleCandleCount),panOffsetFloat); panOffset=Math.floor(panOffsetFloat); drawChart(); }
 function historicalZoomOut(){ if(!historicalReplay)return; visibleCandleCount=Math.min(150,Math.round(visibleCandleCount*1.25)); panOffsetFloat=Math.min(Math.max(0,historicalReplay.candles.length-visibleCandleCount),panOffsetFloat); panOffset=Math.floor(panOffsetFloat); drawChart(); }

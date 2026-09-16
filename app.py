@@ -59,6 +59,13 @@ def is_market_open(instrument_kind='INDEX'):
     return market_session_status(instrument_kind) == 'OPEN'
 
 
+def _expiry_sort_key(e):
+    e=str(e or '').upper().strip()
+    for fmt in ('%d%b%Y','%d%b%y'):
+        try: return datetime.strptime(e,fmt)
+        except Exception: pass
+    return datetime.max
+
 def get_available_expiries(is_sensex=False):
     now = datetime.now(IST)
     target_weekday = 4 if is_sensex else 1
@@ -235,13 +242,25 @@ class AngelOneData:
         except Exception as e:
             self.last_error='Instrument master: '+str(e)
 
+    @staticmethod
+    def api_exchange(exch):
+        """Normalize instrument-master segment names to SmartAPI API exchange names."""
+        e=str(exch or '').upper().replace('-', '_')
+        return {
+            'NSE':'NSE','NSE_CM':'NSE','NSECM':'NSE',
+            'NFO':'NFO','NSE_FO':'NFO','NSEFO':'NFO',
+            'BSE':'BSE','BSE_CM':'BSE','BSECM':'BSE',
+            'BFO':'BFO','BSE_FO':'BFO','BSEFO':'BFO',
+            'MCX':'MCX','MCX_FO':'MCX','MCXFO':'MCX'
+        }.get(e,e)
+
     def find_index(self, name):
         name=name.upper().replace(' 50','').strip()
         # Instrument master uses NSE/BSE for cash indices; older builds incorrectly
         # searched for nse_cm/bse_cm, which can make historical lookups fail.
         exch = 'BSE' if name == 'SENSEX' else 'NSE'
         candidates=[x for x in self.instruments
-                    if str(x.get('exch_seg','')).upper()==exch
+                    if self.api_exchange(x.get('exch_seg'))==exch
                     and str(x.get('instrumenttype','')).upper() in ('INDEX','AMXIDX','')
                     and (str(x.get('symbol','')).upper()==name or str(x.get('name','')).upper()==name or
                          str(x.get('symbol','')).upper().startswith(name))]
@@ -263,7 +282,7 @@ class AngelOneData:
                 missing.append(x)
         groups={}
         for x in missing:
-            groups.setdefault(x['exch_seg'].upper(),[]).append(str(x['token']))
+            groups.setdefault(self.api_exchange(x.get('exch_seg')),[]).append(str(x['token']))
         for exch,tokens in groups.items():
             for i in range(0,len(tokens),50):
                 payload={'mode':mode,'exchangeTokens':{exch:tokens[i:i+50]}}
@@ -291,11 +310,11 @@ class AngelOneData:
         if isinstance(start_date,str): start_date=_parse_replay_date(start_date)
         if isinstance(end_date,str): end_date=_parse_replay_date(end_date)
         if not start_date or not end_date or end_date < start_date: return []
-        key=('RANGE',str(inst.get('exch_seg','NSE')).upper(),str(inst.get('token')),interval,start_date.isoformat(),end_date.isoformat())
+        key=('RANGE',self.api_exchange(inst.get('exch_seg','NSE')),str(inst.get('token')),interval,start_date.isoformat(),end_date.isoformat())
         now=time.time(); cached=self.candle_cache.get(key)
         if cached and now-cached.get('ts',0)<86400: return [dict(x) for x in cached['rows']]
         start=IST.localize(datetime.combine(start_date,dtime(9,0))); end=IST.localize(datetime.combine(end_date,dtime(15,40)))
-        body={'exchange':str(inst.get('exch_seg','NSE')).upper(),'symboltoken':str(inst['token']),'interval':interval,'fromdate':start.strftime('%Y-%m-%d %H:%M'),'todate':end.strftime('%Y-%m-%d %H:%M')}
+        body={'exchange':self.api_exchange(inst.get('exch_seg','NSE')),'symboltoken':str(inst['token']),'interval':interval,'fromdate':start.strftime('%Y-%m-%d %H:%M'),'todate':end.strftime('%Y-%m-%d %H:%M')}
         try:
             with self.lock:
                 wait=max(0.0,0.45-(time.time()-self.last_candle))
@@ -323,10 +342,10 @@ class AngelOneData:
         if not self.enabled or not self.jwt or not inst: return []
         max_days={'ONE_MINUTE':30,'THREE_MINUTE':60,'FIVE_MINUTE':100,'TEN_MINUTE':100,'FIFTEEN_MINUTE':200,'THIRTY_MINUTE':200,'ONE_HOUR':400,'ONE_DAY':2000}.get(interval,30)
         days=max(1,min(int(days),max_days)); end=self._last_market_close(); start=end-timedelta(days=days)
-        key=(str(inst.get('exch_seg','NSE')).upper(),str(inst.get('token')),interval,days,end.strftime('%Y-%m-%d %H:%M'))
+        key=(self.api_exchange(inst.get('exch_seg','NSE')),str(inst.get('token')),interval,days,end.strftime('%Y-%m-%d %H:%M'))
         now=time.time(); cached=self.candle_cache.get(key)
         if cached and now-cached.get('ts',0)<self.candle_cache_ttl: return [dict(x) for x in cached['rows']]
-        body={'exchange':str(inst.get('exch_seg','NSE')).upper(),'symboltoken':str(inst['token']),'interval':interval,'fromdate':start.strftime('%Y-%m-%d %H:%M'),'todate':end.strftime('%Y-%m-%d %H:%M')}
+        body={'exchange':self.api_exchange(inst.get('exch_seg','NSE')),'symboltoken':str(inst['token']),'interval':interval,'fromdate':start.strftime('%Y-%m-%d %H:%M'),'todate':end.strftime('%Y-%m-%d %H:%M')}
         try:
             with self.lock:
                 wait=max(0.0,0.45-(time.time()-self.last_candle))
@@ -356,7 +375,7 @@ class AngelOneData:
         cached=self.option_lookup_cache.get(key)
         if cached is not None:
             return cached
-        out=[x for x in self.instruments if str(x.get('exch_seg','')).upper()==segment and str(x.get('instrumenttype','')).upper()=='OPTIDX' and str(x.get('name','')).upper()==u and str(x.get('expiry','')).upper()==key[1] and str(x.get('symbol','')).upper().endswith(('CE','PE'))]
+        out=[x for x in self.instruments if self.api_exchange(x.get('exch_seg'))==segment and str(x.get('name','')).upper()==u and str(x.get('expiry','')).upper()==key[1] and str(x.get('symbol','')).upper().endswith(('CE','PE')) and str(x.get('instrumenttype','')).upper() in ('OPTIDX','CE','PE','')]
         self.option_lookup_cache[key]=out
         return out
 
@@ -484,7 +503,7 @@ class AngelOneData:
 
     def subscribe_instruments(self, insts):
         pairs=[]
-        exch_map={'NSE':'1','NSE_CM':'1','NFO':'2','BSE':'3','BSE_CM':'3','BFO':'4','MCX':'5'}
+        exch_map={'NSE':'1','NSE':'1','NSE_CM':'1','NSECM':'1','NFO':'2','NSE_FO':'2','NSEFO':'2','BSE':'3','BSE_CM':'3','BSECM':'3','BFO':'4','BSE_FO':'4','BSEFO':'4','MCX':'5','MCX_FO':'5','MCXFO':'5'}
         for inst in insts or []:
             if not inst: continue
             ex=exch_map.get(str(inst.get('exch_seg','')).upper())
@@ -494,7 +513,7 @@ class AngelOneData:
 
     def subscribe_instrument(self, inst):
         if inst:
-            exch_map={'NSE': '1', 'NSE_CM': '1', 'NFO': '2', 'BSE': '3', 'BSE_CM': '3', 'BFO': '4'}
+            exch_map={'NSE': '1', 'NSE_CM': '1', 'NSECM': '1', 'NFO': '2', 'NSE_FO': '2', 'NSEFO': '2', 'BSE': '3', 'BSE_CM': '3', 'BSECM': '3', 'BFO': '4', 'BSE_FO': '4', 'BSEFO': '4'}
             ex=exch_map.get(str(inst.get('exch_seg','')).upper())
             if ex:
                 self._ws_subscribe([(ex, str(inst.get('token')))])
@@ -1347,7 +1366,7 @@ class SimulationState:
             u,exp,strike,typ=p[0],p[1],float(p[2]),p[3].upper()
         elif len(p)==3:
             u, strike, typ=p[0], float(p[1]), p[2].upper()
-            exps=sorted({str(x.get('expiry','')).upper() for x in self.angel.instruments if str(x.get('name','')).upper()==u and str(x.get('instrumenttype','')).upper()=='OPTIDX' and str(x.get('exch_seg','')).upper()==('BFO' if u=='SENSEX' else 'NFO')})
+            exps=sorted({str(x.get('expiry','')).upper() for x in self.angel.instruments if str(x.get('name','')).upper()==u and str(x.get('instrumenttype','')).upper()=='OPTIDX' and self.api_exchange(x.get('exch_seg'))==('BFO' if u=='SENSEX' else 'NFO')})
             exp=exps[0] if exps else ''
         else:
             parts=raw.upper().replace('  ',' ').split()
@@ -1443,6 +1462,15 @@ class SimulationState:
             if not candles:
                 base=self._resample(self.candles_1m,tf)
                 candles=[dict(c) for c in base]
+            # Never return a blank index chart when we have a valid live/reference price.
+            # Angel One can occasionally return an empty candle array around session boundaries.
+            # Preserve real data first; only create a one-candle anchor from the current valid price
+            # as a last-resort visual seed. This is not synthetic market history.
+            if not candles and not is_option:
+                seed=float(self.sensex_spot if is_s else self.nifty_spot)
+                if seed > 0:
+                    ts=int(now//tf)*tf
+                    candles=[{'time':ts,'is_prev_day':False,'open':seed,'high':seed,'low':seed,'close':seed,'volume':0}]
             if self.angel.enabled: self.chart_cache[cache_key]={'fetched':now,'candles':[dict(c) for c in candles]}
         # Keep the latest candle/tick moving without another historical REST request.
         prev_close = float(self.sensex_prev_close if is_s else self.prev_close or 0.0)
@@ -1514,7 +1542,10 @@ class SimulationState:
         is_s='SENSEX' in symbol.upper(); underlying='SENSEX' if is_s else 'NIFTY'; spot=self.sensex_spot if is_s else self.nifty_spot; step=100 if is_s else 50
         segment='BFO' if is_s else 'NFO'
         if self.angel.enabled:
-            exps=sorted({str(x.get('expiry','')).upper() for x in self.angel.instruments if str(x.get('exch_seg','')).upper()==segment and str(x.get('name','')).upper()==underlying and str(x.get('instrumenttype','')).upper()=='OPTIDX' and x.get('expiry')}, key=lambda e: datetime.strptime(e,'%d%b%Y') if len(e)==9 else datetime.strptime(e,'%d%b%y'))
+            option_rows=[x for x in self.angel.instruments if self.api_exchange(x.get('exch_seg'))==segment and str(x.get('name','')).upper()==underlying and str(x.get('expiry','')).strip()]
+            typed=[x for x in option_rows if str(x.get('instrumenttype','')).upper() in ('OPTIDX','CE','PE')]
+            option_rows=typed or option_rows
+            exps=sorted({str(x.get('expiry','')).upper() for x in option_rows if x.get('expiry')}, key=lambda e: _expiry_sort_key(e))
             preferred='15SEP2026' if '15SEP2026' in exps else ('15SEP26' if '15SEP26' in exps else None)
             selected=expiry if expiry in exps else (preferred or (exps[0] if exps else None))
             if selected:

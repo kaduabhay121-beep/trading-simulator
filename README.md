@@ -84,3 +84,9 @@ Use the same startup/deployment process as the previous TradeLab build. Render c
 - Live Y-axis now fits the visible candle range immediately in the render frame, allowing both expansion and shrinkage without the previous trailing scale effect.
 - Horizontal pan keeps fractional candle displacement and remains independent of live tick delivery.
 - No Angel One order-placement API is used; execution remains paper/simulated only.
+
+## v2.12.1 — Chart interaction integrity
+- Fixed historical vertical panning being cancelled by a second Y-axis state update.
+- Historical chart now keeps its own timeframe/status display and cannot be overwritten by the live countdown timer.
+- Preserves fractional horizontal pan and independent chart interaction during historical replay.
+- Paper-only; no Angel One order placement.
