@@ -38,3 +38,18 @@ Use the same startup/deployment process as the previous TradeLab build. Render c
 - Added a display-only candle integrity guard so an implausible corrupted option OHLC outlier cannot stretch the live Y-axis into thousands/negative values. Raw market data is not modified.
 - Fast `/api/tick` carries previous close/change metadata from cached quote/chart state without adding a REST request to the low-latency tick loop.
 - Paper execution only; no Angel One order-placement API is used by the simulator.
+
+## v2.11.5 — Live Market Integrity Complete Fix
+- Atomic live chart/instrument switching with stale-response protection.
+- One active instrument state for chart, tick stream and position overlay.
+- Live viewport reset/shrink protection against stale bracket/order ranges.
+- Option chart Y-axis excludes distant risk/order levels that would destroy readability.
+- Same-candle strategy signals are grouped to reduce marker/label collisions.
+- Live candle mutation is limited to the active exchange session; no synthetic post-close candles.
+- Market status now shows PRE-OPEN / OPEN / POST-CLOSE / CLOSED.
+- New live paper orders are blocked outside the applicable regular session; existing positions remain exit-able.
+- Pending intraday limit orders do not fill outside market hours.
+- Option-chain OI now reads Angel One's `opnInterest` field; unsupported change-in-OI is shown as unavailable rather than zero.
+- Live tick timeframe bucketing supports 1m/3m/5m/10m/15m/30m/1h.
+- Index header no longer duplicates `INDEX`; venue is shown as NSE/BSE.
+- Paper-only execution remains unchanged; no Angel One order-placement API is called.

@@ -13,6 +13,7 @@ import base64
 import struct
 import hmac
 import hashlib
+import re
 import sqlite3
 
 try:
@@ -33,9 +34,28 @@ GREEK_URL = ANGEL_ROOT + '/rest/secure/angelbroking/marketData/v1/optionGreek'
 WS_URL = 'wss://smartapisocket.angelone.in/smart-stream'
 
 
-def is_market_open():
-    now = datetime.now(IST)
-    return now.weekday() < 5 and dtime(9, 15) <= now.time() <= dtime(15, 30)
+def market_session_status(instrument_kind='INDEX', now=None):
+    """Return the exchange-style session state for the paper UI.
+    INDEX follows NSE cash continuous trading (09:15-15:30); equity options
+    follow NSE equity-derivatives regular hours (09:15-15:40).
+    """
+    now = now or datetime.now(IST)
+    if now.weekday() >= 5:
+        return 'CLOSED'
+    t = now.time()
+    if t < dtime(9, 0):
+        return 'CLOSED'
+    if t < dtime(9, 15):
+        return 'PRE_OPEN'
+    close_t = dtime(15, 40) if str(instrument_kind).upper() == 'OPTION' else dtime(15, 30)
+    if t <= close_t:
+        return 'OPEN'
+    if t <= dtime(16, 15):
+        return 'POST_CLOSE'
+    return 'CLOSED'
+
+def is_market_open(instrument_kind='INDEX'):
+    return market_session_status(instrument_kind) == 'OPEN'
 
 
 def get_available_expiries(is_sensex=False):
@@ -1125,7 +1145,7 @@ class SimulationState:
         loss_limit=abs(float(b['max_daily_loss'])/100.0)*float(b['initial_balance'])
         if b['daily_pnl'] <= -loss_limit:
             b['risk_lock']=True; b['risk_lock_reason']=f'Daily loss limit ₹{loss_limit:.0f} reached'; b['enabled']=False; self._save_state(); return
-        if not is_market_open():
+        if not is_market_open('OPTION' if b.get('instrument_mode') and b.get('instrument_mode')!='INDEX' else 'INDEX'):
             b['last_reason']='Market closed — bot is armed but waiting for market hours.'
             return
         if signal=='HOLD' or conf<0.70:
@@ -1190,10 +1210,13 @@ class SimulationState:
                         last_indices=now
                         self._live_indices()
                     with self.lock:
-                        ts=int(now//60)*60
-                        if not self.candles_1m or ts>self.candles_1m[-1]['time']:
-                            p=self.nifty_spot; self.candles_1m.append({'time':ts,'is_prev_day':False,'open':p,'high':p,'low':p,'close':p,'volume':0})
-                        c=self.candles_1m[-1]; c['close']=self.nifty_spot; c['high']=max(c['high'],self.nifty_spot); c['low']=min(c['low'],self.nifty_spot)
+                        # Never manufacture post-close candles. The last exchange candle
+                        # must remain the last real market candle.
+                        if market_session_status('INDEX') == 'OPEN':
+                            ts=int(now//60)*60
+                            if not self.candles_1m or ts>self.candles_1m[-1]['time']:
+                                p=self.nifty_spot; self.candles_1m.append({'time':ts,'is_prev_day':False,'open':p,'high':p,'low':p,'close':p,'volume':0})
+                            c=self.candles_1m[-1]; c['close']=self.nifty_spot; c['high']=max(c['high'],self.nifty_spot); c['low']=min(c['low'],self.nifty_spot)
                 else:
                     with self.lock:
                         self.nifty_spot=round(self.nifty_spot+random.choice([-0.8,-0.4,0,0.4,0.8]),2); self.sensex_spot=round(self.nifty_spot*3.41,2)
@@ -1201,8 +1224,13 @@ class SimulationState:
                     for p in self.positions:
                         ltp,delta,theta=self._get_live_instrument_ltp(p['symbol']); p['ltp']=ltp; p['delta']=delta; p['theta']=theta
                         p['pnl']=round((ltp-p['buy_price'])*p['qty'] if p['action']=='BUY' else (p['buy_price']-ltp)*p['qty'],2)
+                    # Pending intraday limits may fill only while their segment is open.
+                    # Do not fill or keep an order alive overnight after the regular session.
                     remaining=[]
                     for po in self.pending_orders:
+                        kind='OPTION' if '_' in str(po.get('symbol','')) else 'INDEX'
+                        if market_session_status(kind) != 'OPEN':
+                            continue
                         ltp,_,_=self._get_live_instrument_ltp(po['symbol']); filled=(po['action']=='BUY' and ltp<=po['limit_price']) or (po['action']=='SELL' and ltp>=po['limit_price'])
                         if filled: self._execute_fill(po['symbol'],po['action'],po['qty'],po['limit_price'],po.get('stop_loss',0),po.get('target',0),po.get('trailing_sl',0))
                         else: remaining.append(po)
@@ -1308,10 +1336,16 @@ class SimulationState:
                 if len(candles)>500: del candles[:-500]
             else:
                 c['close']=ltp; c['high']=max(c['high'],ltp); c['low']=min(c['low'],ltp)
-        countdown_seconds=max(0,int((((int(now)//tf)+1)*tf)-now))
+        kind='OPTION' if is_option else 'INDEX'
+        status=market_session_status(kind)
+        if status == 'OPEN':
+            countdown_seconds=max(0,int((((int(now)//tf)+1)*tf)-now))
+            countdown=f'{countdown_seconds//60:02d}:{countdown_seconds%60:02d}'
+        else:
+            countdown=status.replace('_',' ')
         change=float(ltp)-prev_close if prev_close else 0.0
         change_pct=(change/prev_close*100.0) if prev_close else 0.0
-        return {'symbol':symbol,'ltp':round(float(ltp),2),'prev_close':round(prev_close,2),'change':round(change,2),'change_pct':round(change_pct,2),'countdown':f'{countdown_seconds//60:02d}:{countdown_seconds%60:02d}','time':int(now)}
+        return {'symbol':symbol,'ltp':round(float(ltp),2),'prev_close':round(prev_close,2),'change':round(change,2),'change_pct':round(change_pct,2),'countdown':countdown,'market_status':status,'time':int(now)}
 
 
     def get_instrument_chart_data(self,symbol,timeframe='1m'):
@@ -1365,8 +1399,14 @@ class SimulationState:
             instrument_kind = 'OPTION'
             parts=symbol.split('_'); exp=parts[1] if len(parts)>=4 else ''; strike=float(parts[2]) if len(parts)>=4 else 0; typ=parts[3] if len(parts)>=4 else 'CE'
             display=f"{'SENSEX' if is_s else 'NIFTY'} {exp} {int(strike)} {typ}"
-            if ltp and candles:
-                c=candles[-1]; c['close']=ltp; c['high']=max(c['high'],ltp); c['low']=min(c['low'],ltp)
+            status=market_session_status('OPTION')
+            if ltp and candles and status == 'OPEN':
+                bucket=(int(now)//tf)*tf
+                c=candles[-1]
+                if int(c.get('time',0)) != bucket:
+                    c={'time':bucket,'is_prev_day':False,'open':ltp,'high':ltp,'low':ltp,'close':ltp,'volume':0}; candles.append(c)
+                else:
+                    c['close']=ltp; c['high']=max(c['high'],ltp); c['low']=min(c['low'],ltp)
             if not candles:
                 dte=get_dte_from_expiry(exp); g=calc_deep_greeks(spot,strike,dte,is_sensex=is_s); ltp=ltp or (g['ce_ltp'] if typ=='CE' else g['pe_ltp'])
                 candles=[{'time':int(now//60)*60,'is_prev_day':False,'open':ltp,'high':ltp,'low':ltp,'close':ltp,'volume':0}]
@@ -1375,15 +1415,25 @@ class SimulationState:
             else:
                 g=calc_deep_greeks(spot,strike,get_dte_from_expiry(exp),is_sensex=is_s); greeks={'delta':g['ce_delta'] if typ=='CE' else g['pe_delta'],'gamma':g['gamma'],'theta':g['theta'],'vega':g['vega'],'iv':g['iv']}
         else:
-            if candles:
-                candles[-1]['close']=spot; candles[-1]['high']=max(candles[-1]['high'],spot); candles[-1]['low']=min(candles[-1]['low'],spot)
+            status=market_session_status('INDEX')
+            if candles and status == 'OPEN':
+                bucket=(int(now)//tf)*tf
+                c=candles[-1]
+                if int(c.get('time',0)) != bucket:
+                    c={'time':bucket,'is_prev_day':False,'open':spot,'high':spot,'low':spot,'close':spot,'volume':0}; candles.append(c)
+                else:
+                    c['close']=spot; c['high']=max(c['high'],spot); c['low']=min(c['low'],spot)
             display='SENSEX' if is_s else 'NIFTY 50'; ltp=spot; greeks={'delta':1.0,'gamma':0,'theta':0,'vega':0,'iv':0}
+        kind_status=market_session_status(instrument_kind)
         closes=[c['close'] for c in candles]
-        countdown_seconds=max(0, int((((int(now)//tf)+1)*tf)-now))
-        countdown=f"{countdown_seconds//60:02d}:{countdown_seconds%60:02d}"
+        if kind_status == 'OPEN':
+            countdown_seconds=max(0, int((((int(now)//tf)+1)*tf)-now))
+            countdown=f"{countdown_seconds//60:02d}:{countdown_seconds%60:02d}"
+        else:
+            countdown=kind_status.replace('_',' ')
         change = float(ltp or 0) - float(prev_close or 0) if prev_close else 0.0
         change_pct = (change / float(prev_close) * 100.0) if prev_close else 0.0
-        return {'symbol':symbol,'display_title':display,'timeframe':timeframe,'ltp':ltp,'prev_close':prev_close,'change':round(change,2),'change_pct':round(change_pct,2),'instrument_kind':instrument_kind,'exchange':exchange_name,'lot_size':lot_size,'candles':candles,'countdown':countdown,'ema9':calc_ema_series(closes,9)[-1] if closes else 0,'ema15':calc_ema_series(closes,15)[-1] if closes else 0,'vwap':calc_vwap_series(candles)[-1] if candles else 0,'vwap_series':calc_vwap_series(candles),'ema9_series':calc_ema_series(closes,9),'ema15_series':calc_ema_series(closes,15),'strategy_markers':build_strategy_markers(candles),'greeks':greeks}
+        return {'symbol':symbol,'display_title':display,'timeframe':timeframe,'ltp':ltp,'prev_close':prev_close,'change':round(change,2),'change_pct':round(change_pct,2),'instrument_kind':instrument_kind,'exchange':exchange_name,'lot_size':lot_size,'market_status':kind_status,'countdown':countdown,'candles':candles,'ema9':calc_ema_series(closes,9)[-1] if closes else 0,'ema15':calc_ema_series(closes,15)[-1] if closes else 0,'vwap':calc_vwap_series(candles)[-1] if candles else 0,'vwap_series':calc_vwap_series(candles),'ema9_series':calc_ema_series(closes,9),'ema15_series':calc_ema_series(closes,15),'strategy_markers':build_strategy_markers(candles),'greeks':greeks}
 
     def get_option_chain(self,symbol='NIFTY',expiry=None):
         is_s='SENSEX' in symbol.upper(); underlying='SENSEX' if is_s else 'NIFTY'; spot=self.sensex_spot if is_s else self.nifty_spot; step=100 if is_s else 50
@@ -1406,7 +1456,7 @@ class SimulationState:
                         row={'strike':s,'expiry':selected}
                         for typ,prefix in [('CE','ce'),('PE','pe')]:
                             x=next((i for i in insts if round(float(i['strike'])/100,2)==s and str(i['symbol']).upper().endswith(typ)),None); z=q.get(str(x['token'])) if x else None; g=gk.get((s,typ),{})
-                            row[prefix+'_token']=str(x['token']) if x else ''; row[prefix+'_symbol']=str(x.get('symbol','')) if x else ''; row[prefix+'_ltp']=float(z.get('ltp',0)) if z else 0; row[prefix+'_delta']=float(g.get('delta',0) or 0); row[prefix+'_oi']=str(z.get('openInterest',0) if z else 0); row[prefix+'_chg_oi']=str(z.get('changeOpenInterest',0) if z else 0); row[prefix+'_volume']=str(z.get('tradeVolume',z.get('volume',0)) if z else 0); row[prefix+'_iv']=float(g.get('impliedVolatility',0) or 0)
+                            row[prefix+'_token']=str(x['token']) if x else ''; row[prefix+'_symbol']=str(x.get('symbol','')) if x else ''; row[prefix+'_ltp']=float(z.get('ltp',0)) if z else 0; row[prefix+'_delta']=float(g.get('delta',0) or 0); row[prefix+'_oi']=str(z.get('opnInterest','—') if z else '—'); row[prefix+'_chg_oi']='—'; row[prefix+'_volume']=str(z.get('tradeVolume',z.get('volume',0)) if z else 0); row[prefix+'_iv']=float(g.get('impliedVolatility',0) or 0)
                         rows.append(row)
                     base=(time.time(),{'expiries':exps,'selected_expiry':selected,'chain':rows}); self.live_chain_cache[(symbol,selected)]=base
                 result=base[1]
@@ -1942,6 +1992,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 return self._send_json({'ok':True,'session':session,'paper_only':True})
             if parsed.path=='/api/order':
                 symbol=payload.get('symbol','NIFTY'); action=payload.get('action','BUY'); qty=int(payload.get('qty',65)); ot=payload.get('order_type','MARKET'); lp=float(payload.get('limit_price',0)); sl=float(payload.get('stop_loss',0)); tp=float(payload.get('target',0)); tsl=float(payload.get('trailing_sl',0)); ltp,_,_=state._get_live_instrument_ltp(symbol)
+                kind='OPTION' if '_' in str(symbol) or re.search(r'\b(CE|PE)\b',str(symbol),re.I) else 'INDEX'
+                if market_session_status(kind) != 'OPEN':
+                    return self._send_json({'error':f'Market closed for new paper orders ({market_session_status(kind).replace("_"," ")}). Existing positions can be exited.','market_status':market_session_status(kind)},400)
                 if not ltp: return self._send_json({'error':'Live price unavailable'},400)
                 if ot=='LIMIT' and not ((action=='BUY' and ltp<=lp) or (action=='SELL' and ltp>=lp)):
                     oid=f'ord_{state.order_counter}'; state.order_counter+=1; state.pending_orders.append({'id':oid,'symbol':symbol,'action':action,'qty':qty,'limit_price':lp,'order_type':'LIMIT','stop_loss':sl,'target':tp,'trailing_sl':tsl,'time':datetime.now(IST).strftime('%H:%M:%S')}); state._save_state()

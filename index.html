@@ -84,6 +84,12 @@ window.onerror = function(msg, src, line) { alert("FATAL JS ERROR: " + msg + " (
   @media(max-width:600px){.historical-chart-toolbar{top:44px;right:auto;width:calc(100% - 16px)}.hist-ct-select,.hist-ct-input{flex:1;min-width:0}.hist-ct-btn{flex:0 0 auto}.hist-ct-status{min-width:90px}}
   .idx-title-row { font-size: 11px; font-weight: 800; color: #cbd5e1; display: flex; align-items: center; gap: 4px; }
   .idx-pill { background: #1e293b; padding: 1px 5px; border-radius: 8px; font-size: 9px; color: #94a3b8; }
+  .market-status-pill { background:#1e293b; padding:1px 5px; border-radius:8px; font-size:8px; color:#94a3b8; font-weight:800; letter-spacing:.2px; }
+  .market-status-pill.open { color:#86efac; background:rgba(22,101,52,.35); }
+  .market-status-pill.closed { color:#fca5a5; background:rgba(127,29,29,.35); }
+  .market-status-pill.preopen { color:#fde68a; background:rgba(120,53,15,.35); }
+  .market-status-pill.post { color:#cbd5e1; background:rgba(71,85,105,.35); }
+  .btn-trade-side:disabled, .order-type-btn:disabled, .lot-quick-select:disabled, .limit-price-input:disabled { opacity:.45; cursor:not-allowed; filter:grayscale(.25); }
   .idx-price-sub { font-size: 11px; color: var(--green); font-weight: 700; margin: 2px 0 4px 0; }
   
   .instant-trade-box { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; max-width: 290px; }
@@ -243,7 +249,7 @@ canvas { width: 100% !important; height: 100% !important; display: block; }
       <div class="onchart-order-widget">
         <div class="idx-title-row">
           <span id="onChartSymbol">NIFTY 50 • 1M • IDX</span>
-          <span class="idx-pill">NSE</span>
+          <span class="idx-pill">NSE</span><span id="marketStatusBadge" class="market-status-pill closed">CLOSED</span>
         </div>
         <div class="idx-price-sub" id="onChartPriceSub">23,850.00 +0.00 (+0.00%)</div>
         
@@ -348,7 +354,7 @@ canvas { width: 100% !important; height: 100% !important; display: block; }
       </div>
     </div>
     
-    <div style="font-weight: 700; margin-bottom: 6px; font-size: 11px; color: var(--text-sub);">OPEN POSITIONS (AVERAGED)</div>
+    <div style="font-weight: 700; margin-bottom: 6px; font-size: 11px; color: var(--text-sub);">OPEN POSITIONS</div>
     <div id="positionsList"></div>
 
     <div style="font-weight: 700; margin: 14px 0 6px 0; font-size: 11px; color: var(--text-sub);">PENDING LIMIT ORDERS</div>
@@ -653,6 +659,9 @@ let historicalYMax = null;
 // Live viewport state: avoid repeated full re-fit on every REST/tick refresh while still recentering when price approaches the edges.
 let liveYMin = null;
 let liveYMax = null;
+let marketRequestSeq = 0;
+let activeMarketAbort = null;
+let tickRequestSeq = 0;
 
 let audioCtx = null;
 function initAudio() { if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)(); }
@@ -1055,29 +1064,28 @@ function toggleChartType() {
   drawChart();
 }
 
+function resetLiveViewportState(){ liveYMin=null; liveYMax=null; smoothMinP=null; smoothMaxP=null; }
+
 function resetChartView(e) {
   if (e) { e.preventDefault(); e.stopPropagation(); }
   panOffset = 0;
   verticalPanOffset = 0;
   priceScaleZoomFactor = 1.0;
-  smoothMinP = null;
-  smoothMaxP = null;
-  liveYMin = null;
-  liveYMax = null;
+  resetLiveViewportState();
   drawChart();
   fetchMarket(true);
 }
 
 function cycleTimeframe() {
-  const tfs = ['1m', '3m', '5m', '15m'];
+  const tfs = ['1m', '3m', '5m', '10m', '15m', '30m', '1h'];
   let idx = (tfs.indexOf(currentTimeframe) + 1) % tfs.length;
   currentTimeframe = tfs[idx];
   document.getElementById('tfDisplay').innerText = `${currentTimeframe} ▾`;
   panOffset = 0;
   verticalPanOffset = 0;
-  verticalPanOffset = 0;
   priceScaleZoomFactor = 1.0;
-  fetchMarket();
+  resetLiveViewportState();
+  fetchMarket(true);
 }
 
 function switchNavTab(tabId) {
@@ -1109,10 +1117,11 @@ function switchChartSymbol(symId) {
   panOffset = 0;
   verticalPanOffset = 0;
   priceScaleZoomFactor = 1.0;
-  smoothMinP = null;
-  smoothMaxP = null;
+  resetLiveViewportState();
+  marketCache = null;
   renderTabs();
-  fetchMarket();
+  drawChart();
+  fetchMarket(true);
 }
 
 function closeTab(e, symId) {
@@ -1155,9 +1164,11 @@ function selectStrike(symId, label) {
   if (!openTabs.find(t => t.id === symId)) openTabs.push({ id: symId, label });
   currentChartSymbol = symId;
   closeStrikeModal();
+  panOffset=0; verticalPanOffset=0; priceScaleZoomFactor=1.0; resetLiveViewportState(); marketCache=null;
   renderTabs();
   switchNavTab('chart');
-  fetchMarket();
+  drawChart();
+  fetchMarket(true);
 }
 
 // Watchlist
@@ -1220,17 +1231,21 @@ function renderWatchlist() {
 let marketFetchInFlight = false;
 async function fetchMarket(force=false) {
   if (historicalChartMode) return;
-  if (marketFetchInFlight) return;
+  if (marketFetchInFlight) { if (activeMarketAbort) activeMarketAbort.abort(); }
   marketFetchInFlight = true;
+  const requestSeq=++marketRequestSeq, requestSymbol=currentChartSymbol, requestTf=currentTimeframe, requestExpiry=currentSelectedExpiry;
+  if (activeMarketAbort) { try{activeMarketAbort.abort();}catch(_){} }
+  const controller = new AbortController(); activeMarketAbort=controller;
   try {
-    const expiryParam = currentSelectedExpiry ? `&expiry=${encodeURIComponent(currentSelectedExpiry)}` : '';
-    const controller = new AbortController();
+    const expiryParam = requestExpiry ? `&expiry=${encodeURIComponent(requestExpiry)}` : '';
     const timer = setTimeout(() => controller.abort(), 9000);
     const cacheBust = force ? `&t=${Date.now()}` : '';
-    const res = await fetch(`/api/market?symbol=${encodeURIComponent(currentChartSymbol)}&tf=${currentTimeframe}${expiryParam}${cacheBust}`, {signal: controller.signal, cache: 'no-store'});
+    const res = await fetch(`/api/market?symbol=${encodeURIComponent(requestSymbol)}&tf=${requestTf}${expiryParam}${cacheBust}`, {signal: controller.signal, cache: 'no-store'});
     clearTimeout(timer);
     if (!res.ok) throw new Error(`Market API HTTP ${res.status}`);
     const data = await res.json();
+    // A slow response for the previous tab/instrument must never overwrite the current chart.
+    if (requestSeq!==marketRequestSeq || requestSymbol!==currentChartSymbol || requestTf!==currentTimeframe) return;
     if (!data || !data.chart || !data.wallet) throw new Error('Invalid market response');
     marketCache = data;
     if (data.sounds && data.sounds.length > 0) data.sounds.forEach(s => playSound(s));
@@ -1238,11 +1253,12 @@ async function fetchMarket(force=false) {
     const d = document.getElementById('debugOverlay');
     if (d) d.style.display = 'none';
   } catch (err) {
+    if (err?.name==='AbortError') return;
     console.error(err);
     const d = document.getElementById('debugOverlay');
     if (d && (!marketCache || !marketCache.chart)) { d.style.display='block'; d.innerText=`Market data error: ${err.message || err}`; }
   } finally {
-    marketFetchInFlight = false;
+    if (requestSeq===marketRequestSeq) { marketFetchInFlight=false; activeMarketAbort=null; }
   }
 }
 
@@ -1253,10 +1269,16 @@ function updateUI(data) {
   document.getElementById('btnSellLTP').innerText = curLTP.toFixed(2);
   document.getElementById('btnBuyLTP').innerText = curLTP.toFixed(2);
   const isOptionChart = /\b(CE|PE)\b/i.test(String(data.chart.display_title||'')) || /\b(CE|PE)\b/i.test(String(currentChartSymbol||''));
-  const marketVenue = isOptionChart ? (data.chart.exchange || 'NFO') : 'INDEX';
+  const marketVenue = data.chart.exchange || (isOptionChart ? 'NFO' : 'NSE');
   const instrumentKind = data.chart.instrument_kind || (isOptionChart ? 'OPTION' : 'INDEX');
   const kindLabel = instrumentKind === 'OPTION' ? 'OPTION' : 'INDEX';
   document.getElementById('onChartSymbol').innerText = `${data.chart.display_title} • ${currentTimeframe.toUpperCase()} • ${kindLabel} • ${marketVenue}`;
+  const status = String(data.chart.market_status || 'OPEN');
+  const statusEl=document.getElementById('marketStatusBadge');
+  if(statusEl){ statusEl.innerText=status.replace('_',' '); statusEl.className='market-status-pill '+(status==='OPEN'?'open':status==='PRE_OPEN'?'preopen':status==='POST_CLOSE'?'post':'closed'); }
+  const canTrade=status==='OPEN';
+  ['btnSellLTP','btnBuyLTP','btnModeMKT','btnModeLMT','directQtySelect','inputLimitPriceDirect'].forEach(id=>{const el=document.getElementById(id); if(el) el.disabled=!canTrade;});
+  if(!canTrade){ document.getElementById('btnBuyLabel').innerText='CLOSED'; document.getElementById('btnSellLabel').innerText='CLOSED'; } else { setTradeMode(currentTradeMode); }
   
   var isSensex = currentChartSymbol.includes("SENSEX");
   const chgVal = Number.isFinite(Number(data.chart.change)) ? Number(data.chart.change) : (isSensex ? data.sensex_chg : data.nifty_chg);
@@ -1390,32 +1412,31 @@ async function fetchLiveTick() {
   if (historicalChartMode) return;
   if (tickFetchInFlight || !currentChartSymbol || !marketCache || !marketCache.chart) return;
   tickFetchInFlight = true;
+  const seq=++tickRequestSeq, requestSymbol=currentChartSymbol, requestTf=currentTimeframe;
   try {
-    const res = await fetch(`/api/tick?symbol=${encodeURIComponent(currentChartSymbol)}&tf=${currentTimeframe}`, {cache:'no-store'});
+    const res = await fetch(`/api/tick?symbol=${encodeURIComponent(requestSymbol)}&tf=${requestTf}`, {cache:'no-store'});
     if (!res.ok) return;
     const t = await res.json();
-    if (!t || !t.ltp) return;
+    if (seq!==tickRequestSeq || requestSymbol!==currentChartSymbol || requestTf!==currentTimeframe || !t || !t.ltp || !marketCache?.chart || marketCache.chart.symbol!==requestSymbol) return;
     const ch = marketCache.chart;
+    ch.market_status=t.market_status||ch.market_status||'OPEN';
+    ch.countdown=t.countdown||ch.countdown;
     ch.ltp = Number(t.ltp);
     ch.countdown = t.countdown || ch.countdown;
     const candles = ch.candles || [];
-    const tfSec = ({'1m':60,'3m':180,'5m':300,'15m':900}[currentTimeframe] || 60);
+    const tfSec = ({'1m':60,'3m':180,'5m':300,'10m':600,'15m':900,'30m':1800,'1h':3600}[currentTimeframe] || 60);
     const bucket = Math.floor(Date.now()/1000/tfSec)*tfSec;
     let last = candles[candles.length-1];
-    if (!last || Number(last.time) !== bucket) {
-      candles.push({time:bucket,is_prev_day:false,open:ch.ltp,high:ch.ltp,low:ch.ltp,close:ch.ltp,volume:0});
-      if (candles.length > 500) candles.splice(0, candles.length-500);
-      // Stay at the live edge when the user hasn't deliberately panned away.
-      if (panOffset === 0) panOffset = 0;
-      ch.ema9_series = calcEmaLocal(candles.map(c=>c.close), 9);
-      ch.ema15_series = calcEmaLocal(candles.map(c=>c.close), 15);
-    } else {
-      last.close = ch.ltp;
-      last.high = Math.max(last.high, ch.ltp);
-      last.low = Math.min(last.low, ch.ltp);
-      const closes = candles.map(c=>c.close);
-      ch.ema9_series = calcEmaLocal(closes, 9);
-      ch.ema15_series = calcEmaLocal(closes, 15);
+    if (ch.market_status === 'OPEN') {
+      if (!last || Number(last.time) !== bucket) {
+        candles.push({time:bucket,is_prev_day:false,open:ch.ltp,high:ch.ltp,low:ch.ltp,close:ch.ltp,volume:0});
+        if (candles.length > 500) candles.splice(0, candles.length-500);
+        ch.ema9_series = calcEmaLocal(candles.map(c=>c.close), 9);
+        ch.ema15_series = calcEmaLocal(candles.map(c=>c.close), 15);
+      } else {
+        last.close = ch.ltp; last.high = Math.max(last.high, ch.ltp); last.low = Math.min(last.low, ch.ltp);
+        const closes = candles.map(c=>c.close); ch.ema9_series = calcEmaLocal(closes, 9); ch.ema15_series = calcEmaLocal(closes, 15);
+      }
     }
     ch.ema9 = ch.ema9_series?.[ch.ema9_series.length-1] || ch.ema9 || 0;
     ch.ema15 = ch.ema15_series?.[ch.ema15_series.length-1] || ch.ema15 || 0;
@@ -1430,6 +1451,11 @@ async function fetchLiveTick() {
       pSub.innerText = `${ch.ltp.toFixed(2)} ${diff >= 0 ? '+' : ''}${diff.toFixed(2)} (${diff >= 0 ? '+' : ''}${pct.toFixed(2)}%)`;
       pSub.style.color = diff >= 0 ? 'var(--green)' : 'var(--red)';
     }
+    const status=String(ch.market_status||'OPEN'), statusEl=document.getElementById('marketStatusBadge');
+    if(statusEl){statusEl.innerText=status.replace('_',' ');statusEl.className='market-status-pill '+(status==='OPEN'?'open':status==='PRE_OPEN'?'preopen':status==='POST_CLOSE'?'post':'closed');}
+    const canTrade=status==='OPEN';
+    ['btnSellLTP','btnBuyLTP','btnModeMKT','btnModeLMT','directQtySelect','inputLimitPriceDirect'].forEach(id=>{const el=document.getElementById(id);if(el)el.disabled=!canTrade;});
+    if(!canTrade){document.getElementById('btnBuyLabel').innerText='CLOSED';document.getElementById('btnSellLabel').innerText='CLOSED';}
     if (document.getElementById('tab-chart')?.classList.contains('active')) drawChart();
   } catch (_) {} finally {
     tickFetchInFlight = false;
@@ -1788,8 +1814,9 @@ function drawChart() {
     targetMinP = Math.min(targetMinP, matchingPos.buy_price);
     targetMaxP = Math.max(targetMaxP, matchingPos.buy_price);
     const baseRef = Math.max(Number(marketCache.chart.ltp||0), (targetMinP+targetMaxP)/2, 0.05);
-    if (matchingPos.stop_loss > 0 && (!chartIsOption || matchingPos.stop_loss <= baseRef*4)) targetMinP = Math.min(targetMinP, matchingPos.stop_loss);
-    if (matchingPos.target > 0 && (!chartIsOption || matchingPos.target <= baseRef*4)) targetMaxP = Math.max(targetMaxP, matchingPos.target);
+    const riskBand = chartIsOption ? 0.35 : 0.08;
+    if (matchingPos.stop_loss > 0 && Math.abs(matchingPos.stop_loss-baseRef)/baseRef <= riskBand) targetMinP = Math.min(targetMinP, matchingPos.stop_loss);
+    if (matchingPos.target > 0 && Math.abs(matchingPos.target-baseRef)/baseRef <= riskBand) targetMaxP = Math.max(targetMaxP, matchingPos.target);
   }
 
   if (marketCache && marketCache.pending_orders) {
@@ -1800,8 +1827,12 @@ function drawChart() {
       else if (marketCache.chart && po.symbol === marketCache.chart.display_title) matches = true;
 
       if (matches && po.limit_price > 0) {
-        targetMinP = Math.min(targetMinP, po.limit_price);
-        targetMaxP = Math.max(targetMaxP, po.limit_price);
+        const ref=Number(marketCache.chart.ltp||0)||((targetMinP+targetMaxP)/2);
+        const band=chartIsOption?0.35:0.08;
+        if (Math.abs(Number(po.limit_price)-ref)/Math.max(ref,0.0001) <= band) {
+          targetMinP = Math.min(targetMinP, po.limit_price);
+          targetMaxP = Math.max(targetMaxP, po.limit_price);
+        }
       }
     });
   }
@@ -1854,19 +1885,23 @@ function drawChart() {
     // Expand/recenter only when price or a bracket is close to the viewport edge.
     const liveSpanSeed = Math.max(targetMaxP - targetMinP, 0.0001);
     if (!(liveYMin > 0 && liveYMax > liveYMin)) {
-      const mid = (targetMinP + targetMaxP) / 2;
-      const padded = liveSpanSeed * 0.70;
-      liveYMin = mid - padded;
-      liveYMax = mid + padded;
+      const mid = (targetMinP + targetMaxP) / 2; const padded = Math.max(liveSpanSeed * 0.55, Math.abs(mid)*0.015);
+      liveYMin = mid - padded; liveYMax = mid + padded;
     } else {
       const liveSpan = Math.max(liveYMax - liveYMin, liveSpanSeed);
-      const edge = liveSpan * 0.14;
       const current = Number(marketCache.chart.ltp || ((targetMinP + targetMaxP) / 2));
-      if (targetMinP < liveYMin + edge || targetMaxP > liveYMax - edge || current < liveYMin + edge || current > liveYMax - edge) {
+      const coreSpan = Math.max(liveSpanSeed, Math.abs(current)*0.01);
+      const edge = Math.max(liveSpan * 0.14, coreSpan*1.5);
+      // If a stale bracket/order previously expanded the viewport, allow it to shrink
+      // back to the active instrument instead of carrying a giant empty scale forever.
+      const wildlyOversized = liveSpan > coreSpan * (chartIsOption ? 8 : 12);
+      if (wildlyOversized) {
+        const mid=current>0?current:(targetMinP+targetMaxP)/2; const desiredSpan=Math.max(liveSpanSeed*1.25,Math.abs(mid)*0.08);
+        liveYMin=mid-desiredSpan/2; liveYMax=mid+desiredSpan/2;
+      } else if (targetMinP < liveYMin + edge || targetMaxP > liveYMax - edge || current < liveYMin + edge || current > liveYMax - edge) {
         const mid = current > 0 ? current : (targetMinP + targetMaxP) / 2;
-        const desiredSpan = Math.max(liveSpan, liveSpanSeed * 1.15);
-        liveYMin = mid - desiredSpan / 2;
-        liveYMax = mid + desiredSpan / 2;
+        const desiredSpan = Math.max(liveSpanSeed * 1.35, coreSpan*2.5);
+        liveYMin = mid - desiredSpan / 2; liveYMax = mid + desiredSpan / 2;
       }
     }
     targetMinP = liveYMin;
@@ -2022,20 +2057,24 @@ function drawChart() {
     }
   }
 
-  // 6.5 Strategy BUY/SELL markers — all six strategies share the same candle engine.
+  // 6.5 Strategy BUY/SELL markers — group same-candle signals to prevent label collisions.
   if (configInd.signals && Array.isArray(marketCache.chart.strategy_markers)) {
     const markerColors={EMA_CROSS:'#f59e0b',RSI_MEAN_REVERT:'#06b6d4',VWAP_REVERT:'#3b82f6',BREAKOUT:'#22c55e',RBS:'#84cc16',SBR:'#ef4444'};
     const markerNames={EMA_CROSS:'EMA',RSI_MEAN_REVERT:'RSI',VWAP_REVERT:'VWAP',BREAKOUT:'BO',RBS:'RBS',SBR:'SBR'};
-    const seen={};
-    marketCache.chart.strategy_markers.forEach(m=>{
-      const mi=candles.findIndex(c=>Number(c.time)===Number(m.time)); if(mi<0) return;
-      const x=chartLeft+mi*step+step/2, y=toY(Number(m.price)); const key=mi+'_'+m.signal; const n=seen[key]||0; seen[key]=n+1;
-      const yy=y+(m.signal==='BUY' ? 10+n*9 : -10-n*9); const col=markerColors[m.strategy]||'#94a3b8';
-      ctx.fillStyle=col; ctx.strokeStyle=col; ctx.lineWidth=1; ctx.beginPath();
-      if(m.signal==='BUY'){ctx.moveTo(x,yy-4);ctx.lineTo(x-4,yy+3);ctx.lineTo(x+4,yy+3);}else{ctx.moveTo(x,yy+4);ctx.lineTo(x-4,yy-3);ctx.lineTo(x+4,yy-3);} ctx.closePath();ctx.fill();
-      // Live charts use compact tags; historical charts retain full strategy labels.
-      const label = historicalChartMode ? (markerNames[m.strategy]+' '+m.signal) : markerNames[m.strategy];
-      ctx.font='bold 7px sans-serif'; ctx.textAlign='center'; ctx.fillText(label,x,yy+(m.signal==='BUY'?11:-8));
+    const groups=new Map();
+    marketCache.chart.strategy_markers.forEach(m=>{const mi=candles.findIndex(c=>Number(c.time)===Number(m.time));if(mi<0)return;const k=mi+'_'+m.signal;if(!groups.has(k))groups.set(k,{mi,signal:m.signal,items:[]});groups.get(k).items.push(m);});
+    groups.forEach(g=>{
+      const x=chartLeft+g.mi*step+step/2, y=toY(Number(g.items[0].price));
+      const unique=[...new Map(g.items.map(m=>[m.strategy,m])).values()];
+      const n=Math.min(unique.length,4), dir=g.signal==='BUY'?1:-1;
+      const yy=y+(g.signal==='BUY'?10:-10);
+      unique.slice(0,n).forEach((m,j)=>{
+        const off=(j-(n-1)/2)*8; const col=markerColors[m.strategy]||'#94a3b8';
+        ctx.fillStyle=col;ctx.strokeStyle=col;ctx.lineWidth=1;ctx.beginPath();
+        const cy=yy+off; if(g.signal==='BUY'){ctx.moveTo(x,cy-4);ctx.lineTo(x-4,cy+3);ctx.lineTo(x+4,cy+3);}else{ctx.moveTo(x,cy+4);ctx.lineTo(x-4,cy-3);ctx.lineTo(x+4,cy-3);}ctx.closePath();ctx.fill();
+      });
+      const names=unique.map(m=>markerNames[m.strategy]); const label=names.length>3?names.slice(0,3).join('/')+'+'+(names.length-3):names.join('/');
+      ctx.font='bold 7px sans-serif';ctx.textAlign='center';ctx.fillStyle=unique.length?markerColors[unique[0].strategy]:'#94a3b8';ctx.fillText(label,x,yy+(g.signal==='BUY'?18:-18));
     });
   }
 
@@ -2353,6 +2392,7 @@ async function safeHistoricalTrade(e,side){
 async function safeDirectTrade(e,side){
   e?.preventDefault?.(); e?.stopPropagation?.();
   if(historicalChartMode){return safeHistoricalTrade(e,side);}
+  if(String(marketCache?.chart?.market_status||'OPEN')!=='OPEN'){ alert('Market is closed. New paper orders are disabled.'); return; }
   return triggerDirectTrade(side);
 }
 
