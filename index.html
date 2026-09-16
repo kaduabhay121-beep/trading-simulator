@@ -834,7 +834,7 @@ viewport.addEventListener('touchmove', e => {
         // Drag right = fewer candles (zoom in), drag left = more candles (zoom out).
         const factor = Math.exp(-dx / 140);
         visibleCandleCount = Math.round(Math.max(10, Math.min(150, visibleCandleCount * factor)));
-        const total = marketCache.chart.candles.length;
+        const total = Array.isArray(marketCache?.chart?.candles) ? marketCache.chart.candles.length : 0;
         panOffsetFloat = Math.max(0, Math.min(Math.max(0, total - visibleCandleCount), Number(panOffsetFloat || panOffset || 0)));
         panOffset = Math.floor(panOffsetFloat);
         dragStartX = touchX;
@@ -850,7 +850,7 @@ viewport.addEventListener('touchmove', e => {
       // Smooth horizontal panning: keep fractional candle displacement so even a small
       // finger movement visibly moves the chart instead of waiting for a full candle.
       if (Math.abs(dx) >= 0.5) {
-        const total = marketCache.chart.candles.length;
+        const total = Array.isArray(marketCache?.chart?.candles) ? marketCache.chart.candles.length : 0;
         const maxPan = Math.max(0, total - visibleCandleCount);
         panOffsetFloat = Math.max(0, Math.min(maxPan, Number(panOffsetFloat || panOffset || 0) + (dx / candlePx)));
         panOffset = Math.floor(panOffsetFloat);
@@ -978,11 +978,11 @@ function onLomQtyChange() {
 }
 
 function updateLomMargin() {
-  if (!marketCache) return;
+  if (!marketCache?.chart) return;
   var isSensex = currentChartSymbol.includes("SENSEX");
   const lotSize = isSensex ? 20 : 65;
   const qty = parseInt(document.getElementById('selectLomQty').value, 10) || lotSize;
-  const price = parseFloat(document.getElementById('inputLomPrice').value) || marketCache.chart.ltp;
+  const price = parseFloat(document.getElementById('inputLomPrice').value) || marketCache?.chart?.ltp || 0;
   
   let marginPerUnit = 0;
   if (currentChartSymbol.includes('_')) {
@@ -1004,6 +1004,7 @@ function updateLomMargin() {
 }
 
 async function submitLomOrder() {
+  if (!marketCache?.chart && !historicalChartMode) { alert('Market data is still loading. Please wait a moment.'); return; }
   if (historicalChartMode) { await historicalChartLimitTrade(); return; }
   const qty = parseInt(document.getElementById('selectLomQty').value, 10);
   const price = parseFloat(document.getElementById('inputLomPrice').value) || 0;
@@ -1055,7 +1056,7 @@ function setTradeMode(mode) {
   
   const lmtInput = document.getElementById('inputLimitPriceDirect');
   lmtInput.style.display = mode === 'LIMIT' ? 'inline-block' : 'none';
-  if (mode === 'LIMIT' && marketCache && !lmtInput.value) {
+  if (mode === 'LIMIT' && marketCache?.chart && !lmtInput.value) {
     lmtInput.value = marketCache.chart.ltp.toFixed(1);
   }
   document.getElementById('btnBuyLabel').innerText = mode === 'LIMIT' ? 'BUY LMT' : 'BUY';
@@ -1257,9 +1258,18 @@ function renderWatchlist() {
 
 // Fetch Engine
 let marketFetchInFlight = false;
+let marketFirstResponseReceived = false;
 async function fetchMarket(force=false) {
   if (historicalChartMode) return;
-  if (marketFetchInFlight) { if (activeMarketAbort) activeMarketAbort.abort(); }
+  // Heavy /api/market includes candles + option-chain work. Never abort a normal
+  // in-flight refresh just because the 2s timer fired; doing so can starve the
+  // chart forever when the backend takes longer than one polling interval.
+  // A forced refresh (instrument switch / explicit reload) is allowed to cancel
+  // the previous request.
+  if (marketFetchInFlight) {
+    if (!force) return;
+    if (activeMarketAbort) { try { activeMarketAbort.abort(); } catch (_) {} }
+  }
   marketFetchInFlight = true;
   const requestSeq=++marketRequestSeq, requestSymbol=currentChartSymbol, requestTf=currentTimeframe, requestExpiry=currentSelectedExpiry;
   if (activeMarketAbort) { try{activeMarketAbort.abort();}catch(_){} }
@@ -1277,6 +1287,7 @@ async function fetchMarket(force=false) {
     if (!data || !data.chart || !data.wallet) throw new Error('Invalid market response');
     marketCache = data;
     lastLiveMarketCache = data;
+    marketFirstResponseReceived = true;
     if (data.sounds && data.sounds.length > 0) data.sounds.forEach(s => playSound(s));
     updateUI(data);
     const d = document.getElementById('debugOverlay');
@@ -2876,7 +2887,7 @@ const histDateEl2=document.getElementById('histChartDate'); if(histDateEl2) hist
 const replayDateEl=document.getElementById('replayDate'); if(replayDateEl && !replayDateEl.value) replayDateEl.value=historicalDefaultDate();
 renderTabs();
 renderWatchlist();
-setInterval(() => fetchMarket(false), 500);
+setInterval(() => fetchMarket(false), 2000);
 setInterval(() => { if (!historicalChartMode && currentChartSymbol && (!liveEventSource || liveEventSource.readyState === EventSource.CLOSED)) connectLiveStream(); }, 1000);
 connectLiveStream();
 setInterval(updateLocalCountdown, 250);
