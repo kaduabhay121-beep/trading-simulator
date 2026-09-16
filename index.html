@@ -1253,12 +1253,14 @@ function updateUI(data) {
   document.getElementById('btnSellLTP').innerText = curLTP.toFixed(2);
   document.getElementById('btnBuyLTP').innerText = curLTP.toFixed(2);
   const isOptionChart = /\b(CE|PE)\b/i.test(String(data.chart.display_title||'')) || /\b(CE|PE)\b/i.test(String(currentChartSymbol||''));
-  const marketVenue = isOptionChart ? 'NSE FO' : 'INDEX';
-  document.getElementById('onChartSymbol').innerText = `${data.chart.display_title} • ${currentTimeframe.toUpperCase()} • ${marketVenue}`;
+  const marketVenue = isOptionChart ? (data.chart.exchange || 'NFO') : 'INDEX';
+  const instrumentKind = data.chart.instrument_kind || (isOptionChart ? 'OPTION' : 'INDEX');
+  const kindLabel = instrumentKind === 'OPTION' ? 'OPTION' : 'INDEX';
+  document.getElementById('onChartSymbol').innerText = `${data.chart.display_title} • ${currentTimeframe.toUpperCase()} • ${kindLabel} • ${marketVenue}`;
   
   var isSensex = currentChartSymbol.includes("SENSEX");
-  const chgVal = isSensex ? data.sensex_chg : data.nifty_chg;
-  const pctVal = isSensex ? data.sensex_pct : data.nifty_pct;
+  const chgVal = Number.isFinite(Number(data.chart.change)) ? Number(data.chart.change) : (isSensex ? data.sensex_chg : data.nifty_chg);
+  const pctVal = Number.isFinite(Number(data.chart.change_pct)) ? Number(data.chart.change_pct) : (isSensex ? data.sensex_pct : data.nifty_pct);
   const chg = chgVal >= 0 ? `+${chgVal.toFixed(2)} (+${pctVal.toFixed(2)}%)` : `${chgVal.toFixed(2)} (${pctVal.toFixed(2)}%)`;
   
   const pSub = document.getElementById('onChartPriceSub');
@@ -1421,11 +1423,12 @@ async function fetchLiveTick() {
     document.getElementById('btnBuyLTP').innerText = ch.ltp.toFixed(2);
     const pSub = document.getElementById('onChartPriceSub');
     if (pSub && ch.ltp) {
-      const isSensex = currentChartSymbol.includes('SENSEX');
-      const prev = isSensex ? marketCache.sensex_spot : marketCache.nifty_spot;
-      const diff = ch.ltp - prev;
-      const pct = prev ? diff / prev * 100 : 0;
+      const prev = Number(t.prev_close || ch.prev_close || 0);
+      const diff = Number(t.change ?? (prev ? ch.ltp - prev : 0));
+      const pct = Number(t.change_pct ?? (prev ? diff / prev * 100 : 0));
+      ch.prev_close = prev || ch.prev_close || 0; ch.change = diff; ch.change_pct = pct;
       pSub.innerText = `${ch.ltp.toFixed(2)} ${diff >= 0 ? '+' : ''}${diff.toFixed(2)} (${diff >= 0 ? '+' : ''}${pct.toFixed(2)}%)`;
+      pSub.style.color = diff >= 0 ? 'var(--green)' : 'var(--red)';
     }
     if (document.getElementById('tab-chart')?.classList.contains('active')) drawChart();
   } catch (_) {} finally {
@@ -1605,11 +1608,16 @@ function updatePositionPills(data) {
   const overlayPill=document.getElementById('livePriceOverlayPill'); if(!overlayPill)return;
   if(matchingPos){
     activePosId=matchingPos.id; overlayPill.style.display='flex';
-    const isP=Number(matchingPos.pnl)>=0, pnlEl=document.getElementById('overlayPnl');
-    pnlEl.innerText=`${isP?'+':''}₹${Number(matchingPos.pnl||0).toFixed(2)}`; pnlEl.style.color=isP?'var(--green)':'var(--red)';
-    const entry=Number(matchingPos.buy_price||0), ltp=Number(matchingPos.ltp||0);
+    const entry=Number(matchingPos.buy_price||0);
+    // The chart LTP is the single authoritative price for the currently selected instrument.
+    // Never reuse a stale position snapshot for the overlay.
+    const ltp=Number(marketCache?.chart?.ltp || matchingPos.ltp || 0);
+    const qty=Number(matchingPos.qty||0);
     const priceMove = matchingPos.action==='SELL' ? (entry-ltp) : (ltp-entry);
     const pricePct = entry ? (priceMove/entry)*100 : 0;
+    const livePnl = priceMove * qty;
+    const isP=livePnl>=0, pnlEl=document.getElementById('overlayPnl');
+    pnlEl.innerText=`${isP?'+':''}₹${livePnl.toFixed(2)}`; pnlEl.style.color=isP?'var(--green)':'var(--red)';
     const entryLtpEl=document.getElementById('overlayEntryLtp');
     if(entryLtpEl) entryLtpEl.innerText=`₹${entry.toFixed(2)} → ₹${ltp.toFixed(2)}`;
     const moveEl=document.getElementById('overlayMove');
@@ -1754,16 +1762,34 @@ function drawChart() {
 
   if (candles.length === 0) return;
 
-  let targetMinP = Math.min(...candles.map(c => c.low));
-  let targetMaxP = Math.max(...candles.map(c => c.high));
+  const finiteCandles = candles.filter(c => Number.isFinite(Number(c.open)) && Number.isFinite(Number(c.high)) && Number.isFinite(Number(c.low)) && Number.isFinite(Number(c.close)) && Number(c.high) >= Number(c.low) && Number(c.low) >= 0);
+  let targetMinP = finiteCandles.length ? Math.min(...finiteCandles.map(c => Number(c.low))) : Number(marketCache.chart.ltp || 0);
+  let targetMaxP = finiteCandles.length ? Math.max(...finiteCandles.map(c => Number(c.high))) : Number(marketCache.chart.ltp || 0);
+
+  // Display-only integrity guard: a corrupted/outlier option candle must never stretch the
+  // price scale into thousands while the actual contract trades around ₹100–₹200.
+  // The raw candle data remains untouched; only the visible viewport excludes implausible spikes.
+  const chartIsOption = /\b(CE|PE)\b/i.test(String(marketCache.chart.display_title||'')) || /_(CE|PE)$/i.test(String(currentChartSymbol||''));
+  if (chartIsOption && finiteCandles.length >= 5) {
+    const closes = finiteCandles.map(c => Number(c.close)).filter(v => v > 0).sort((a,b)=>a-b);
+    const med = closes.length ? closes[Math.floor(closes.length/2)] : Number(marketCache.chart.ltp||0);
+    const ref = Math.max(med, Number(marketCache.chart.ltp||0), 0.05);
+    const sane = finiteCandles.filter(c => Number(c.low) <= ref*4 && Number(c.high) <= ref*4);
+    if (sane.length >= 3) {
+      targetMinP = Math.min(...sane.map(c=>Number(c.low)));
+      targetMaxP = Math.max(...sane.map(c=>Number(c.high)));
+    }
+    const cur=Number(marketCache.chart.ltp||0); if(cur>0){ targetMinP=Math.min(targetMinP,cur); targetMaxP=Math.max(targetMaxP,cur); }
+  }
 
   const matchingPos = historicalChartMode && historicalReplay?.position ? {id:'hist',symbol:historicalReplay.underlying,action:historicalReplay.position.side==='SHORT'?'SELL':'BUY',qty:Number(historicalReplay.position.qty),buy_price:Number(historicalReplay.position.entry),ltp:Number(historicalCurrentCandle()?.close||historicalReplay.position.entry),pnl:(historicalReplay.position.side==='SHORT'?(Number(historicalReplay.position.entry)-Number(historicalCurrentCandle()?.close||historicalReplay.position.entry)):(Number(historicalCurrentCandle()?.close||historicalReplay.position.entry)-Number(historicalReplay.position.entry)))*Number(historicalReplay.position.qty),stop_loss:Number(historicalReplay.position.stop_loss||0),target:Number(historicalReplay.position.target||0),trailing_sl:Number(historicalReplay.position.trailing_sl||0)} : ((typeof findMatchingPosition === 'function') ? findMatchingPosition() : null);
 
   if (matchingPos) {
     targetMinP = Math.min(targetMinP, matchingPos.buy_price);
     targetMaxP = Math.max(targetMaxP, matchingPos.buy_price);
-    if (matchingPos.stop_loss > 0) targetMinP = Math.min(targetMinP, matchingPos.stop_loss);
-    if (matchingPos.target > 0) targetMaxP = Math.max(targetMaxP, matchingPos.target);
+    const baseRef = Math.max(Number(marketCache.chart.ltp||0), (targetMinP+targetMaxP)/2, 0.05);
+    if (matchingPos.stop_loss > 0 && (!chartIsOption || matchingPos.stop_loss <= baseRef*4)) targetMinP = Math.min(targetMinP, matchingPos.stop_loss);
+    if (matchingPos.target > 0 && (!chartIsOption || matchingPos.target <= baseRef*4)) targetMaxP = Math.max(targetMaxP, matchingPos.target);
   }
 
   if (marketCache && marketCache.pending_orders) {

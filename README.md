@@ -28,3 +28,13 @@ Use the same startup/deployment process as the previous TradeLab build. Render c
 - Responsive live position overlay with entry-to-LTP price movement.
 - Clear INDEX vs NSE FO instrument header metadata.
 - Existing paper-only execution and lots/P&L engine preserved.
+
+
+## v2.11.4 Live Market Data & Chart Integrity Fix
+
+- Option chart change/percentage is calculated from the option's own previous close, not the NIFTY/SENSEX spot price.
+- Live position overlay uses the selected chart instrument's authoritative live LTP and recalculates live price movement and P&L from entry × quantity.
+- Option/index chart metadata explicitly identifies instrument kind and exchange.
+- Added a display-only candle integrity guard so an implausible corrupted option OHLC outlier cannot stretch the live Y-axis into thousands/negative values. Raw market data is not modified.
+- Fast `/api/tick` carries previous close/change metadata from cached quote/chart state without adding a REST request to the low-latency tick loop.
+- Paper execution only; no Angel One order-placement API is used by the simulator.

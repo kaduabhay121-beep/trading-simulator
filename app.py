@@ -1295,6 +1295,10 @@ class SimulationState:
         if not ltp:
             return {'symbol':symbol,'ltp':0,'countdown':'00:00','time':int(now)}
         key=(symbol,timeframe); chart=self.chart_cache.get(key); candles=chart.get('candles') if chart else None
+        prev_close=float((chart or {}).get('prev_close') or 0.0)
+        if is_option and inst:
+            q=self.angel.quote_cache.get(str(inst['token'])) or {}
+            prev_close=float(q.get('close') or prev_close or 0.0)
         if candles:
             c=candles[-1]
             # Keep the streamed tick on the active candle. Create a new bucket only when the candle boundary changes.
@@ -1305,7 +1309,9 @@ class SimulationState:
             else:
                 c['close']=ltp; c['high']=max(c['high'],ltp); c['low']=min(c['low'],ltp)
         countdown_seconds=max(0,int((((int(now)//tf)+1)*tf)-now))
-        return {'symbol':symbol,'ltp':round(float(ltp),2),'countdown':f'{countdown_seconds//60:02d}:{countdown_seconds%60:02d}','time':int(now)}
+        change=float(ltp)-prev_close if prev_close else 0.0
+        change_pct=(change/prev_close*100.0) if prev_close else 0.0
+        return {'symbol':symbol,'ltp':round(float(ltp),2),'prev_close':round(prev_close,2),'change':round(change,2),'change_pct':round(change_pct,2),'countdown':f'{countdown_seconds//60:02d}:{countdown_seconds%60:02d}','time':int(now)}
 
 
     def get_instrument_chart_data(self,symbol,timeframe='1m'):
@@ -1330,14 +1336,33 @@ class SimulationState:
                 candles=[dict(c) for c in base]
             if self.angel.enabled: self.chart_cache[cache_key]={'fetched':now,'candles':[dict(c) for c in candles]}
         # Keep the latest candle/tick moving without another historical REST request.
+        prev_close = float(self.sensex_prev_close if is_s else self.prev_close or 0.0)
+        instrument_kind = 'INDEX'
+        exchange_name = 'BSE' if is_s else 'NSE'
+        lot_size = 20 if is_s else 1
         if is_option:
             inst=self._find_option_from_ui(symbol)
+            quote_data = {}
             if inst:
                 self.angel.subscribe_instrument(inst); ltp=self.angel.websocket_ltp(inst)
+                # A FULL quote gives the authoritative previous close for the option.
+                # Keep it cached so the fast tick path never needs a REST request.
+                quote_data = self.angel.quote([inst], 'FULL').get(str(inst['token']), {}) if self.angel.enabled else {}
                 if ltp is None:
-                    q=self.angel.quote([inst]); z=q.get(str(inst['token']))
-                    ltp=float(z.get('ltp',0)) if z else 0
+                    ltp=float(quote_data.get('ltp',0) or 0)
+                option_prev_close=float(quote_data.get('close',0) or 0)
+                if option_prev_close:
+                    prev_close=option_prev_close
+                elif len(candles) >= 2:
+                    prev_close=float(candles[-2].get('close') or 0)
+                elif candles:
+                    prev_close=float(candles[-1].get('close') or 0)
+                else:
+                    prev_close=float(ltp or 0)
+                exchange_name=str(inst.get('exch_seg','NFO')).upper()
+                lot_size=int(float(inst.get('lotsize') or 1))
             else: ltp=0.0
+            instrument_kind = 'OPTION'
             parts=symbol.split('_'); exp=parts[1] if len(parts)>=4 else ''; strike=float(parts[2]) if len(parts)>=4 else 0; typ=parts[3] if len(parts)>=4 else 'CE'
             display=f"{'SENSEX' if is_s else 'NIFTY'} {exp} {int(strike)} {typ}"
             if ltp and candles:
@@ -1356,7 +1381,9 @@ class SimulationState:
         closes=[c['close'] for c in candles]
         countdown_seconds=max(0, int((((int(now)//tf)+1)*tf)-now))
         countdown=f"{countdown_seconds//60:02d}:{countdown_seconds%60:02d}"
-        return {'symbol':symbol,'display_title':display,'timeframe':timeframe,'ltp':ltp,'candles':candles,'countdown':countdown,'ema9':calc_ema_series(closes,9)[-1] if closes else 0,'ema15':calc_ema_series(closes,15)[-1] if closes else 0,'vwap':calc_vwap_series(candles)[-1] if candles else 0,'vwap_series':calc_vwap_series(candles),'ema9_series':calc_ema_series(closes,9),'ema15_series':calc_ema_series(closes,15),'strategy_markers':build_strategy_markers(candles),'greeks':greeks}
+        change = float(ltp or 0) - float(prev_close or 0) if prev_close else 0.0
+        change_pct = (change / float(prev_close) * 100.0) if prev_close else 0.0
+        return {'symbol':symbol,'display_title':display,'timeframe':timeframe,'ltp':ltp,'prev_close':prev_close,'change':round(change,2),'change_pct':round(change_pct,2),'instrument_kind':instrument_kind,'exchange':exchange_name,'lot_size':lot_size,'candles':candles,'countdown':countdown,'ema9':calc_ema_series(closes,9)[-1] if closes else 0,'ema15':calc_ema_series(closes,15)[-1] if closes else 0,'vwap':calc_vwap_series(candles)[-1] if candles else 0,'vwap_series':calc_vwap_series(candles),'ema9_series':calc_ema_series(closes,9),'ema15_series':calc_ema_series(closes,15),'strategy_markers':build_strategy_markers(candles),'greeks':greeks}
 
     def get_option_chain(self,symbol='NIFTY',expiry=None):
         is_s='SENSEX' in symbol.upper(); underlying='SENSEX' if is_s else 'NIFTY'; spot=self.sensex_spot if is_s else self.nifty_spot; step=100 if is_s else 50
