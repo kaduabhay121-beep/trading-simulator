@@ -626,6 +626,7 @@ canvas { width: 100% !important; height: 100% !important; display: block; }
 
 <script>
 let marketCache = null;
+let lastLiveMarketCache = null;
 let currentChartSymbol = 'NIFTY';
 let currentTimeframe = '1m';
 let chartType = 'candles';
@@ -1109,6 +1110,7 @@ function switchNavTab(tabId) {
   const match = btns.find(b => b.innerText.toLowerCase().includes(tabId.toLowerCase()));
   if (match) match.classList.add('active');
   if (tabId === 'chart') resizeCanvas();
+  if (tabId === 'options' && historicalChartMode) exitHistoricalChartTrading(true);
   if (tabId === 'watchlist') renderWatchlist();
   if (tabId === 'journal') renderJournal();
 }
@@ -1147,12 +1149,18 @@ function closeTab(e, symId) {
   fetchMarket();
 }
 
-function openStrikeModal() {
-  if (!marketCache) return;
+async function openStrikeModal() {
+  // Historical replay has its own marketCache shape and intentionally disables
+  // live fetches. New must remain usable there, so never assume chain exists.
+  if (historicalChartMode) {
+    const ok = await exitHistoricalChartTrading(true);
+    if (!ok) return;
+  }
   const listEl = document.getElementById('modalStrikeList');
-  var isSensex = currentChartSymbol.includes("SENSEX");
-  const prefix = isSensex ? "SENSEX" : "NIFTY";
-  
+  if (!listEl) return;
+  const isSensex = currentChartSymbol.includes('SENSEX');
+  const prefix = isSensex ? 'SENSEX' : 'NIFTY';
+  const chain = Array.isArray(marketCache?.chain) ? marketCache.chain : [];
   let html = `
     <div style="padding:10px 4px; border-bottom:1px solid #1a202c; cursor:pointer;" onclick="selectStrike('NIFTY', 'Nifty 50')">
       <b>NIFTY 50 (Spot Index)</b>
@@ -1161,17 +1169,20 @@ function openStrikeModal() {
       <b>SENSEX (Spot Index)</b>
     </div>
   `;
-  marketCache.chain.forEach(r => {
-    const exp = r.expiry || 'EXP';
-    html += `
-      <div style="display:flex; justify-content:space-between; padding:8px 4px; border-bottom:1px solid #1a202c;">
-        <span onclick="selectStrike('${prefix}_${r.expiry}_${r.strike}_CE', '${r.expiry} ${r.strike} CE', '${r.strike} CE')" style="cursor:pointer; color:var(--green); font-weight:700;">${prefix} ${r.expiry} ${r.strike} CE</span>
-        <span onclick="selectStrike('${prefix}_${r.expiry}_${r.strike}_PE', '${r.expiry} ${r.strike} PE', '${r.strike} PE')" style="cursor:pointer; color:var(--red); font-weight:700;">${prefix} ${r.expiry} ${r.strike} PE</span>
-      </div>
-    `;
-  });
+  if (chain.length) {
+    chain.forEach(r => {
+      const exp = r.expiry || 'EXP';
+      html += `<div style="display:flex;justify-content:space-between;padding:8px 4px;border-bottom:1px solid #1a202c;">
+        <span onclick="selectStrike('${prefix}_${exp}_${r.strike}_CE','${exp} ${r.strike} CE')" style="cursor:pointer;color:var(--green);font-weight:700;">${prefix} ${exp} ${r.strike} CE</span>
+        <span onclick="selectStrike('${prefix}_${exp}_${r.strike}_PE','${exp} ${r.strike} PE')" style="cursor:pointer;color:var(--red);font-weight:700;">${prefix} ${exp} ${r.strike} PE</span>
+      </div>`;
+    });
+  } else {
+    html += `<div style="padding:10px 4px;color:var(--text-sub);">Live option contracts are loading. Select an index above or use the Options tab after market data connects.</div>`;
+  }
   listEl.innerHTML = html;
   document.getElementById('strikeSearchModal').style.display = 'flex';
+  fetchMarket(true);
 }
 
 function closeStrikeModal() { document.getElementById('strikeSearchModal').style.display = 'none'; }
@@ -1207,22 +1218,23 @@ function renderWatchlist() {
     let ltp = 0;
     let isOpt = item.includes('_');
     
+    const liveData = (marketCache && !historicalChartMode) ? marketCache : lastLiveMarketCache;
     if (item === 'NIFTY') {
       name = 'NIFTY 50 (Index)';
-      ltp = Number(marketCache?.nifty_spot || 0);
+      ltp = Number(liveData?.nifty_spot || 0);
     } else if (item === 'BANKNIFTY') {
       name = 'BANK NIFTY (Index)';
-      ltp = Number(marketCache?.banknifty_spot || 0);
+      ltp = Number(liveData?.banknifty_spot || 0);
     } else if (item === 'SENSEX') {
       name = 'SENSEX (Index)';
-      ltp = Number(marketCache?.sensex_spot || 0);
+      ltp = Number(liveData?.sensex_spot || 0);
     } else if (isOpt) {
       const parts = item.split('_');
       const strike = parseFloat(parts[1]);
       const type = parts[2];
       const prefix = parts[0];
       name = `${prefix} ${Math.round(strike)} ${type}`;
-      const row = (marketCache?.chain || []).find(c => Number(c.strike) === Number(strike));
+      const row = (liveData?.chain || []).find(c => Number(c.strike) === Number(strike));
       if (row) ltp = type === 'CE' ? row.ce_ltp : row.pe_ltp;
     }
 
@@ -1264,6 +1276,7 @@ async function fetchMarket(force=false) {
     if (requestSeq!==marketRequestSeq || requestSymbol!==currentChartSymbol || requestTf!==currentTimeframe) return;
     if (!data || !data.chart || !data.wallet) throw new Error('Invalid market response');
     marketCache = data;
+    lastLiveMarketCache = data;
     if (data.sounds && data.sounds.length > 0) data.sounds.forEach(s => playSound(s));
     updateUI(data);
     const d = document.getElementById('debugOverlay');
@@ -1618,7 +1631,9 @@ function onExpiryChange() {
   fetchMarket();
 }
 function renderOptionChain(data) {
-  if (!data || !data.chain) return;
+  if (!data) return;
+  if (!Array.isArray(data.chain)) data.chain=[];
+  if (!Array.isArray(data.expiries)) data.expiries=[];
   var isSensex = currentChartSymbol.includes("SENSEX");
   var spot = isSensex ? data.sensex_spot : data.nifty_spot;
   
@@ -1681,7 +1696,7 @@ function renderOptionChain(data) {
         </td>
       </tr>`;
   });
-  document.getElementById('chainBody').innerHTML = chainHtml || '<tr><td colspan="5" style="text-align:center;color:var(--text-sub);padding:20px;">Option chain unavailable — waiting for Angel One instrument/quote data.</td></tr>';
+  document.getElementById('chainBody').innerHTML = chainHtml || '<tr><td colspan="5" style="text-align:center;color:var(--text-sub);padding:20px;">Option chain unavailable — expiry session found but live contracts/quotes are not available yet.</td></tr>';
 }
 
 // Position Overlay & Brackets
@@ -2661,10 +2676,27 @@ function diagnosticPreviousTradingDayFromError(msg){
   const m=String(msg||'').match(/Previous trading day is (\d{4}-\d{2}-\d{2})/);
   return m?m[1]:'';
 }
-function exitHistoricalChartTrading(){
-  if(historicalReplay?.playing) toggleHistoricalPlay(true);
-  historicalChartMode=false; historicalReplay=null; resetHistoricalViewport(); const hc=document.getElementById('histControls'); if(hc)hc.style.display='none'; const hrc=document.getElementById('histRiskControls'); if(hrc)hrc.style.display='none'; const hp=document.getElementById('histProgressRow'); if(hp)hp.style.display='none'; const hs=document.getElementById('histStatsRow'); if(hs)hs.style.display='none'; const he=document.getElementById('histExitBtn'); if(he)he.style.display='none';
-  document.getElementById('histChartStatus').innerText='Historical mode closed. Live chart restored.'; document.getElementById('historicalChartToolbar')?.classList.remove('open'); document.getElementById('tfDisplay').innerText=`${currentTimeframe} ▾`; fetchMarket(true);
+async function exitHistoricalChartTrading(silent=false){
+  try {
+    if(historicalReplay?.playing) toggleHistoricalPlay(true);
+    historicalChartMode=false; historicalReplay=null; resetHistoricalViewport();
+    const hc=document.getElementById('histControls'); if(hc)hc.style.display='none';
+    const hrc=document.getElementById('histRiskControls'); if(hrc)hrc.style.display='none';
+    const hp=document.getElementById('histProgressRow'); if(hp)hp.style.display='none';
+    const hs=document.getElementById('histStatsRow'); if(hs)hs.style.display='none';
+    const he=document.getElementById('histExitBtn'); if(he)he.style.display='none';
+    document.getElementById('histChartStatus').innerText='Historical mode closed. Live chart restored.';
+    document.getElementById('historicalChartToolbar')?.classList.remove('open');
+    document.getElementById('tfDisplay').innerText=`${currentTimeframe} ▾`;
+    marketCache=null;
+    await fetchMarket(true);
+    if(!silent) renderWatchlist();
+    return true;
+  } catch(e) {
+    console.error('Historical exit failed',e);
+    const st=document.getElementById('histChartStatus'); if(st)st.innerText=e.message||'Unable to restore live chart.';
+    return false;
+  }
 }
 function historicalZoomIn(){ if(!historicalReplay)return; visibleCandleCount=Math.max(10,Math.round(visibleCandleCount*0.8)); panOffsetFloat=Math.min(Math.max(0,historicalReplay.candles.length-visibleCandleCount),panOffsetFloat); panOffset=Math.floor(panOffsetFloat); drawChart(); }
 function historicalZoomOut(){ if(!historicalReplay)return; visibleCandleCount=Math.min(150,Math.round(visibleCandleCount*1.25)); panOffsetFloat=Math.min(Math.max(0,historicalReplay.candles.length-visibleCandleCount),panOffsetFloat); panOffset=Math.floor(panOffsetFloat); drawChart(); }

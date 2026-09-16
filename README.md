@@ -90,3 +90,16 @@ Use the same startup/deployment process as the previous TradeLab build. Render c
 - Historical chart now keeps its own timeframe/status display and cannot be overwritten by the live countdown timer.
 - Preserves fractional horizontal pan and independent chart interaction during historical replay.
 - Paper-only; no Angel One order placement.
+
+
+## v2.12.3 — Live market recovery, New button, expiry and watchlist integrity
+- Fixed Chart `+ New` crash after historical replay (`marketCache.chain` was undefined).
+- `+ New` now safely exits historical mode, restores the live chart, then opens the strike selector.
+- Options tab automatically restores live mode if opened during historical replay.
+- Added persistent `lastLiveMarketCache` so Wishlist/Watchlist does not show false ₹0 values during historical replay.
+- Wishlist keeps NIFTY 50 and SENSEX defaults and displays the latest known live prices.
+- Hardened Angel One instrument-master discovery and option-contract filtering for NFO/BFO.
+- Added forced instrument-master refresh when current option contracts/expiries cannot be discovered.
+- Option expiry dropdown now remains populated even when live quotes are temporarily unavailable.
+- Option-chain empty state is explicit instead of silently blank.
+- NIFTY/SENSEX chart recovery remains paper-only and uses real Angel One data; no fake live prices are introduced.

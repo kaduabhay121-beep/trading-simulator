@@ -239,8 +239,32 @@ class AngelOneData:
                 key=(str(x.get('exch_seg','')).upper(),str(x.get('symbol','')).upper())
                 self.instrument_by_key[key]=x
             self.last_master=time.time()
+            self.option_lookup_cache.clear()
         except Exception as e:
             self.last_error='Instrument master: '+str(e)
+
+    def refresh_master(self):
+        """Force-refresh the Angel One instrument master and clear dependent caches."""
+        if not self.enabled:
+            return False
+        try:
+            req=urllib.request.Request(MASTER_URL,headers={'User-Agent':'Mozilla/5.0'})
+            with urllib.request.urlopen(req,timeout=30) as r: raw=r.read()
+            rows=json.loads(raw.decode('utf-8'))
+            if not isinstance(rows,list) or not rows:
+                raise RuntimeError('Angel One instrument master returned no instruments')
+            self.instruments=rows
+            self.instrument_by_key={}
+            for x in self.instruments:
+                key=(str(x.get('exch_seg','')).upper(),str(x.get('symbol','')).upper())
+                self.instrument_by_key[key]=x
+            self.option_lookup_cache.clear()
+            self.last_master=time.time()
+            self.last_error=''
+            return True
+        except Exception as e:
+            self.last_error='Instrument master refresh: '+str(e)
+            return False
 
     @staticmethod
     def api_exchange(exch):
@@ -371,11 +395,35 @@ class AngelOneData:
 
     def option_instruments(self, underlying, expiry):
         u=underlying.upper(); segment='BFO' if u=='SENSEX' else 'NFO'
-        key=(u, str(expiry or '').upper())
+        key=(u, str(expiry or '').upper().strip())
         cached=self.option_lookup_cache.get(key)
-        if cached is not None:
+        if cached is not None and cached:
             return cached
-        out=[x for x in self.instruments if self.api_exchange(x.get('exch_seg'))==segment and str(x.get('name','')).upper()==u and str(x.get('expiry','')).upper()==key[1] and str(x.get('symbol','')).upper().endswith(('CE','PE')) and str(x.get('instrumenttype','')).upper() in ('OPTIDX','CE','PE','')]
+        def collect():
+            out=[]
+            for x in self.instruments:
+                if self.api_exchange(x.get('exch_seg'))!=segment:
+                    continue
+                name=str(x.get('name','')).upper().strip()
+                symbol=str(x.get('symbol','')).upper().strip()
+                exp=str(x.get('expiry','')).upper().strip()
+                it=str(x.get('instrumenttype','')).upper().strip()
+                if exp!=key[1] or not exp:
+                    continue
+                # Angel's master has historically used OPTIDX; tolerate equivalent
+                # representations and rely on CE/PE suffix as the final guard.
+                if name!=u and not symbol.startswith(u):
+                    continue
+                if not symbol.endswith(('CE','PE')):
+                    continue
+                if it not in ('OPTIDX','CE','PE',''):
+                    continue
+                out.append(x)
+            return out
+        out=collect()
+        if not out and self.enabled:
+            if self.refresh_master():
+                out=collect()
         self.option_lookup_cache[key]=out
         return out
 
@@ -1542,42 +1590,64 @@ class SimulationState:
         is_s='SENSEX' in symbol.upper(); underlying='SENSEX' if is_s else 'NIFTY'; spot=self.sensex_spot if is_s else self.nifty_spot; step=100 if is_s else 50
         segment='BFO' if is_s else 'NFO'
         if self.angel.enabled:
-            option_rows=[x for x in self.angel.instruments if self.api_exchange(x.get('exch_seg'))==segment and str(x.get('name','')).upper()==underlying and str(x.get('expiry','')).strip()]
-            typed=[x for x in option_rows if str(x.get('instrumenttype','')).upper() in ('OPTIDX','CE','PE')]
-            option_rows=typed or option_rows
-            exps=sorted({str(x.get('expiry','')).upper() for x in option_rows if x.get('expiry')}, key=lambda e: _expiry_sort_key(e))
-            preferred='15SEP2026' if '15SEP2026' in exps else ('15SEP26' if '15SEP26' in exps else None)
-            selected=expiry if expiry in exps else (preferred or (exps[0] if exps else None))
+            def discover():
+                rows=[]
+                for x in self.angel.instruments:
+                    if self.angel.api_exchange(x.get('exch_seg'))!=segment:
+                        continue
+                    name=str(x.get('name','')).upper().strip(); sym=str(x.get('symbol','')).upper().strip(); exp=str(x.get('expiry','')).upper().strip(); it=str(x.get('instrumenttype','')).upper().strip()
+                    if not exp or not (name==underlying or sym.startswith(underlying)):
+                        continue
+                    if not sym.endswith(('CE','PE')):
+                        continue
+                    if it not in ('OPTIDX','CE','PE',''):
+                        continue
+                    rows.append(x)
+                return rows
+            option_rows=discover()
+            if not option_rows and self.angel.refresh_master():
+                option_rows=discover()
+            exps=sorted({str(x.get('expiry','')).upper().strip() for x in option_rows if x.get('expiry')}, key=lambda e: _expiry_sort_key(e))
+            selected=expiry if expiry in exps else (exps[0] if exps else None)
             if selected:
-                arr=self.angel.option_instruments(underlying,selected); strikes=sorted({round(float(x['strike'])/100,2) for x in arr}); atm=min(strikes,key=lambda x:abs(x-spot)) if strikes else round(spot/step)*step; strikes=sorted(strikes,key=lambda x:abs(x-atm))[:17]; strikes=sorted(strikes)
-                insts=[x for x in arr if round(float(x['strike'])/100,2) in strikes]
-                self.angel.subscribe_instruments(insts)
-                base=self.live_chain_cache.get((symbol,selected))
-                stale=not base or time.time()-base[0]>=5.0
-                if stale:
-                    q=self.angel.quote(insts)
-                    gk=self.angel.greek(underlying,selected)
-                    rows=[]
-                    for s in strikes:
-                        row={'strike':s,'expiry':selected}
-                        for typ,prefix in [('CE','ce'),('PE','pe')]:
-                            x=next((i for i in insts if round(float(i['strike'])/100,2)==s and str(i['symbol']).upper().endswith(typ)),None); z=q.get(str(x['token'])) if x else None; g=gk.get((s,typ),{})
-                            row[prefix+'_token']=str(x['token']) if x else ''; row[prefix+'_symbol']=str(x.get('symbol','')) if x else ''; row[prefix+'_ltp']=float(z.get('ltp',0)) if z else 0; row[prefix+'_delta']=float(g.get('delta',0) or 0); row[prefix+'_oi']=str(z.get('opnInterest','—') if z else '—'); row[prefix+'_chg_oi']='—'; row[prefix+'_volume']=str(z.get('tradeVolume',z.get('volume',0)) if z else 0); row[prefix+'_iv']=float(g.get('impliedVolatility',0) or 0)
-                        rows.append(row)
-                    base=(time.time(),{'expiries':exps,'selected_expiry':selected,'chain':rows}); self.live_chain_cache[(symbol,selected)]=base
-                result=base[1]
-                # Refresh only LTPs from the WebSocket on every market response.
-                for row in result['chain']:
-                    for prefix in ('ce','pe'):
-                        tok=row.get(prefix+'_token'); q=self.angel.quote_cache.get(tok) if tok else None
-                        if q and q.get('ltp') is not None: row[prefix+'_ltp']=float(q['ltp'])
-                        elif tok:
-                            inst=next((i for i in insts if str(i.get('token'))==tok),None)
-                            if inst: self.angel.subscribe_instrument(inst)
-                return result
+                arr=self.angel.option_instruments(underlying,selected)
+                if not arr and self.angel.refresh_master():
+                    arr=self.angel.option_instruments(underlying,selected)
+                strikes=sorted({round(float(x.get('strike',0))/100,2) for x in arr if float(x.get('strike',0) or 0)>0})
+                if strikes:
+                    atm=min(strikes,key=lambda x:abs(x-spot)); strikes=sorted(strikes,key=lambda x:abs(x-atm))[:17]; strikes=sorted(strikes)
+                    insts=[x for x in arr if round(float(x.get('strike',0))/100,2) in strikes]
+                    self.angel.subscribe_instruments(insts)
+                    base=self.live_chain_cache.get((symbol,selected)); stale=not base or time.time()-base[0]>=5.0
+                    if stale:
+                        q=self.angel.quote(insts)
+                        gk=self.angel.greek(underlying,selected)
+                        rows=[]
+                        for strike in strikes:
+                            row={'strike':strike,'expiry':selected}
+                            for typ,prefix in [('CE','ce'),('PE','pe')]:
+                                x=next((i for i in insts if round(float(i.get('strike',0))/100,2)==strike and str(i.get('symbol','')).upper().endswith(typ)),None)
+                                z=q.get(str(x.get('token'))) if x else None; g=gk.get((strike,typ),{})
+                                row[prefix+'_token']=str(x.get('token')) if x else ''; row[prefix+'_symbol']=str(x.get('symbol','')) if x else ''
+                                row[prefix+'_ltp']=float(z.get('ltp',0)) if z and z.get('ltp') is not None else 0
+                                row[prefix+'_delta']=float(g.get('delta',0) or 0); row[prefix+'_oi']=str(z.get('opnInterest','—') if z else '—'); row[prefix+'_chg_oi']='—'; row[prefix+'_volume']=str(z.get('tradeVolume',z.get('volume',0)) if z else '—'); row[prefix+'_iv']=float(g.get('impliedVolatility',0) or 0)
+                            rows.append(row)
+                        base=(time.time(),{'expiries':exps,'selected_expiry':selected,'chain':rows}); self.live_chain_cache[(symbol,selected)]=base
+                    result=base[1]
+                    for row in result['chain']:
+                        for prefix in ('ce','pe'):
+                            tok=row.get(prefix+'_token'); q=self.angel.quote_cache.get(tok) if tok else None
+                            if q and q.get('ltp') is not None: row[prefix+'_ltp']=float(q['ltp'])
+                            elif tok:
+                                inst=next((i for i in insts if str(i.get('token'))==tok),None)
+                                if inst: self.angel.subscribe_instrument(inst)
+                    return result
+            # Even if quote/candle retrieval fails, return the discovered expiry session
+            # so the UI never presents a blank expiry selector.
+            return {'expiries':exps,'selected_expiry':(expiry if expiry in exps else (exps[0] if exps else None)),'chain':[]}
         exps=get_available_expiries(is_s); selected=expiry if expiry in exps else exps[0]; dte=get_dte_from_expiry(selected); atm=round(spot/step)*step; rows=[]
-        for s in [atm+i*step for i in range(-8,9)]:
-            g=calc_deep_greeks(spot,s,dte,is_sensex=is_s); rows.append({'strike':s,'expiry':selected,'ce_ltp':g['ce_ltp'],'ce_delta':g['ce_delta'],'ce_oi':'DEV','ce_chg_oi':'DEV','ce_volume':'DEV','ce_iv':g['iv'],'pe_ltp':g['pe_ltp'],'pe_delta':g['pe_delta'],'pe_oi':'DEV','pe_chg_oi':'DEV','pe_volume':'DEV','pe_iv':g['iv'],'gamma':g['gamma'],'theta':g['theta'],'vega':g['vega']})
+        for strike in [atm+i*step for i in range(-8,9)]:
+            g=calc_deep_greeks(spot,strike,dte,is_sensex=is_s); rows.append({'strike':strike,'expiry':selected,'ce_ltp':g['ce_ltp'],'ce_delta':g['ce_delta'],'ce_oi':'DEV','ce_chg_oi':'DEV','ce_volume':'DEV','ce_iv':g['iv'],'pe_ltp':g['pe_ltp'],'pe_delta':g['pe_delta'],'pe_oi':'DEV','pe_chg_oi':'DEV','pe_volume':'DEV','pe_iv':g['iv'],'gamma':g['gamma'],'theta':g['theta'],'vega':g['vega']})
         return {'expiries':exps,'selected_expiry':selected,'chain':rows}
 
     def reset(self):
