@@ -8,6 +8,7 @@ import math
 import random
 import time
 import threading
+import queue
 import os
 import base64
 import struct
@@ -101,10 +102,24 @@ def calc_deep_greeks(spot, strike, dte_days, iv=14.3, r=0.065, is_sensex=False):
 
 
 def calc_vwap_series(candles):
+    """Session VWAP: reset cumulative price*volume at each trading date.
+    A multi-day chart must not carry yesterday's volume into today's VWAP.
+    """
     if not candles: return []
-    out=[]; pv=0.0; vol=0
+    out=[]; pv=0.0; vol=0; session_key=None
     for c in candles:
-        v=max(int(c.get('volume',0)),1); pv += ((c['high']+c['low']+c['close'])/3)*v; vol += v; out.append(round(pv/vol,2))
+        ts=float(c.get('time',0) or 0)
+        try:
+            key=datetime.fromtimestamp(ts, IST).strftime('%Y-%m-%d') if ts else None
+        except Exception:
+            key=None
+        if session_key is not None and key != session_key:
+            pv=0.0; vol=0
+        session_key=key
+        v=max(int(c.get('volume',0)),1)
+        pv += ((c['high']+c['low']+c['close'])/3)*v
+        vol += v
+        out.append(round(pv/vol,2))
     return out
 
 
@@ -835,6 +850,9 @@ class SimulationState:
     def __init__(self):
         self.lock=threading.Lock(); self.nifty_spot=23765.0; self.sensex_spot=81200.0; self.prev_close=23897.70; self.sensex_prev_close=0.0
         self.wallet={'initial':1000000.0,'balance':1000000.0,'used_margin':0.0,'realized_pnl':0.0}
+        # Browser live-feed subscribers. Each symbol gets an event queue so ticks are
+        # pushed immediately instead of waiting for client-side HTTP polling.
+        self.tick_stream_lock=threading.Lock(); self.tick_streams={}
         self.positions=[]; self.pending_orders=[]; self.orders=[]; self.closed_trades=[]; self.candles_1m=[]; self.order_counter=100
         self.live_chain_cache={}; self.chart_cache={}; self.market_cache={}; self.market_cache_ts=0; self.angel=AngelOneData(); self.bot={'enabled':False,'strategy':'EMA_CROSS','underlying':'NIFTY','instrument_mode':'INDEX','qty':1,'risk_per_trade':1.0,'max_daily_loss':2.0,'stop_loss_pct':0.6,'target_pct':1.2,'last_signal':'HOLD','last_confidence':0,'last_reason':'Waiting for signal…','trades_today':0,'daily_pnl':0.0,'last_trade_ts':0,'last_eval_ts':0,'risk_lock':False,'risk_lock_reason':'','last_entry_price':0.0,'max_trades_per_day':5,'max_open_positions':1,'cooldown_sec':60,'trade_count_today':0,'session_date':datetime.now(IST).strftime('%Y-%m-%d'),'last_signal_change_ts':0,'strategy_stats':{k:{'trades':0,'wins':0,'loss':0,'pnl':0.0,'status':'UNVALIDATED'} for k in STRATEGIES},'initial_balance':1000000.0}; self._load_state(); self._init_history(); self.bot['enabled']=False; self._running=True
         threading.Thread(target=self._tick_loop,daemon=True).start()
@@ -1198,6 +1216,43 @@ class SimulationState:
             if 'breakout' in meta: bits.append(f"Level {float(meta['breakout']):.2f}")
         return prefix + (" · " + " · ".join(bits) if bits else '')
 
+    def _subscribe_tick_stream(self, symbol):
+        q=queue.Queue(maxsize=32)
+        key=str(symbol or '').strip()
+        with self.tick_stream_lock:
+            self.tick_streams.setdefault(key, set()).add(q)
+        return q
+
+    def _unsubscribe_tick_stream(self, symbol, q):
+        key=str(symbol or '').strip()
+        with self.tick_stream_lock:
+            qs=self.tick_streams.get(key)
+            if qs is not None:
+                qs.discard(q)
+                if not qs:
+                    self.tick_streams.pop(key, None)
+
+    def _push_tick(self, symbol, ltp, prev_close=0.0, exchange='NSE', instrument_kind='INDEX'):
+        if not symbol or not ltp:
+            return
+        now=time.time(); status=market_session_status(instrument_kind)
+        tf_map={'1m':60,'3m':180,'5m':300,'10m':600,'15m':900,'30m':1800,'1h':3600}
+        # Subscribers are symbol-specific; timeframe is interpreted client-side for the
+        # active candle. This keeps the wire payload tiny and lets one feed serve all TFs.
+        diff=float(ltp)-float(prev_close or 0.0) if prev_close else 0.0
+        pct=(diff/float(prev_close)*100.0) if prev_close else 0.0
+        payload={'symbol':str(symbol),'ltp':round(float(ltp),2),'prev_close':round(float(prev_close or 0),2),
+                 'change':round(diff,2),'change_pct':round(pct,2),'market_status':status,
+                 'exchange':exchange,'instrument_kind':instrument_kind,'time':int(now),'ts_ms':int(now*1000)}
+        raw=json.dumps(payload,separators=(',',':'))
+        with self.tick_stream_lock:
+            qs=list(self.tick_streams.get(str(symbol), set()))
+        for q in qs:
+            try: q.put_nowait(raw)
+            except queue.Full:
+                try: q.get_nowait(); q.put_nowait(raw)
+                except Exception: pass
+
     def _tick_loop(self):
         last_indices=0.0
         while self._running:
@@ -1217,9 +1272,29 @@ class SimulationState:
                             if not self.candles_1m or ts>self.candles_1m[-1]['time']:
                                 p=self.nifty_spot; self.candles_1m.append({'time':ts,'is_prev_day':False,'open':p,'high':p,'low':p,'close':p,'volume':0})
                             c=self.candles_1m[-1]; c['close']=self.nifty_spot; c['high']=max(c['high'],self.nifty_spot); c['low']=min(c['low'],self.nifty_spot)
+                        # Push the latest index price directly to connected browsers.
+                        self._push_tick('NIFTY', self.nifty_spot, self.prev_close, 'NSE', 'INDEX')
+                        self._push_tick('SENSEX', self.sensex_spot, self.sensex_prev_close, 'BSE', 'INDEX')
+                        # Push actively watched option contracts from the WebSocket cache.
+                        with self.tick_stream_lock:
+                            option_symbols=[k for k in self.tick_streams.keys() if '_' in k]
+                        for sym in option_symbols:
+                            try:
+                                inst=self._find_option_from_ui(sym)
+                                if inst:
+                                    ltp=self.angel.websocket_ltp(inst) or 0.0
+                                    if ltp:
+                                        q=self.angel.quote_cache.get(str(inst.get('token'))) or {}
+                                        pc=float(q.get('close') or 0.0)
+                                        ex='BFO' if str(inst.get('exch_seg','')).upper()=='BFO' else 'NFO'
+                                        self._push_tick(sym, ltp, pc, ex, 'OPTION')
+                            except Exception:
+                                pass
                 else:
                     with self.lock:
                         self.nifty_spot=round(self.nifty_spot+random.choice([-0.8,-0.4,0,0.4,0.8]),2); self.sensex_spot=round(self.nifty_spot*3.41,2)
+                    self._push_tick('NIFTY', self.nifty_spot, self.prev_close, 'NSE', 'INDEX')
+                    self._push_tick('SENSEX', self.sensex_spot, self.sensex_prev_close, 'BSE', 'INDEX')
                 with self.lock:
                     for p in self.positions:
                         ltp,delta,theta=self._get_live_instrument_ltp(p['symbol']); p['ltp']=ltp; p['delta']=delta; p['theta']=theta
@@ -1878,6 +1953,28 @@ class Handler(http.server.BaseHTTPRequestHandler):
             try:
                 db=state._db(); rows=db.execute("SELECT id,created_at,trade_json FROM research_trades WHERE run_id=? ORDER BY id",(run_id,)).fetchall(); db.close(); return self._send_json({'ok':True,'run_id':run_id,'trades':[{'id':r[0],'created_at':r[1],'trade':json.loads(r[2])} for r in rows]})
             except Exception as e: return self._send_json({'ok':False,'error':str(e)},500)
+        if parsed.path=='/api/tick/stream':
+            p=parse_qs(parsed.query); symbol=p.get('symbol',['NIFTY'])[0]
+            q=state._subscribe_tick_stream(symbol)
+            self.send_response(200)
+            self.send_header('Content-Type','text/event-stream; charset=utf-8')
+            self.send_header('Cache-Control','no-cache, no-store, must-revalidate')
+            self.send_header('Connection','keep-alive')
+            self.send_header('X-Accel-Buffering','no')
+            self.end_headers()
+            try:
+                self.wfile.write(b': connected\n\n'); self.wfile.flush()
+                while True:
+                    try:
+                        raw=q.get(timeout=15)
+                        self.wfile.write(('data: '+raw+'\n\n').encode('utf-8')); self.wfile.flush()
+                    except queue.Empty:
+                        self.wfile.write(b': heartbeat\n\n'); self.wfile.flush()
+            except (BrokenPipeError, ConnectionResetError, OSError):
+                pass
+            finally:
+                state._unsubscribe_tick_stream(symbol,q)
+            return
         if parsed.path=='/api/tick':
             p=parse_qs(parsed.query); symbol=p.get('symbol',['NIFTY'])[0]; tf=p.get('tf',['1m'])[0]
             try:

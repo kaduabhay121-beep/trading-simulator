@@ -53,3 +53,34 @@ Use the same startup/deployment process as the previous TradeLab build. Render c
 - Live tick timeframe bucketing supports 1m/3m/5m/10m/15m/30m/1h.
 - Index header no longer duplicates `INDEX`; venue is shown as NSE/BSE.
 - Paper-only execution remains unchanged; no Angel One order-placement API is called.
+
+## v2.11.6 video-integrity fixes
+- Reviewed the full 78.7-second mobile recording frame-by-frame and corrected visible chart/UI issues.
+- Fixed live price badge countdown showing a timer after market close; closed/pre-open now show the actual market state.
+- Added 10m/30m/1h to local countdown handling.
+- Fixed live P&L overlay stretching into a large translucent rectangle by removing conflicting top/bottom positioning; overlay is now compact and anchored to the entry level.
+- Live overlay width is capped for mobile and remains horizontally scrollable without covering the whole chart.
+- Chart venue badge is now dynamic: NSE/BSE for indices and NFO/BFO for options.
+- Closed/pre-open LTP badges now use a neutral/status color instead of implying an active up/down tick.
+- Fixed VWAP to reset at each trading date on both backend and historical frontend charts, preventing multi-day VWAP contamination and excessive empty chart space.
+- Clarified Paper Bot metric from RISK to RISK LEFT and corrected the ₹10,00,000 capital fallback.
+- Updated stale Historical Chart Trading version label and ₹100,000 reset/fallback UI values to ₹10,00,000.
+- Paper-only execution remains unchanged; no Angel One order-placement API is called.
+
+
+## v2.11.7 chart interaction fix
+- Smooth fractional horizontal chart panning on touch/mouse instead of waiting for a full candle movement.
+- Y-axis auto-fit now smoothly expands and shrinks with the visible candle range.
+- Vertical panning now remains effective in both historical and live chart modes.
+- Historical replay keeps the user's vertical pan offset while adapting the scale to the visible candles.
+- Double-tap/reset and instrument/timeframe changes reset the fractional pan state.
+
+## v2.12.0 — Near-Zero-Latency Push Chart Engine
+- Replaced normal 50 ms browser `/api/tick` polling with persistent Server-Sent Events (`/api/tick/stream`).
+- Angel One WebSocket remains the primary market-data source; browser receives server-pushed ticks without polling waits.
+- Live chart updates are coalesced with `requestAnimationFrame()` so multiple ticks do not cause redundant canvas renders.
+- Symbol-specific push streams support NIFTY, SENSEX and active option charts.
+- 1m/3m/5m/10m/15m/30m/1h candles are updated locally from the pushed tick stream.
+- Live Y-axis now fits the visible candle range immediately in the render frame, allowing both expansion and shrinkage without the previous trailing scale effect.
+- Horizontal pan keeps fractional candle displacement and remains independent of live tick delivery.
+- No Angel One order-placement API is used; execution remains paper/simulated only.

@@ -103,10 +103,10 @@ window.onerror = function(msg, src, line) { alert("FATAL JS ERROR: " + msg + " (
   .limit-price-input { width: 75px; background: #0c1017; border: 1px solid var(--blue); color: #fff; border-radius: 4px; padding: 4px 6px; font-size: 11px; font-weight: 700; outline: none; display: none; }
 
   /* Fully Transparent P&L Overlay */
-  #livePriceOverlayPill { display: none; position: absolute; left: 10px; right: 80px; bottom: 8px; z-index: 5000; background: rgba(13, 17, 23, 0.58); backdrop-filter: blur(3px); border: 1px solid rgba(255, 255, 255, 0.15); border-radius: 6px; padding: 3px 6px; font-size: 10px; align-items: center; gap: 5px; pointer-events: auto; white-space: nowrap; overflow-x: auto; scrollbar-width: none; }
+  #livePriceOverlayPill { display: none; position: absolute; left: 10px; right: auto; bottom: 8px; top: auto; width: fit-content; max-width: calc(100% - 90px); height: auto; min-height: 0; z-index: 5000; background: rgba(13, 17, 23, 0.58); backdrop-filter: blur(3px); border: 1px solid rgba(255, 255, 255, 0.15); border-radius: 6px; padding: 3px 6px; font-size: 10px; align-items: center; gap: 5px; pointer-events: auto; white-space: nowrap; overflow-x: auto; scrollbar-width: none; }
 #livePriceOverlayPill::-webkit-scrollbar{display:none}
 #overlayEntryLtp{font-size:9px;font-weight:700;color:var(--text-sub)}
-@media(max-width:600px){#livePriceOverlayPill{left:6px;right:76px;bottom:6px;gap:3px;padding:3px 4px;font-size:9px}.pill-action-btn,.pill-close-btn{padding:2px 4px;font-size:8px}.btn-trade-side{padding:4px 6px}.lot-quick-select{max-width:108px}}
+@media(max-width:600px){#livePriceOverlayPill{left:6px;right:auto;bottom:6px;top:auto;width:fit-content;max-width:calc(100% - 82px);gap:3px;padding:3px 4px;font-size:9px}.pill-action-btn,.pill-close-btn{padding:2px 4px;font-size:8px}.btn-trade-side{padding:4px 6px}.lot-quick-select{max-width:108px}}
   .pill-action-btn { background: rgba(30, 41, 59, 0.6); border: 1px solid rgba(51, 65, 85, 0.6); color: #cbd5e1; padding: 2px 5px; border-radius: 3px; font-size: 9px; font-weight: 800; cursor: pointer; }
   .pill-close-btn { background: rgba(235, 87, 87, 0.8); color: white; border: none; padding: 2px 6px; border-radius: 3px; font-size: 9px; font-weight: 800; cursor: pointer; }
 
@@ -191,7 +191,7 @@ canvas { width: 100% !important; height: 100% !important; display: block; }
         </div>
         <button class="btn-new-tab" onclick="openStrikeModal()">+ New</button><button class="btn-new-tab" id="histChartToggleBtn" onclick="toggleHistoricalPanel()">HIST</button>
       </div>
-      <div style="font-size: 11px; font-weight: 800; color: var(--blue);" id="headerBal">₹100,000</div>
+      <div style="font-size: 11px; font-weight: 800; color: var(--blue);" id="headerBal">₹10,00,000</div>
     </div>
 
     <!-- Sub-Toolbar -->
@@ -211,7 +211,7 @@ canvas { width: 100% !important; height: 100% !important; display: block; }
     <div class="chart-viewport" id="chartViewport">
       <!-- Historical Chart Trading controls live on the chart only -->
       <div id="historicalChartToolbar" class="historical-chart-toolbar">
-        <div id="historicalChartHandle" class="hist-ct-handle" title="Drag to move historical controls"><span>⋮⋮ HISTORICAL CHART TRADING</span><span class="hist-ct-actions"><button type="button" id="histMinBtn" class="hist-ct-icon" title="Minimize" aria-label="Minimize">—</button><button type="button" id="histMaxBtn" class="hist-ct-icon" title="Maximize" aria-label="Maximize">□</button></span></div>
+        <div id="historicalChartHandle" class="hist-ct-handle" title="Drag to move historical controls"><span>⋮⋮ HISTORICAL CHART TRADING · V2.11.6</span><span class="hist-ct-actions"><button type="button" id="histMinBtn" class="hist-ct-icon" title="Minimize" aria-label="Minimize">—</button><button type="button" id="histMaxBtn" class="hist-ct-icon" title="Maximize" aria-label="Maximize">□</button></span></div>
         <div class="hist-ct-row">
           <input id="histChartDate" class="hist-ct-input" type="date" title="Historical trading day">
           <select id="histChartUnderlying" class="hist-ct-select"><option value="NIFTY">NIFTY</option><option value="SENSEX">SENSEX</option></select>
@@ -249,7 +249,7 @@ canvas { width: 100% !important; height: 100% !important; display: block; }
       <div class="onchart-order-widget">
         <div class="idx-title-row">
           <span id="onChartSymbol">NIFTY 50 • 1M • IDX</span>
-          <span class="idx-pill">NSE</span><span id="marketStatusBadge" class="market-status-pill closed">CLOSED</span>
+          <span id="chartVenueBadge" class="idx-pill">NSE</span><span id="marketStatusBadge" class="market-status-pill closed">CLOSED</span>
         </div>
         <div class="idx-price-sub" id="onChartPriceSub">23,850.00 +0.00 (+0.00%)</div>
         
@@ -284,7 +284,7 @@ canvas { width: 100% !important; height: 100% !important; display: block; }
       <!-- Fully Transparent P&L Overlay -->
       <div id="livePriceOverlayPill">
         <span id="overlayPosType" style="font-weight:800; font-size:9px; padding:1px 4px; border-radius:3px; background:rgba(30,58,138,0.7);">BUY</span>
-        <span id="overlayQty" style="font-weight:700; font-size:10px;">65 Qty</span>
+        <span id="overlayQty" style="font-weight:700; font-size:10px;">1 Lot · 65 Qty</span>
         <span id="overlayEntryLtp">₹0.00 → ₹0.00</span>
         <span id="overlayMove" style="font-weight:700; font-size:9px; color:var(--text-sub);">Δ ₹0.00 (0.00%)</span>
         <span id="overlayPnl" style="font-weight:800;">+₹0.00</span>
@@ -402,7 +402,7 @@ canvas { width: 100% !important; height: 100% !important; display: block; }
       <div class="bot-signal-card">
         <div class="bot-signal-line"><div><div class="bot-label">SIGNAL</div><div id="botSignal" class="bot-signal hold">HOLD</div><div id="botReason" class="bot-mini">Waiting for signal…</div></div><div style="text-align:right"><div class="bot-label">CONFIDENCE</div><div id="botConfidence" style="font-size:18px;font-weight:900;margin-top:3px">0%</div></div></div>
         <div class="bot-metrics">
-          <div class="bot-metric"><span>TODAY P&L</span><b id="botPnl">₹0</b></div><div class="bot-metric"><span>TRADES</span><b id="botTrades">0 / 5</b></div><div class="bot-metric"><span>OPEN</span><b id="botOpen">0 / 1</b></div><div class="bot-metric"><span>RISK</span><b id="botRiskLeft">₹2,000</b></div>
+          <div class="bot-metric"><span>TODAY P&L</span><b id="botPnl">₹0</b></div><div class="bot-metric"><span>TRADES</span><b id="botTrades">0 / 5</b></div><div class="bot-metric"><span>OPEN</span><b id="botOpen">0 / 1</b></div><div class="bot-metric"><span>RISK LEFT</span><b id="botRiskLeft">₹20,000</b></div>
         </div>
       </div>
 
@@ -484,7 +484,7 @@ canvas { width: 100% !important; height: 100% !important; display: block; }
     <div class="card">
       <div style="display:flex; justify-content:space-between; margin-bottom:10px;">
         <span style="color: var(--text-sub);">Available Balance</span>
-        <span id="fundAvail" style="font-weight: 700;">₹100,000.00</span>
+        <span id="fundAvail" style="font-weight: 700;">₹10,00,000.00</span>
       </div>
       <div style="display:flex; justify-content:space-between; margin-bottom:10px;">
         <span style="color: var(--text-sub);">Used Margin</span>
@@ -499,7 +499,7 @@ canvas { width: 100% !important; height: 100% !important; display: block; }
         <span id="fundNet" style="font-weight: 800;">₹0.00</span>
       </div>
     </div>
-    <button onclick="resetAccount()" style="width: 100%; background: #1c222e; color: #fff; border: 1px solid var(--border-color); padding: 10px; border-radius: 6px; font-weight:600;">Reset Account (₹100,000)</button>
+    <button onclick="resetAccount()" style="width: 100%; background: #1c222e; color: #fff; border: 1px solid var(--border-color); padding: 10px; border-radius: 6px; font-weight:600;">Reset Account (₹10,00,000)</button>
   </div>
 
   <!-- BOTTOM NAVIGATION -->
@@ -633,6 +633,7 @@ let currentTradeMode = 'MARKET';
 let openTabs = [{ id: 'NIFTY', label: 'Nifty 50' }];
 let visibleCandleCount = 35;
 let panOffset = 0;
+let panOffsetFloat = 0;
 let verticalPanOffset = 0;
 
 let configInd = { ema9: true, ema15: true, vwap: true, vol: true, signals: true };
@@ -827,7 +828,8 @@ viewport.addEventListener('touchmove', e => {
         const factor = Math.exp(-dx / 140);
         visibleCandleCount = Math.round(Math.max(10, Math.min(150, visibleCandleCount * factor)));
         const total = marketCache.chart.candles.length;
-        panOffset = Math.max(0, Math.min(Math.max(0, total - visibleCandleCount), panOffset));
+        panOffsetFloat = Math.max(0, Math.min(Math.max(0, total - visibleCandleCount), Number(panOffsetFloat || panOffset || 0)));
+        panOffset = Math.floor(panOffsetFloat);
         dragStartX = touchX;
         drawChart();
       }
@@ -838,10 +840,13 @@ viewport.addEventListener('touchmove', e => {
       let redraw = false;
       const logicalW = canvas.width / (window.devicePixelRatio || 1);
       const candlePx = Math.max(4, (logicalW - 70) / Math.max(visibleCandleCount, 1));
-      const shift = Math.round(dx / candlePx);
-      if (shift !== 0) {
+      // Smooth horizontal panning: keep fractional candle displacement so even a small
+      // finger movement visibly moves the chart instead of waiting for a full candle.
+      if (Math.abs(dx) >= 0.5) {
         const total = marketCache.chart.candles.length;
-        panOffset = Math.max(0, Math.min(Math.max(0,total - visibleCandleCount), panOffset + shift));
+        const maxPan = Math.max(0, total - visibleCandleCount);
+        panOffsetFloat = Math.max(0, Math.min(maxPan, Number(panOffsetFloat || panOffset || 0) + (dx / candlePx)));
+        panOffset = Math.floor(panOffsetFloat);
         dragStartX = touchX; redraw = true;
       }
       if (Math.abs(dy) >= 1) {
@@ -890,9 +895,10 @@ viewport.addEventListener('pointermove', e => {
   const rect = canvas.getBoundingClientRect();
   const dx = e.clientX - mouseLastX, dy = e.clientY - mouseLastY;
   const candlePx = Math.max(4, (rect.width - 70) / Math.max(visibleCandleCount,1));
-  const shift = Math.round(dx / candlePx);
   const total = marketCache.chart.candles.length;
-  if (shift) panOffset = Math.max(0, Math.min(Math.max(0,total-visibleCandleCount), panOffset + shift));
+  const maxPan = Math.max(0, total - visibleCandleCount);
+  panOffsetFloat = Math.max(0, Math.min(maxPan, Number(panOffsetFloat || panOffset || 0) + (dx / candlePx)));
+  panOffset = Math.floor(panOffsetFloat);
   const pRange = (smoothMaxP && smoothMinP) ? (smoothMaxP-smoothMinP) : 80;
   verticalPanOffset += dy * (pRange / Math.max(rect.height-92,50));
   mouseLastX=e.clientX; mouseLastY=e.clientY; drawChart();
@@ -1069,6 +1075,7 @@ function resetLiveViewportState(){ liveYMin=null; liveYMax=null; smoothMinP=null
 function resetChartView(e) {
   if (e) { e.preventDefault(); e.stopPropagation(); }
   panOffset = 0;
+  panOffsetFloat = 0;
   verticalPanOffset = 0;
   priceScaleZoomFactor = 1.0;
   resetLiveViewportState();
@@ -1082,6 +1089,7 @@ function cycleTimeframe() {
   currentTimeframe = tfs[idx];
   document.getElementById('tfDisplay').innerText = `${currentTimeframe} ▾`;
   panOffset = 0;
+  panOffsetFloat = 0;
   verticalPanOffset = 0;
   priceScaleZoomFactor = 1.0;
   resetLiveViewportState();
@@ -1113,8 +1121,10 @@ function renderTabs() {
 }
 
 function switchChartSymbol(symId) {
+  closeLiveStream();
   currentChartSymbol = symId;
   panOffset = 0;
+  panOffsetFloat = 0;
   verticalPanOffset = 0;
   priceScaleZoomFactor = 1.0;
   resetLiveViewportState();
@@ -1161,10 +1171,11 @@ function openStrikeModal() {
 
 function closeStrikeModal() { document.getElementById('strikeSearchModal').style.display = 'none'; }
 function selectStrike(symId, label) {
+  closeLiveStream();
   if (!openTabs.find(t => t.id === symId)) openTabs.push({ id: symId, label });
   currentChartSymbol = symId;
   closeStrikeModal();
-  panOffset=0; verticalPanOffset=0; priceScaleZoomFactor=1.0; resetLiveViewportState(); marketCache=null;
+  panOffset=0; panOffsetFloat=0; verticalPanOffset=0; priceScaleZoomFactor=1.0; resetLiveViewportState(); marketCache=null;
   renderTabs();
   switchNavTab('chart');
   drawChart();
@@ -1274,6 +1285,8 @@ function updateUI(data) {
   const kindLabel = instrumentKind === 'OPTION' ? 'OPTION' : 'INDEX';
   document.getElementById('onChartSymbol').innerText = `${data.chart.display_title} • ${currentTimeframe.toUpperCase()} • ${kindLabel} • ${marketVenue}`;
   const status = String(data.chart.market_status || 'OPEN');
+  const venueEl=document.getElementById('chartVenueBadge');
+  if(venueEl){ venueEl.innerText = String(data.chart.exchange || (isOptionChart ? 'NFO' : (currentChartSymbol.includes('SENSEX') ? 'BSE' : 'NSE'))); }
   const statusEl=document.getElementById('marketStatusBadge');
   if(statusEl){ statusEl.innerText=status.replace('_',' '); statusEl.className='market-status-pill '+(status==='OPEN'?'open':status==='PRE_OPEN'?'preopen':status==='POST_CLOSE'?'post':'closed'); }
   const canTrade=status==='OPEN';
@@ -1407,59 +1420,124 @@ function updateUI(data) {
 
 // Ultra-low-latency live tick loop: only the tiny streamed price is polled here.
 // Heavy market/option-chain refreshes stay separate, so the chart never waits for REST work.
-let tickFetchInFlight = false;
-async function fetchLiveTick() {
-  if (historicalChartMode) return;
-  if (tickFetchInFlight || !currentChartSymbol || !marketCache || !marketCache.chart) return;
-  tickFetchInFlight = true;
-  const seq=++tickRequestSeq, requestSymbol=currentChartSymbol, requestTf=currentTimeframe;
-  try {
-    const res = await fetch(`/api/tick?symbol=${encodeURIComponent(requestSymbol)}&tf=${requestTf}`, {cache:'no-store'});
-    if (!res.ok) return;
-    const t = await res.json();
-    if (seq!==tickRequestSeq || requestSymbol!==currentChartSymbol || requestTf!==currentTimeframe || !t || !t.ltp || !marketCache?.chart || marketCache.chart.symbol!==requestSymbol) return;
-    const ch = marketCache.chart;
-    ch.market_status=t.market_status||ch.market_status||'OPEN';
-    ch.countdown=t.countdown||ch.countdown;
-    ch.ltp = Number(t.ltp);
-    ch.countdown = t.countdown || ch.countdown;
-    const candles = ch.candles || [];
-    const tfSec = ({'1m':60,'3m':180,'5m':300,'10m':600,'15m':900,'30m':1800,'1h':3600}[currentTimeframe] || 60);
-    const bucket = Math.floor(Date.now()/1000/tfSec)*tfSec;
-    let last = candles[candles.length-1];
-    if (ch.market_status === 'OPEN') {
-      if (!last || Number(last.time) !== bucket) {
-        candles.push({time:bucket,is_prev_day:false,open:ch.ltp,high:ch.ltp,low:ch.ltp,close:ch.ltp,volume:0});
-        if (candles.length > 500) candles.splice(0, candles.length-500);
-        ch.ema9_series = calcEmaLocal(candles.map(c=>c.close), 9);
-        ch.ema15_series = calcEmaLocal(candles.map(c=>c.close), 15);
-      } else {
-        last.close = ch.ltp; last.high = Math.max(last.high, ch.ltp); last.low = Math.min(last.low, ch.ltp);
-        const closes = candles.map(c=>c.close); ch.ema9_series = calcEmaLocal(closes, 9); ch.ema15_series = calcEmaLocal(closes, 15);
-      }
+let liveEventSource = null;
+let liveStreamSymbol = '';
+let pendingLiveTick = null;
+let liveRenderScheduled = false;
+let liveStreamReconnectTimer = null;
+
+function scheduleLiveRender() {
+  if (liveRenderScheduled) return;
+  liveRenderScheduled = true;
+  requestAnimationFrame(() => {
+    liveRenderScheduled = false;
+    if (pendingLiveTick) {
+      const t = pendingLiveTick;
+      pendingLiveTick = null;
+      applyLiveTick(t);
     }
-    ch.ema9 = ch.ema9_series?.[ch.ema9_series.length-1] || ch.ema9 || 0;
-    ch.ema15 = ch.ema15_series?.[ch.ema15_series.length-1] || ch.ema15 || 0;
-    document.getElementById('btnSellLTP').innerText = ch.ltp.toFixed(2);
-    document.getElementById('btnBuyLTP').innerText = ch.ltp.toFixed(2);
-    const pSub = document.getElementById('onChartPriceSub');
-    if (pSub && ch.ltp) {
-      const prev = Number(t.prev_close || ch.prev_close || 0);
-      const diff = Number(t.change ?? (prev ? ch.ltp - prev : 0));
-      const pct = Number(t.change_pct ?? (prev ? diff / prev * 100 : 0));
-      ch.prev_close = prev || ch.prev_close || 0; ch.change = diff; ch.change_pct = pct;
-      pSub.innerText = `${ch.ltp.toFixed(2)} ${diff >= 0 ? '+' : ''}${diff.toFixed(2)} (${diff >= 0 ? '+' : ''}${pct.toFixed(2)}%)`;
-      pSub.style.color = diff >= 0 ? 'var(--green)' : 'var(--red)';
-    }
-    const status=String(ch.market_status||'OPEN'), statusEl=document.getElementById('marketStatusBadge');
-    if(statusEl){statusEl.innerText=status.replace('_',' ');statusEl.className='market-status-pill '+(status==='OPEN'?'open':status==='PRE_OPEN'?'preopen':status==='POST_CLOSE'?'post':'closed');}
-    const canTrade=status==='OPEN';
-    ['btnSellLTP','btnBuyLTP','btnModeMKT','btnModeLMT','directQtySelect','inputLimitPriceDirect'].forEach(id=>{const el=document.getElementById(id);if(el)el.disabled=!canTrade;});
-    if(!canTrade){document.getElementById('btnBuyLabel').innerText='CLOSED';document.getElementById('btnSellLabel').innerText='CLOSED';}
     if (document.getElementById('tab-chart')?.classList.contains('active')) drawChart();
-  } catch (_) {} finally {
-    tickFetchInFlight = false;
+  });
+}
+
+function closeLiveStream() {
+  if (liveStreamReconnectTimer) { clearTimeout(liveStreamReconnectTimer); liveStreamReconnectTimer = null; }
+  if (liveEventSource) {
+    try { liveEventSource.close(); } catch (_) {}
+    liveEventSource = null;
   }
+  liveStreamSymbol = '';
+}
+
+function connectLiveStream() {
+  if (historicalChartMode || !currentChartSymbol) return;
+  const symbol = currentChartSymbol;
+  if (liveEventSource && liveStreamSymbol === symbol && liveEventSource.readyState !== EventSource.CLOSED) return;
+  closeLiveStream();
+  liveStreamSymbol = symbol;
+  const es = new EventSource(`/api/tick/stream?symbol=${encodeURIComponent(symbol)}`);
+  liveEventSource = es;
+  es.onmessage = ev => {
+    try {
+      const t = JSON.parse(ev.data);
+      if (!t || t.symbol !== currentChartSymbol || symbol !== liveStreamSymbol) return;
+      pendingLiveTick = t;
+      scheduleLiveRender();
+    } catch (_) {}
+  };
+  es.onerror = () => {
+    if (liveEventSource !== es) return;
+    try { es.close(); } catch (_) {}
+    liveEventSource = null;
+    // EventSource normally reconnects itself, but explicitly re-open after a short
+    // backoff so a dead Render/SSE connection recovers without touching the chart.
+    if (!historicalChartMode && currentChartSymbol === symbol && !liveStreamReconnectTimer) {
+      liveStreamReconnectTimer = setTimeout(() => {
+        liveStreamReconnectTimer = null;
+        connectLiveStream();
+      }, 500);
+    }
+  };
+}
+
+function applyLiveTick(t) {
+  if (!t || historicalChartMode || !marketCache?.chart) return;
+  if (t.symbol !== currentChartSymbol || marketCache.chart.symbol !== currentChartSymbol) return;
+  const ch = marketCache.chart;
+  ch.market_status = t.market_status || ch.market_status || 'OPEN';
+  ch.ltp = Number(t.ltp || ch.ltp || 0);
+  ch.prev_close = Number(t.prev_close || ch.prev_close || 0);
+  ch.change = Number(t.change || 0);
+  ch.change_pct = Number(t.change_pct || 0);
+  ch.countdown = t.countdown || ch.countdown;
+
+  const candles = ch.candles || (ch.candles = []);
+  const tfSec = ({'1m':60,'3m':180,'5m':300,'10m':600,'15m':900,'30m':1800,'1h':3600}[currentTimeframe] || 60);
+  const bucket = Math.floor(Number(t.time || Date.now()/1000) / tfSec) * tfSec;
+  let last = candles[candles.length - 1];
+  if (ch.market_status === 'OPEN' && ch.ltp > 0) {
+    if (!last || Number(last.time) !== bucket) {
+      candles.push({time:bucket,is_prev_day:false,open:ch.ltp,high:ch.ltp,low:ch.ltp,close:ch.ltp,volume:0});
+      if (candles.length > 500) candles.splice(0, candles.length - 500);
+    } else {
+      last.close = ch.ltp;
+      last.high = Math.max(Number(last.high || ch.ltp), ch.ltp);
+      last.low = Math.min(Number(last.low || ch.ltp), ch.ltp);
+    }
+    const closes = candles.map(c => Number(c.close || 0));
+    ch.ema9_series = calcEmaLocal(closes, 9);
+    ch.ema15_series = calcEmaLocal(closes, 15);
+    ch.ema9 = ch.ema9_series[ch.ema9_series.length - 1] || ch.ema9 || 0;
+    ch.ema15 = ch.ema15_series[ch.ema15_series.length - 1] || ch.ema15 || 0;
+  }
+
+  const sell = document.getElementById('btnSellLTP'), buy = document.getElementById('btnBuyLTP');
+  if (sell) sell.innerText = ch.ltp.toFixed(2);
+  if (buy) buy.innerText = ch.ltp.toFixed(2);
+  const pSub = document.getElementById('onChartPriceSub');
+  if (pSub && ch.ltp) {
+    const diff = Number(t.change || 0), pct = Number(t.change_pct || 0);
+    pSub.innerText = `${ch.ltp.toFixed(2)} ${diff >= 0 ? '+' : ''}${diff.toFixed(2)} (${diff >= 0 ? '+' : ''}${pct.toFixed(2)}%)`;
+    pSub.style.color = diff >= 0 ? 'var(--green)' : 'var(--red)';
+  }
+  const status = String(ch.market_status || 'OPEN');
+  const statusEl = document.getElementById('marketStatusBadge');
+  const venueEl = document.getElementById('chartVenueBadge');
+  if (venueEl) venueEl.innerText = String(t.exchange || ch.exchange || (ch.instrument_kind === 'OPTION' ? (currentChartSymbol.includes('SENSEX') ? 'BFO' : 'NFO') : (currentChartSymbol.includes('SENSEX') ? 'BSE' : 'NSE')));
+  if (statusEl) {
+    statusEl.innerText = status.replace('_',' ');
+    statusEl.className = 'market-status-pill ' + (status === 'OPEN' ? 'open' : status === 'PRE_OPEN' ? 'preopen' : status === 'POST_CLOSE' ? 'post' : 'closed');
+  }
+  const canTrade = status === 'OPEN';
+  ['btnSellLTP','btnBuyLTP','btnModeMKT','btnModeLMT','directQtySelect','inputLimitPriceDirect'].forEach(id => { const el=document.getElementById(id); if(el) el.disabled=!canTrade; });
+  const bl=document.getElementById('btnBuyLabel'), sl=document.getElementById('btnSellLabel');
+  if (bl) bl.innerText = canTrade ? (currentTradeMode === 'LIMIT' ? 'BUY LMT' : 'BUY') : status.replace('_',' ');
+  if (sl) sl.innerText = canTrade ? (currentTradeMode === 'LIMIT' ? 'SELL LMT' : 'SELL') : status.replace('_',' ');
+}
+
+// Legacy REST tick remains available as a recovery path only; normal live operation is push-based SSE.
+async function fetchLiveTick() {
+  if (!liveEventSource || liveEventSource.readyState === EventSource.CLOSED) connectLiveStream();
 }
 function calcEmaLocal(values, period) {
   if (!values.length) return [];
@@ -1469,7 +1547,13 @@ function calcEmaLocal(values, period) {
 }
 function updateLocalCountdown() {
   if (!marketCache?.chart) return;
-  const tfSec = ({'1m':60,'3m':180,'5m':300,'15m':900}[currentTimeframe] || 60);
+  const status=String(marketCache.chart.market_status||'OPEN');
+  if(status!=='OPEN'){
+    marketCache.chart.countdown=status.replace('_',' ');
+    if (document.getElementById('tab-chart')?.classList.contains('active')) drawChart();
+    return;
+  }
+  const tfSec = ({'1m':60,'3m':180,'5m':300,'10m':600,'15m':900,'30m':1800,'1h':3600}[currentTimeframe] || 60);
   const remain = Math.max(0, Math.floor(((Math.floor(Date.now()/1000/tfSec)+1)*tfSec)-Date.now()/1000));
   marketCache.chart.countdown = `${String(Math.floor(remain/60)).padStart(2,'0')}:${String(remain%60).padStart(2,'0')}`;
   if (document.getElementById('tab-chart')?.classList.contains('active')) drawChart();
@@ -1749,6 +1833,7 @@ canvas.addEventListener('touchend', e => {
   if (now - lastCanvasTap < 300) {
     verticalPanOffset = 0;
     panOffset = 0;
+  panOffsetFloat = 0;
   verticalPanOffset = 0;
     priceScaleZoomFactor = 1.0;
     smoothMinP = null;
@@ -1780,8 +1865,12 @@ function drawChart() {
   const chartHeight = chartBottom - chartTop;
   const chartWidth = chartRight - chartLeft;
 
+  const safePan = Math.max(0, Math.min(Math.max(0, total - visibleCandleCount), Number(panOffsetFloat || panOffset || 0)));
+  panOffsetFloat = safePan;
+  panOffset = Math.floor(safePan);
+  const panFrac = safePan - panOffset;
   const endIdx = total - panOffset;
-  const startIdx = Math.max(0, endIdx - visibleCandleCount);
+  const startIdx = Math.max(0, endIdx - visibleCandleCount - (panFrac > 0 ? 1 : 0));
   const candles = allCandles.slice(startIdx, endIdx);
   const ema9 = (marketCache.chart.ema9_series || []).slice(startIdx, endIdx);
   const ema15 = (marketCache.chart.ema15_series || []).slice(startIdx, endIdx);
@@ -1856,53 +1945,47 @@ function drawChart() {
 
   if (!historicalChartMode) { targetMinP += verticalPanOffset; targetMaxP += verticalPanOffset; }
 
-  // In historical replay, do not auto-fit the Y-axis on every newly revealed candle.
-  // Repeated auto-fitting makes the entire chart appear to drift upward/downward.
-  // Keep a stable range and only expand/recenter when the current visible data leaves it.
+  // Y-axis engine: fit the currently visible candles, but adapt smoothly so the
+  // scale can both EXPAND and SHRINK as the visible/revealed range changes. User
+  // vertical panning is preserved through verticalPanOffset.
+  const dataSpan = Math.max(targetMaxP - targetMinP, 0.0001);
+  const pad = Math.max(dataSpan * 0.10, Math.abs((targetMinP + targetMaxP) / 2) * 0.002);
+  const autoMin = targetMinP - pad;
+  const autoMax = targetMaxP + pad;
+
   if (historicalChartMode && historicalReplay) {
-    const currentPrice = Number(historicalCurrentCandle()?.close || 0);
+    const desiredMin = autoMin + verticalPanOffset;
+    const desiredMax = autoMax + verticalPanOffset;
     if (!(historicalYMin > 0 && historicalYMax > historicalYMin)) {
-      historicalYMin = targetMinP;
-      historicalYMax = targetMaxP;
+      historicalYMin = desiredMin;
+      historicalYMax = desiredMax;
     } else {
-      const stableSpan = Math.max(historicalYMax - historicalYMin, 0.0001);
-      const margin = stableSpan * 0.12;
-      if (targetMinP < historicalYMin + margin || targetMaxP > historicalYMax - margin) {
-        const desiredMid = currentPrice > 0 ? currentPrice : (targetMinP + targetMaxP) / 2;
-        const desiredSpan = Math.max(stableSpan, targetMaxP - targetMinP);
-        historicalYMin = desiredMid - desiredSpan / 2;
-        historicalYMax = desiredMid + desiredSpan / 2;
+      // Immediate fit: the viewport follows the currently visible candles without
+      // introducing perceptible scale lag during replay/pan/zoom.
+      historicalYMin = desiredMin;
+      historicalYMax = desiredMax;
+      const minSpan = Math.max(dataSpan * 1.05, Math.abs(Number(marketCache.chart.ltp||0)) * 0.002);
+      if (historicalYMax - historicalYMin < minSpan) {
+        const mid = (historicalYMin + historicalYMax) / 2;
+        historicalYMin = mid - minSpan / 2;
+        historicalYMax = mid + minSpan / 2;
       }
     }
     targetMinP = historicalYMin;
     targetMaxP = historicalYMax;
-    // Historical replay uses a fixed viewport: never interpolate the Y-axis.
-    // Interpolation caused visible upward/downward drift while candles advanced.
     smoothMinP = targetMinP;
     smoothMaxP = targetMaxP;
   } else {
-    // Live market: keep a stable viewport instead of re-fitting to every incoming candle/tick.
-    // Expand/recenter only when price or a bracket is close to the viewport edge.
-    const liveSpanSeed = Math.max(targetMaxP - targetMinP, 0.0001);
+    // Live market: same expand/shrink behavior, with a stable smooth viewport.
+    const desiredMin = autoMin + verticalPanOffset;
+    const desiredMax = autoMax + verticalPanOffset;
     if (!(liveYMin > 0 && liveYMax > liveYMin)) {
-      const mid = (targetMinP + targetMaxP) / 2; const padded = Math.max(liveSpanSeed * 0.55, Math.abs(mid)*0.015);
-      liveYMin = mid - padded; liveYMax = mid + padded;
+      liveYMin = desiredMin; liveYMax = desiredMax;
     } else {
-      const liveSpan = Math.max(liveYMax - liveYMin, liveSpanSeed);
-      const current = Number(marketCache.chart.ltp || ((targetMinP + targetMaxP) / 2));
-      const coreSpan = Math.max(liveSpanSeed, Math.abs(current)*0.01);
-      const edge = Math.max(liveSpan * 0.14, coreSpan*1.5);
-      // If a stale bracket/order previously expanded the viewport, allow it to shrink
-      // back to the active instrument instead of carrying a giant empty scale forever.
-      const wildlyOversized = liveSpan > coreSpan * (chartIsOption ? 8 : 12);
-      if (wildlyOversized) {
-        const mid=current>0?current:(targetMinP+targetMaxP)/2; const desiredSpan=Math.max(liveSpanSeed*1.25,Math.abs(mid)*0.08);
-        liveYMin=mid-desiredSpan/2; liveYMax=mid+desiredSpan/2;
-      } else if (targetMinP < liveYMin + edge || targetMaxP > liveYMax - edge || current < liveYMin + edge || current > liveYMax - edge) {
-        const mid = current > 0 ? current : (targetMinP + targetMaxP) / 2;
-        const desiredSpan = Math.max(liveSpanSeed * 1.35, coreSpan*2.5);
-        liveYMin = mid - desiredSpan / 2; liveYMax = mid + desiredSpan / 2;
-      }
+      // Immediate fit: expand and shrink with the visible candle range on the
+      // same frame instead of trailing behind price movement.
+      liveYMin = desiredMin;
+      liveYMax = desiredMax;
     }
     targetMinP = liveYMin;
     targetMaxP = liveYMax;
@@ -1914,7 +1997,8 @@ function drawChart() {
   const maxP = smoothMaxP;
 
   const toY = (p) => chartBottom - ((p - minP) / (maxP - minP)) * chartHeight;
-  const step = chartWidth / candles.length;
+  const step = chartWidth / Math.max(candles.length, 1);
+  const xShift = -panFrac * step;
 
   // 1. Right Price Scale
   ctx.fillStyle = '#0a0d13';
@@ -1958,7 +2042,7 @@ function drawChart() {
   const timeStep = Math.max(1, Math.floor(candles.length / 5));
   candles.forEach((c, i) => {
     if (i % timeStep === 0) {
-      const x = chartLeft + i * step + step / 2;
+      const x = chartLeft + i * step + step / 2 + xShift;
       const d = new Date(c.time * 1000);
       const timeStr = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
       const dateStr = `${d.getDate()} ${['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][d.getMonth()]}`;
@@ -1971,7 +2055,7 @@ function drawChart() {
     const maxVol = Math.max(...candles.map(c => c.volume)) || 1;
     const volAreaHeight = chartHeight * 0.22;
     candles.forEach((c, i) => {
-      const x = chartLeft + i * step + step / 2;
+      const x = chartLeft + i * step + step / 2 + xShift;
       const isUp = c.close >= c.open;
       const vH = (c.volume / maxVol) * volAreaHeight;
       ctx.fillStyle = isUp ? 'rgba(0, 192, 135, 0.22)' : 'rgba(235, 87, 87, 0.22)';
@@ -1982,7 +2066,7 @@ function drawChart() {
   // 5. Candles / Line
   if (chartType === 'candles') {
     candles.forEach((c, i) => {
-      const x = chartLeft + i * step + step / 2;
+      const x = chartLeft + i * step + step / 2 + xShift;
       const isUp = c.close >= c.open;
       ctx.strokeStyle = isUp ? '#00c087' : '#eb5757';
       ctx.fillStyle = ctx.strokeStyle;
@@ -2001,7 +2085,7 @@ function drawChart() {
     ctx.lineWidth = 2;
     ctx.beginPath();
     candles.forEach((c, i) => {
-      const x = chartLeft + i * step + step / 2;
+      const x = chartLeft + i * step + step / 2 + xShift;
       const y = toY(c.close);
       if (i === 0) ctx.moveTo(x, y);
       else ctx.lineTo(x, y);
@@ -2015,7 +2099,7 @@ function drawChart() {
     ctx.lineWidth = 1.6;
     ctx.beginPath();
     ema9.forEach((val, i) => {
-      const x = chartLeft + i * step + step / 2;
+      const x = chartLeft + i * step + step / 2 + xShift;
       if (i === 0) ctx.moveTo(x, toY(val));
       else ctx.lineTo(x, toY(val));
     });
@@ -2027,7 +2111,7 @@ function drawChart() {
     ctx.lineWidth = 1.6;
     ctx.beginPath();
     ema15.forEach((val, i) => {
-      const x = chartLeft + i * step + step / 2;
+      const x = chartLeft + i * step + step / 2 + xShift;
       if (i === 0) ctx.moveTo(x, toY(val));
       else ctx.lineTo(x, toY(val));
     });
@@ -2041,7 +2125,7 @@ function drawChart() {
       ctx.lineWidth = 1.5;
       ctx.beginPath();
       vSeries.forEach((val, i) => {
-        const x = chartLeft + i * step + step / 2;
+        const x = chartLeft + i * step + step / 2 + xShift;
         if (i === 0) ctx.moveTo(x, toY(val));
         else ctx.lineTo(x, toY(val));
       });
@@ -2152,7 +2236,8 @@ function drawChart() {
   const yLTP = toY(curLTP);
   const lastC = candles[candles.length - 1];
   const isUpTick = lastC ? lastC.close >= lastC.open : true;
-  const badgeColor = isUpTick ? '#00c087' : '#eb5757';
+  const chartStatus=String(marketCache.chart.market_status||'OPEN');
+  const badgeColor = chartStatus==='OPEN' ? (isUpTick ? '#00c087' : '#eb5757') : (chartStatus==='PRE_OPEN' ? '#f59e0b' : '#64748b');
 
   ctx.strokeStyle = badgeColor;
   ctx.lineWidth = 1.1;
@@ -2175,10 +2260,16 @@ function drawChart() {
   const overlayPill = document.getElementById('livePriceOverlayPill');
   if (matchingPos) { overlayPill.style.display = 'flex';
     const yEntry = toY(matchingPos.buy_price);
-    const clampedY = Math.max(chartTop + 10, Math.min(chartBottom - 25, yEntry - 12));
+    const clampedY = Math.max(chartTop + 10, Math.min(chartBottom - 30, yEntry - 12));
     overlayPill.style.top = `${clampedY}px`;
+    overlayPill.style.bottom = 'auto';
+    overlayPill.style.height = 'auto';
+    overlayPill.style.maxHeight = '28px';
   } else {
     overlayPill.style.display = 'none';
+    overlayPill.style.top = 'auto';
+    overlayPill.style.bottom = '8px';
+    overlayPill.style.height = 'auto';
   }
 }
 
@@ -2267,7 +2358,7 @@ function updateBotUI(b) {
   const cf=document.getElementById('botConfidence');if(cf)cf.innerText=((b.last_confidence||0)*100).toFixed(0)+'%';
   const tr=document.getElementById('botTrades');if(tr)tr.innerText=(b.trades_today||0)+' / '+(b.max_trades_per_day||5);
   const op=document.getElementById('botOpen');if(op)op.innerText=(b.open_positions||0)+' / '+(b.max_open_positions||1);
-  const lossLimit=Math.abs((b.max_daily_loss||2)/100*(b.initial_balance||100000));const left=Math.max(0,lossLimit-(Math.max(0,-(b.daily_pnl||0))));const rl=document.getElementById('botRiskLeft');if(rl)rl.innerText=money(left);
+  const lossLimit=Math.abs((b.max_daily_loss||2)/100*(b.initial_balance||1000000));const left=Math.max(0,lossLimit-(Math.max(0,-(b.daily_pnl||0))));const rl=document.getElementById('botRiskLeft');if(rl)rl.innerText=money(left);
   const pnl=document.getElementById('botPnl');if(pnl){pnl.innerText=money(b.daily_pnl);pnl.className=(b.daily_pnl||0)>0?'bot-good':((b.daily_pnl||0)<0?'bot-bad':'')}
   const rs=document.getElementById('botReason');if(rs)rs.innerText=b.risk_lock?'🔒 '+(b.risk_lock_reason||'Risk lock active'):(b.last_reason||'Waiting for signal…');
   const val=document.getElementById('botValidation');if(val)val.innerText=(b.strategy_stats&&b.strategy_stats[b.strategy]&&b.strategy_stats[b.strategy].status)||'UNVALIDATED';
@@ -2457,7 +2548,7 @@ function historicalChartPayload(){
   const ema9=calcEmaLocal(closes,9), ema15=calcEmaLocal(closes,15), vwap=calcVwapLocal(candles);
   return {symbol:h.contract_symbol||h.underlying,display_title:h.contract_symbol|| (h.underlying==='SENSEX'?'SENSEX':'NIFTY 50'),timeframe:(h.tf/60)+'m',ltp:Number(candles[candles.length-1]?.close||0),countdown:'HIST',candles,ema9_series:ema9,ema15_series:ema15,ema9:ema9[ema9.length-1]||0,ema15:ema15[ema15.length-1]||0,vwap_series:vwap,vwap:vwap[vwap.length-1]||0,strategy_markers:[],greeks:{delta:0,gamma:0,theta:0,vega:0,iv:0}};
 }
-function calcVwapLocal(candles){let pv=0,v=0,out=[]; for(const c of candles){const q=Math.max(Number(c.volume||0),1);pv+=((c.high+c.low+c.close)/3)*q;v+=q;out.push(Number((pv/v).toFixed(2)));}return out;}
+function calcVwapLocal(candles){let pv=0,v=0,out=[],day=null; for(const c of candles){const ms=(Number(c.time||0)<100000000000?Number(c.time||0)*1000:Number(c.time||0)); const d=new Date(ms); const key=`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`; if(day!==null&&key!==day){pv=0;v=0;} day=key; const q=Math.max(Number(c.volume||0),1);pv+=((c.high+c.low+c.close)/3)*q;v+=q;out.push(Number((pv/v).toFixed(2)));}return out;}
 function resetHistoricalViewport(){
   historicalYMin=null; historicalYMax=null; smoothMinP=null; smoothMaxP=null;
 }
@@ -2530,7 +2621,7 @@ async function startHistoricalChartTrading(){
     if(!r.ok||!d.ok)throw new Error(d.error||`Historical chart failed (HTTP ${r.status})`);
     historicalReplay={session_id:d.session.session_id,run_id:d.run_id,date:d.replay_day,underlying:d.underlying,tf:d.timeframe,candles:d.candles_data,index:0,playing:false,speed:1,lots:Math.max(1,lots),lot_size:Number(d.session.lot_size||1),position:d.session.position||null,trades:d.session.trades||[],realized_pnl:Number(d.session.realized_pnl||0),unrealized_pnl:0,balance:Number(d.session.balance||1000000),starting_balance:Number(d.session.starting_balance||1000000),max_drawdown:Number(d.session.max_drawdown||0),instrument_type:d.session.instrument_type||instrument,option_type:d.session.option_type||otype,expiry:d.session.expiry||ex,strike:Number(d.session.strike||st||0),contract_symbol:d.session.contract_symbol||'',display_symbol:d.session.display_symbol||under};
     resetHistoricalViewport();
-    panOffset=0; verticalPanOffset=0; visibleCandleCount=Math.max(10,Math.min(150,Number(visibleCandleCount||35)));
+    panOffset=0; panOffsetFloat=0; verticalPanOffset=0; visibleCandleCount=Math.max(10,Math.min(150,Number(visibleCandleCount||35)));
     const qtyEl=document.getElementById('histChartQty'); if(qtyEl)qtyEl.value=Math.max(1,Math.min(10000,Math.floor(historicalReplay.lots))); updateHistoricalLotMeta();
     historicalChartMode=true; currentChartSymbol=(instrument==='OPTION'?(d.session.contract_symbol||'OPTION'):under); currentTimeframe=(tf/60)+'m'; currentTradeMode='MARKET';
     document.getElementById('historicalChartToolbar')?.classList.add('open');
@@ -2555,8 +2646,8 @@ function exitHistoricalChartTrading(){
   historicalChartMode=false; historicalReplay=null; resetHistoricalViewport(); const hc=document.getElementById('histControls'); if(hc)hc.style.display='none'; const hrc=document.getElementById('histRiskControls'); if(hrc)hrc.style.display='none'; const hp=document.getElementById('histProgressRow'); if(hp)hp.style.display='none'; const hs=document.getElementById('histStatsRow'); if(hs)hs.style.display='none'; const he=document.getElementById('histExitBtn'); if(he)he.style.display='none';
   document.getElementById('histChartStatus').innerText='Historical mode closed. Live chart restored.'; document.getElementById('historicalChartToolbar')?.classList.remove('open'); fetchMarket(true);
 }
-function historicalZoomIn(){ if(!historicalReplay)return; visibleCandleCount=Math.max(10,Math.round(visibleCandleCount*0.8)); panOffset=Math.min(Math.max(0,historicalReplay.candles.length-visibleCandleCount),panOffset); drawChart(); }
-function historicalZoomOut(){ if(!historicalReplay)return; visibleCandleCount=Math.min(150,Math.round(visibleCandleCount*1.25)); panOffset=Math.min(Math.max(0,historicalReplay.candles.length-visibleCandleCount),panOffset); drawChart(); }
+function historicalZoomIn(){ if(!historicalReplay)return; visibleCandleCount=Math.max(10,Math.round(visibleCandleCount*0.8)); panOffsetFloat=Math.min(Math.max(0,historicalReplay.candles.length-visibleCandleCount),panOffsetFloat); panOffset=Math.floor(panOffsetFloat); drawChart(); }
+function historicalZoomOut(){ if(!historicalReplay)return; visibleCandleCount=Math.min(150,Math.round(visibleCandleCount*1.25)); panOffsetFloat=Math.min(Math.max(0,historicalReplay.candles.length-visibleCandleCount),panOffsetFloat); panOffset=Math.floor(panOffsetFloat); drawChart(); }
 async function historicalPrevCandle(){
   if(!historicalReplay)return;
   const target=Math.max(0,historicalReplay.index-1);
@@ -2734,7 +2825,8 @@ const replayDateEl=document.getElementById('replayDate'); if(replayDateEl && !re
 renderTabs();
 renderWatchlist();
 setInterval(() => fetchMarket(false), 500);
-setInterval(fetchLiveTick, 50);
+setInterval(() => { if (!historicalChartMode && currentChartSymbol && (!liveEventSource || liveEventSource.readyState === EventSource.CLOSED)) connectLiveStream(); }, 1000);
+connectLiveStream();
 setInterval(updateLocalCountdown, 250);
 fetchMarket();
 </script>
