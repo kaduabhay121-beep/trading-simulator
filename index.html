@@ -97,7 +97,10 @@ window.onerror = function(msg, src, line) { alert("FATAL JS ERROR: " + msg + " (
   .limit-price-input { width: 75px; background: #0c1017; border: 1px solid var(--blue); color: #fff; border-radius: 4px; padding: 4px 6px; font-size: 11px; font-weight: 700; outline: none; display: none; }
 
   /* Fully Transparent P&L Overlay */
-  #livePriceOverlayPill { display: none; position: absolute; left: 10px; z-index: 5000; background: rgba(13, 17, 23, 0.45); backdrop-filter: blur(2px); border: 1px solid rgba(255, 255, 255, 0.15); border-radius: 6px; padding: 3px 6px; font-size: 10px; align-items: center; gap: 5px; pointer-events: auto; }
+  #livePriceOverlayPill { display: none; position: absolute; left: 10px; right: 80px; bottom: 8px; z-index: 5000; background: rgba(13, 17, 23, 0.58); backdrop-filter: blur(3px); border: 1px solid rgba(255, 255, 255, 0.15); border-radius: 6px; padding: 3px 6px; font-size: 10px; align-items: center; gap: 5px; pointer-events: auto; white-space: nowrap; overflow-x: auto; scrollbar-width: none; }
+#livePriceOverlayPill::-webkit-scrollbar{display:none}
+#overlayEntryLtp{font-size:9px;font-weight:700;color:var(--text-sub)}
+@media(max-width:600px){#livePriceOverlayPill{left:6px;right:76px;bottom:6px;gap:3px;padding:3px 4px;font-size:9px}.pill-action-btn,.pill-close-btn{padding:2px 4px;font-size:8px}.btn-trade-side{padding:4px 6px}.lot-quick-select{max-width:108px}}
   .pill-action-btn { background: rgba(30, 41, 59, 0.6); border: 1px solid rgba(51, 65, 85, 0.6); color: #cbd5e1; padding: 2px 5px; border-radius: 3px; font-size: 9px; font-weight: 800; cursor: pointer; }
   .pill-close-btn { background: rgba(235, 87, 87, 0.8); color: white; border: none; padding: 2px 6px; border-radius: 3px; font-size: 9px; font-weight: 800; cursor: pointer; }
 
@@ -258,7 +261,7 @@ canvas { width: 100% !important; height: 100% !important; display: block; }
           <button class="order-type-btn" id="btnModeLMT" onclick="setTradeMode('LIMIT')">LMT</button>
           <input type="number" id="inputLimitPriceDirect" class="limit-price-input" step="0.5" placeholder="Price">
 
-          <select id="directQtySelect" class="lot-quick-select">
+          <select id="directQtySelect" class="lot-quick-select" title="Order quantity in lots">
             <option value="65">65 (1 Lot)</option>
             <option value="130">130 (2 Lots)</option>
             <option value="195">195 (3 Lots)</option>
@@ -276,6 +279,8 @@ canvas { width: 100% !important; height: 100% !important; display: block; }
       <div id="livePriceOverlayPill">
         <span id="overlayPosType" style="font-weight:800; font-size:9px; padding:1px 4px; border-radius:3px; background:rgba(30,58,138,0.7);">BUY</span>
         <span id="overlayQty" style="font-weight:700; font-size:10px;">65 Qty</span>
+        <span id="overlayEntryLtp">₹0.00 → ₹0.00</span>
+        <span id="overlayMove" style="font-weight:700; font-size:9px; color:var(--text-sub);">Δ ₹0.00 (0.00%)</span>
         <span id="overlayPnl" style="font-weight:800;">+₹0.00</span>
         <button class="pill-action-btn" onclick="openBracketEdit('SL')">SL: <span id="overlaySL">-</span></button>
         <button class="pill-action-btn" onclick="openBracketEdit('TP')">TP: <span id="overlayTP">-</span></button>
@@ -645,6 +650,9 @@ let historicalReplay = null;
 // Historical replay viewport state: keep the Y-axis stable between candles so the chart does not repeatedly drift vertically.
 let historicalYMin = null;
 let historicalYMax = null;
+// Live viewport state: avoid repeated full re-fit on every REST/tick refresh while still recentering when price approaches the edges.
+let liveYMin = null;
+let liveYMax = null;
 
 let audioCtx = null;
 function initAudio() { if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)(); }
@@ -1054,6 +1062,8 @@ function resetChartView(e) {
   priceScaleZoomFactor = 1.0;
   smoothMinP = null;
   smoothMaxP = null;
+  liveYMin = null;
+  liveYMax = null;
   drawChart();
   fetchMarket(true);
 }
@@ -1242,7 +1252,9 @@ function updateUI(data) {
   document.getElementById('headerBal').innerText = `₹${data.wallet.balance.toFixed(0)}`;
   document.getElementById('btnSellLTP').innerText = curLTP.toFixed(2);
   document.getElementById('btnBuyLTP').innerText = curLTP.toFixed(2);
-  document.getElementById('onChartSymbol').innerText = `${data.chart.display_title} • ${currentTimeframe.toUpperCase()} • IDX`;
+  const isOptionChart = /\b(CE|PE)\b/i.test(String(data.chart.display_title||'')) || /\b(CE|PE)\b/i.test(String(currentChartSymbol||''));
+  const marketVenue = isOptionChart ? 'NSE FO' : 'INDEX';
+  document.getElementById('onChartSymbol').innerText = `${data.chart.display_title} • ${currentTimeframe.toUpperCase()} • ${marketVenue}`;
   
   var isSensex = currentChartSymbol.includes("SENSEX");
   const chgVal = isSensex ? data.sensex_chg : data.nifty_chg;
@@ -1290,7 +1302,7 @@ function updateUI(data) {
   data.positions.forEach(p => {
     const isP = p.pnl >= 0;
     const isBuy = p.action === 'BUY';
-    const lSize = p.symbol.includes("SENSEX") ? 10 : 65;
+    const lSize = p.symbol.includes("SENSEX") ? 20 : 65;
     const lots = Math.round(p.qty / lSize);
     posHtml += `
       <div class="pos-item">
@@ -1595,6 +1607,13 @@ function updatePositionPills(data) {
     activePosId=matchingPos.id; overlayPill.style.display='flex';
     const isP=Number(matchingPos.pnl)>=0, pnlEl=document.getElementById('overlayPnl');
     pnlEl.innerText=`${isP?'+':''}₹${Number(matchingPos.pnl||0).toFixed(2)}`; pnlEl.style.color=isP?'var(--green)':'var(--red)';
+    const entry=Number(matchingPos.buy_price||0), ltp=Number(matchingPos.ltp||0);
+    const priceMove = matchingPos.action==='SELL' ? (entry-ltp) : (ltp-entry);
+    const pricePct = entry ? (priceMove/entry)*100 : 0;
+    const entryLtpEl=document.getElementById('overlayEntryLtp');
+    if(entryLtpEl) entryLtpEl.innerText=`₹${entry.toFixed(2)} → ₹${ltp.toFixed(2)}`;
+    const moveEl=document.getElementById('overlayMove');
+    if(moveEl){ moveEl.innerText=`Δ ${priceMove>=0?'+':''}₹${priceMove.toFixed(2)} (${pricePct>=0?'+':''}${pricePct.toFixed(2)}%)`; moveEl.style.color=priceMove>=0?'var(--green)':'var(--red)'; }
     const typeEl=document.getElementById('overlayPosType'); typeEl.innerText=matchingPos.action; typeEl.style.background=matchingPos.action==='BUY'?'rgba(30,58,138,0.7)':'rgba(127,29,29,0.7)';
     const lSize=historicalChartMode&&historicalReplay?.lot_size?Number(historicalReplay.lot_size):(String(matchingPos.symbol||'').includes('SENSEX')?20:65), lots=Math.max(1,Math.round(Number(matchingPos.qty||0)/Math.max(lSize,1)));
     document.getElementById('overlayQty').innerText=`${lots} Lot${lots>1?'s':''} · ${matchingPos.qty} Qty`;
@@ -1700,6 +1719,8 @@ canvas.addEventListener('touchend', e => {
     priceScaleZoomFactor = 1.0;
     smoothMinP = null;
     smoothMaxP = null;
+    liveYMin = null;
+    liveYMax = null;
     drawChart();
   }
   lastCanvasTap = now;
@@ -1803,13 +1824,29 @@ function drawChart() {
     smoothMinP = targetMinP;
     smoothMaxP = targetMaxP;
   } else {
-    if (smoothMinP === null || smoothMaxP === null || Math.abs(smoothMinP - targetMinP) > (targetMaxP - targetMinP) * 1.5) {
-      smoothMinP = targetMinP;
-      smoothMaxP = targetMaxP;
+    // Live market: keep a stable viewport instead of re-fitting to every incoming candle/tick.
+    // Expand/recenter only when price or a bracket is close to the viewport edge.
+    const liveSpanSeed = Math.max(targetMaxP - targetMinP, 0.0001);
+    if (!(liveYMin > 0 && liveYMax > liveYMin)) {
+      const mid = (targetMinP + targetMaxP) / 2;
+      const padded = liveSpanSeed * 0.70;
+      liveYMin = mid - padded;
+      liveYMax = mid + padded;
     } else {
-      smoothMinP += (targetMinP - smoothMinP) * 0.15;
-      smoothMaxP += (targetMaxP - smoothMaxP) * 0.15;
+      const liveSpan = Math.max(liveYMax - liveYMin, liveSpanSeed);
+      const edge = liveSpan * 0.14;
+      const current = Number(marketCache.chart.ltp || ((targetMinP + targetMaxP) / 2));
+      if (targetMinP < liveYMin + edge || targetMaxP > liveYMax - edge || current < liveYMin + edge || current > liveYMax - edge) {
+        const mid = current > 0 ? current : (targetMinP + targetMaxP) / 2;
+        const desiredSpan = Math.max(liveSpan, liveSpanSeed * 1.15);
+        liveYMin = mid - desiredSpan / 2;
+        liveYMax = mid + desiredSpan / 2;
+      }
     }
+    targetMinP = liveYMin;
+    targetMaxP = liveYMax;
+    smoothMinP = targetMinP;
+    smoothMaxP = targetMaxP;
   }
 
   const minP = smoothMinP;
@@ -1967,10 +2004,12 @@ function drawChart() {
     marketCache.chart.strategy_markers.forEach(m=>{
       const mi=candles.findIndex(c=>Number(c.time)===Number(m.time)); if(mi<0) return;
       const x=chartLeft+mi*step+step/2, y=toY(Number(m.price)); const key=mi+'_'+m.signal; const n=seen[key]||0; seen[key]=n+1;
-      const yy=y+(m.signal==='BUY' ? 12+n*12 : -12-n*12); const col=markerColors[m.strategy]||'#94a3b8';
+      const yy=y+(m.signal==='BUY' ? 10+n*9 : -10-n*9); const col=markerColors[m.strategy]||'#94a3b8';
       ctx.fillStyle=col; ctx.strokeStyle=col; ctx.lineWidth=1; ctx.beginPath();
-      if(m.signal==='BUY'){ctx.moveTo(x,yy-5);ctx.lineTo(x-5,yy+4);ctx.lineTo(x+5,yy+4);}else{ctx.moveTo(x,yy+5);ctx.lineTo(x-5,yy-4);ctx.lineTo(x+5,yy-4);} ctx.closePath();ctx.fill();
-      ctx.font='bold 8px sans-serif'; ctx.textAlign='center'; ctx.fillText(markerNames[m.strategy]+' '+m.signal,x,yy+(m.signal==='BUY'?14:-10));
+      if(m.signal==='BUY'){ctx.moveTo(x,yy-4);ctx.lineTo(x-4,yy+3);ctx.lineTo(x+4,yy+3);}else{ctx.moveTo(x,yy+4);ctx.lineTo(x-4,yy-3);ctx.lineTo(x+4,yy-3);} ctx.closePath();ctx.fill();
+      // Live charts use compact tags; historical charts retain full strategy labels.
+      const label = historicalChartMode ? (markerNames[m.strategy]+' '+m.signal) : markerNames[m.strategy];
+      ctx.font='bold 7px sans-serif'; ctx.textAlign='center'; ctx.fillText(label,x,yy+(m.signal==='BUY'?11:-8));
     });
   }
 

@@ -20,3 +20,11 @@ Based on the v2.10.9 historical chart build.
 
 ## Run
 Use the same startup/deployment process as the previous TradeLab build. Render continues to use `DATABASE_URL` for Neon persistence when configured.
+
+
+## v2.11.3 live-market UX polish
+- Stable live chart Y-axis viewport with edge-triggered recentering.
+- Compact collision-aware strategy signal labels on live charts.
+- Responsive live position overlay with entry-to-LTP price movement.
+- Clear INDEX vs NSE FO instrument header metadata.
+- Existing paper-only execution and lots/P&L engine preserved.
