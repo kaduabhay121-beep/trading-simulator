@@ -1,13 +1,22 @@
-# TradeLab v2.10.9 — Historical Chart Stability Fix
+# TradeLab v2.11.0 — Historical Trading UI & Replay Engine
 
-Based on v2.10.8.
+Based on the v2.10.9 historical chart build.
 
-## Fixes
-- Historical chart no longer resets vertical/horizontal pan on every revealed candle.
-- Historical Y-axis is stabilized between candles to prevent repeated upward/downward drift caused by continuous auto-fitting.
-- Y-range only recenters/expands when the visible data approaches the stable range boundary.
-- User vertical pan is preserved during replay.
-- Historical viewport is reset only when starting/exiting a historical session.
-- Existing v2.10.8 P&L overlay CLOSE handling, lots/lot-size model, permanent history, and paper-only execution are retained.
+## Included fixes
+- Stable historical Y-axis viewport: no repeated smooth vertical drift while replaying candles.
+- Historical replay keeps manual viewport position; Y-range only expands when price approaches the edge.
+- Manual historical lots are converted to actual quantity using the selected contract lot size.
+- SENSEX option lot size is 20 units/lot when contract master data is unavailable.
+- P&L uses actual quantity: (LTP-entry)*qty for LONG and (entry-LTP)*qty for SHORT.
+- Historical P&L overlay shows lots, quantity, entry, LTP, price change and unrealized P&L.
+- SL/Target/TSL display OFF when not configured.
+- Historical controller distinguishes next-order lots from the currently open position.
+- Historical overlay CLOSE uses a dedicated interaction layer and a busy guard.
+- Historical CLOSE errors are surfaced in the status area instead of being silently swallowed.
+- Historical close validates that the exit candle is not before the entry candle and persists the updated session.
+- PREV uses the server replay-rewind state reconstruction.
+- Saved historical trade records retain lots, lot size, quantity, entry/exit, P&L and exit reason.
+- Paper trading only. No Angel One order-placement API is called by historical trading.
 
-Paper trading only. No Angel One order-placement API is used.
+## Run
+Use the same startup/deployment process as the previous TradeLab build. Render continues to use `DATABASE_URL` for Neon persistence when configured.

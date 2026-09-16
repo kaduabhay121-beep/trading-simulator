@@ -80,7 +80,7 @@ window.onerror = function(msg, src, line) { alert("FATAL JS ERROR: " + msg + " (
   .limit-price-input { width: 75px; background: #0c1017; border: 1px solid var(--blue); color: #fff; border-radius: 4px; padding: 4px 6px; font-size: 11px; font-weight: 700; outline: none; display: none; }
 
   /* Fully Transparent P&L Overlay */
-  #livePriceOverlayPill { display: none; position: absolute; left: 10px; z-index: 1000; background: rgba(13, 17, 23, 0.45); backdrop-filter: blur(2px); border: 1px solid rgba(255, 255, 255, 0.15); border-radius: 6px; padding: 3px 6px; font-size: 10px; align-items: center; gap: 5px; pointer-events: auto; }
+  #livePriceOverlayPill { display: none; position: absolute; left: 10px; z-index: 5000; background: rgba(13, 17, 23, 0.45); backdrop-filter: blur(2px); border: 1px solid rgba(255, 255, 255, 0.15); border-radius: 6px; padding: 3px 6px; font-size: 10px; align-items: center; gap: 5px; pointer-events: auto; }
   .pill-action-btn { background: rgba(30, 41, 59, 0.6); border: 1px solid rgba(51, 65, 85, 0.6); color: #cbd5e1; padding: 2px 5px; border-radius: 3px; font-size: 9px; font-weight: 800; cursor: pointer; }
   .pill-close-btn { background: rgba(235, 87, 87, 0.8); color: white; border: none; padding: 2px 6px; border-radius: 3px; font-size: 9px; font-weight: 800; cursor: pointer; }
 
@@ -205,10 +205,13 @@ canvas { width: 100% !important; height: 100% !important; display: block; }
           <button type="button" class="hist-ct-btn" onclick="safeHistoricalAction(event, historicalPrevCandle)">◀ PREV</button><button type="button" class="hist-ct-btn" onclick="safeHistoricalAction(event, historicalZoomOut)">− TIME</button><button type="button" class="hist-ct-btn" onclick="safeHistoricalAction(event, historicalZoomIn)">+ TIME</button><button type="button" id="histPlayBtn" class="hist-ct-btn primary" onclick="safeHistoricalAction(event, toggleHistoricalPlay)">▶ PLAY</button><button type="button" class="hist-ct-btn" onclick="safeHistoricalAction(event, historicalNextCandle)">NEXT ▶</button>
           <select id="histSpeed" class="hist-ct-select"><option value="1">1×</option><option value="2">2×</option><option value="5">5×</option><option value="10">10×</option></select>
           <span class="hist-ct-badge">REPLAY <b id="histProgress">0/0</b> · <b id="histReplayTime">—</b></span>
-          <span class="hist-ct-badge">AVAILABLE <b id="histCapital">₹10,00,000</b> · EQUITY <b id="histEquity">₹10,00,000</b> · P&L <b id="histPnl">₹0</b></span>
+          <span class="hist-ct-badge">AVAILABLE <b id="histCapital">₹10,00,000</b> · EQUITY <b id="histEquity">₹10,00,000</b> · TOTAL P&L <b id="histPnl">₹0</b></span>
+        </div>
+        <div class="hist-ct-row" id="histRiskControls" style="display:none">
           <label class="hist-ct-badge" style="display:flex;align-items:center;gap:5px"><input id="histRiskEnabled" type="checkbox" onchange="toggleHistoricalRiskFields()"> SL/Target</label>
           <input id="histStopPrice" class="hist-ct-input" type="number" step="0.01" min="0" placeholder="SL price" style="display:none">
           <input id="histTargetPrice" class="hist-ct-input" type="number" step="0.01" min="0" placeholder="Target price" style="display:none">
+          <span id="histNextOrderStatus" class="hist-ct-badge">NEXT ORDER: 1 LOT</span>
           <button type="button" class="hist-ct-btn buy" onclick="safeHistoricalTrade(event,'BUY')">▲ BUY</button><button type="button" class="hist-ct-btn sell" onclick="safeHistoricalTrade(event,'SELL')">▼ SELL</button>
           <button type="button" class="hist-ct-btn" onclick="safeHistoricalAction(event, finishHistoricalChartSession)">SAVE</button><button type="button" class="hist-ct-btn" onclick="safeHistoricalAction(event, openSavedHistoricalData)">SAVED</button>
         </div>
@@ -1525,8 +1528,11 @@ function renderOptionChain(data) {
 // Position Overlay & Brackets
 let activeEditBracket = 'SL';
 let activePosId = null;
+let overlayCloseBusy = false;
 
 async function closeOverlayPosition(){
+  if(overlayCloseBusy)return;
+  overlayCloseBusy=true;
   try{
     const pill=document.getElementById('livePriceOverlayPill');
     const btn=document.getElementById('btnOverlayClose');
@@ -1541,6 +1547,7 @@ async function closeOverlayPosition(){
       if(id!=null) await exitPosition(id);
     }
   } finally {
+    overlayCloseBusy=false;
     const btn=document.getElementById('btnOverlayClose');
     if(btn){btn.disabled=false;btn.textContent='✕ CLOSE';}
   }
@@ -1554,6 +1561,9 @@ const overlayPillEl=document.getElementById('livePriceOverlayPill');
 if(overlayPillEl){
   ['pointerdown','pointermove','pointerup','touchstart','touchmove','touchend','click'].forEach(type=>overlayPillEl.addEventListener(type,e=>e.stopPropagation(),{passive:false}));
 }
+document.addEventListener('click', e=>{ const b=e.target?.closest?.('#btnOverlayClose'); if(!b)return; e.preventDefault(); e.stopPropagation(); closeOverlayPosition(); }, true);
+document.addEventListener('pointerdown', e=>{ if(e.target?.closest?.('#livePriceOverlayPill')){e.stopPropagation();} }, true);
+document.addEventListener('touchstart', e=>{ if(e.target?.closest?.('#livePriceOverlayPill')){e.stopPropagation();} }, {capture:true,passive:false});
 
 function updatePositionPills(data) {
   let matchingPos = null;
@@ -1570,9 +1580,9 @@ function updatePositionPills(data) {
     const typeEl=document.getElementById('overlayPosType'); typeEl.innerText=matchingPos.action; typeEl.style.background=matchingPos.action==='BUY'?'rgba(30,58,138,0.7)':'rgba(127,29,29,0.7)';
     const lSize=historicalChartMode&&historicalReplay?.lot_size?Number(historicalReplay.lot_size):(String(matchingPos.symbol||'').includes('SENSEX')?20:65), lots=Math.max(1,Math.round(Number(matchingPos.qty||0)/Math.max(lSize,1)));
     document.getElementById('overlayQty').innerText=`${lots} Lot${lots>1?'s':''} · ${matchingPos.qty} Qty`;
-    document.getElementById('overlaySL').innerText=matchingPos.stop_loss?`₹${matchingPos.stop_loss}`:'Set';
-    document.getElementById('overlayTP').innerText=matchingPos.target?`₹${matchingPos.target}`:'Set';
-    document.getElementById('overlayTSL').innerText=matchingPos.trailing_sl?`₹${matchingPos.trailing_sl}`:'Set';
+    document.getElementById('overlaySL').innerText=matchingPos.stop_loss?`₹${Number(matchingPos.stop_loss).toFixed(2)}`:'OFF';
+    document.getElementById('overlayTP').innerText=matchingPos.target?`₹${Number(matchingPos.target).toFixed(2)}`:'OFF';
+    document.getElementById('overlayTSL').innerText=matchingPos.trailing_sl?`₹${Number(matchingPos.trailing_sl).toFixed(2)}`:'OFF';
     document.getElementById('btnOverlayClose').onclick=()=>closeOverlayPosition();
   } else { activePosId=null; overlayPill.style.display='none'; }
 }
@@ -1745,8 +1755,10 @@ function drawChart() {
 
   const midP = (targetMinP + targetMaxP) / 2;
   const span = ((targetMaxP - targetMinP) / 2 || 1) * priceScaleZoomFactor;
-  targetMinP = midP - span + verticalPanOffset;
-  targetMaxP = midP + span + verticalPanOffset;
+  targetMinP = midP - span;
+  targetMaxP = midP + span;
+
+  if (!historicalChartMode) { targetMinP += verticalPanOffset; targetMaxP += verticalPanOffset; }
 
   // In historical replay, do not auto-fit the Y-axis on every newly revealed candle.
   // Repeated auto-fitting makes the entire chart appear to drift upward/downward.
@@ -1768,14 +1780,18 @@ function drawChart() {
     }
     targetMinP = historicalYMin;
     targetMaxP = historicalYMax;
-  }
-
-  if (smoothMinP === null || smoothMaxP === null || Math.abs(smoothMinP - targetMinP) > (targetMaxP - targetMinP) * 1.5) {
+    // Historical replay uses a fixed viewport: never interpolate the Y-axis.
+    // Interpolation caused visible upward/downward drift while candles advanced.
     smoothMinP = targetMinP;
     smoothMaxP = targetMaxP;
   } else {
-    smoothMinP += (targetMinP - smoothMinP) * 0.15;
-    smoothMaxP += (targetMaxP - smoothMaxP) * 0.15;
+    if (smoothMinP === null || smoothMaxP === null || Math.abs(smoothMinP - targetMinP) > (targetMaxP - targetMinP) * 1.5) {
+      smoothMinP = targetMinP;
+      smoothMaxP = targetMaxP;
+    } else {
+      smoothMinP += (targetMinP - smoothMinP) * 0.15;
+      smoothMaxP += (targetMaxP - smoothMaxP) * 0.15;
+    }
   }
 
   const minP = smoothMinP;
@@ -2336,7 +2352,6 @@ function updateHistoricalChartView(){
   if(document.getElementById('histProgress'))document.getElementById('histProgress').innerText=`${idx+1} / ${total}`;
   if(document.getElementById('histReplayTime'))document.getElementById('histReplayTime').innerText=c?replayLogTime(c.time):'—';
   if(document.getElementById('histCapital'))document.getElementById('histCapital').innerText=money(historicalReplay.balance);
-  if(document.getElementById('histPnl')){document.getElementById('histPnl').innerText=money(historicalReplay.realized_pnl);document.getElementById('histPnl').className=historicalReplay.realized_pnl>=0?'bot-good':'bot-bad';}
   const p=historicalReplay.position;
   const ps=document.getElementById('histPositionStatus');
   let unreal=0;
@@ -2346,6 +2361,7 @@ function updateHistoricalChartView(){
   if(document.getElementById('histPnl')){document.getElementById('histPnl').innerText=money(totalPnl);document.getElementById('histPnl').className=totalPnl>=0?'bot-good':'bot-bad';}
   if(document.getElementById('histEquity'))document.getElementById('histEquity').innerText=money(Number(historicalReplay.balance||0)+Number(historicalReplay.unrealized_pnl||0));
   updateHistoricalLotMeta();
+  const nos=document.getElementById('histNextOrderStatus'); if(nos){const lots=Math.max(1,Math.floor(Number(document.getElementById('histChartQty')?.value||historicalReplay.lots||1))); const ls=Number(historicalReplay.lot_size||historicalLotSize()||1); nos.innerText=historicalReplay.position?`OPEN: ${Number(historicalReplay.position.lots||1)} LOT${Number(historicalReplay.position.lots||1)>1?'S':''} · ${Number(historicalReplay.position.qty||0)} QTY`:`NEXT ORDER: ${lots} LOT${lots>1?'S':''} · ${lots*ls} QTY`;}
   updatePositionPills();
   if(ps){ps.style.display=p?'block':'none'; if(p){const sl=p.stop_loss?` · SL ₹${Number(p.stop_loss).toFixed(2)}`:'';const tp=p.target?` · Target ₹${Number(p.target).toFixed(2)}`:'';ps.innerHTML=`OPEN ${p.side==='SHORT'?'SHORT':'LONG'} · ${Number(p.lots||1)} Lot${Number(p.lots||1)>1?'s':''} · ${p.qty} Qty · Entry ₹${Number(p.entry).toFixed(2)} · LTP ₹${Number(ch.ltp).toFixed(2)} · Unrealized ${money(unreal)}${sl}${tp}`;}}
   drawChart();
@@ -2391,7 +2407,7 @@ async function startHistoricalChartTrading(){
     const qtyEl=document.getElementById('histChartQty'); if(qtyEl)qtyEl.value=Math.max(1,Math.min(10000,Math.floor(historicalReplay.lots))); updateHistoricalLotMeta();
     historicalChartMode=true; currentChartSymbol=(instrument==='OPTION'?(d.session.contract_symbol||'OPTION'):under); currentTimeframe=(tf/60)+'m'; currentTradeMode='MARKET';
     document.getElementById('historicalChartToolbar')?.classList.add('open');
-    document.getElementById('histControls').style.display='flex'; document.getElementById('histExitBtn').style.display='inline-block';
+    document.getElementById('histControls').style.display='flex'; const hrc=document.getElementById('histRiskControls'); if(hrc)hrc.style.display='flex'; document.getElementById('histExitBtn').style.display='inline-block';
     if(out)out.innerText=`HISTORICAL · ${date} · ${d.session.display_symbol||under} · ${tf/60}m · ${historicalReplay.candles.length} candles · paper-only`;
     updateHistoricalChartView();
   }catch(e){
@@ -2409,7 +2425,7 @@ function diagnosticPreviousTradingDayFromError(msg){
 }
 function exitHistoricalChartTrading(){
   if(historicalReplay?.playing) toggleHistoricalPlay(true);
-  historicalChartMode=false; historicalReplay=null; resetHistoricalViewport(); const hc=document.getElementById('histControls'); if(hc)hc.style.display='none'; const hp=document.getElementById('histProgressRow'); if(hp)hp.style.display='none'; const hs=document.getElementById('histStatsRow'); if(hs)hs.style.display='none'; const he=document.getElementById('histExitBtn'); if(he)he.style.display='none';
+  historicalChartMode=false; historicalReplay=null; resetHistoricalViewport(); const hc=document.getElementById('histControls'); if(hc)hc.style.display='none'; const hrc=document.getElementById('histRiskControls'); if(hrc)hrc.style.display='none'; const hp=document.getElementById('histProgressRow'); if(hp)hp.style.display='none'; const hs=document.getElementById('histStatsRow'); if(hs)hs.style.display='none'; const he=document.getElementById('histExitBtn'); if(he)he.style.display='none';
   document.getElementById('histChartStatus').innerText='Historical mode closed. Live chart restored.'; document.getElementById('historicalChartToolbar')?.classList.remove('open'); fetchMarket(true);
 }
 function historicalZoomIn(){ if(!historicalReplay)return; visibleCandleCount=Math.max(10,Math.round(visibleCandleCount*0.8)); panOffset=Math.min(Math.max(0,historicalReplay.candles.length-visibleCandleCount),panOffset); drawChart(); }
