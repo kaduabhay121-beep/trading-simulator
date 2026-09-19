@@ -596,6 +596,95 @@ def calc_rsi(closes, period=14):
     if al == 0: return 100.0
     return round(100 - (100/(1 + ag/al)),2)
 
+def _resample_ohlcv(rows, seconds):
+    """Local OHLCV resampling used by structural strategies; no future candles."""
+    rows=_align_candles(rows)
+    if not rows: return []
+    buckets={}
+    for c in rows:
+        ts=int(c.get('time',0)); b=ts-(ts % int(seconds)); x=buckets.get(b)
+        if x is None:
+            buckets[b]={'time':b,'open':float(c['open']),'high':float(c['high']),'low':float(c['low']),'close':float(c['close']),'volume':float(c.get('volume',0) or 0)}
+        else:
+            x['high']=max(x['high'],float(c['high'])); x['low']=min(x['low'],float(c['low'])); x['close']=float(c['close']); x['volume']+=float(c.get('volume',0) or 0)
+    return [buckets[k] for k in sorted(buckets)]
+
+def _volume_available(rows):
+    return bool(rows) and sum(float(c.get('volume',0) or 0) for c in rows) > 0
+
+def _rbs_sbr_signal(candles, direction='RBS'):
+    """Indian-market structural flip model.
+
+    RBS: higher-timeframe closing resistance is broken, then a corrective M15
+    retest rejects the level and closes back above it.
+    SBR: inverse structure. SBR is an EXIT signal for the long-only live bot.
+
+    Volume filters are enforced when real volume exists. Index feeds that do not
+    publish volume are explicitly marked as unavailable rather than inventing 0.
+    """
+    rows=_align_candles(candles)
+    if len(rows)<120: return 'HOLD',0.0,{'setup':direction,'status':'NEED_MORE_CANDLES'}
+    # Prefer H4 structure when enough intraday history exists; otherwise use the
+    # highest available 60-minute structure. Never fabricate multi-month history.
+    h4=_resample_ohlcv(rows,240*60)
+    h1=_resample_ohlcv(rows,60*60)
+    structure=h4 if len(h4)>=4 else h1
+    if len(structure)<4:
+        return 'HOLD',0.0,{'setup':direction,'status':'INSUFFICIENT_HTF_DATA'}
+    # Last completed HTF bar is not used to define the level being tested.
+    lookback=structure[-6:-1]
+    if len(lookback)<3: return 'HOLD',0.0,{'setup':direction,'status':'INSUFFICIENT_HTF_DATA'}
+    if direction=='RBS':
+        level=max(float(c['close']) for c in lookback)
+        prior=lookback[-2]
+        broken=prior['close']>level if prior is not lookback[-1] else False
+    else:
+        level=min(float(c['close']) for c in lookback)
+        prior=lookback[-2]
+        broken=prior['close']<level if prior is not lookback[-1] else False
+    # Use a simpler and deterministic breakout search: a completed HTF candle
+    # must close beyond the prior HTF closing range.
+    for j in range(max(1,len(structure)-4),len(structure)):
+        if j>=len(structure)-1: continue
+        prev_range=structure[max(0,j-5):j]
+        if not prev_range: continue
+        if direction=='RBS' and structure[j]['close']>max(float(x['close']) for x in prev_range):
+            level=max(float(x['close']) for x in prev_range); broken=True; break
+        if direction=='SBR' and structure[j]['close']<min(float(x['close']) for x in prev_range):
+            level=min(float(x['close']) for x in prev_range); broken=True; break
+    if not broken: return 'HOLD',0.0,{'level':level,'setup':direction,'status':'NO_BOS'}
+
+    m15=_resample_ohlcv(rows,15*60)
+    if len(m15)<4: return 'HOLD',0.0,{'level':level,'setup':direction,'status':'NEED_M15'}
+    # Current M15 bar is used only as the trigger; previous completed bars form the
+    # corrective retest context.
+    cur=m15[-1]; prev=m15[-2]
+    retest= float(cur['low'])<=level*1.001 if direction=='RBS' else float(cur['high'])>=level*0.999
+    close_ok=float(cur['close'])>level if direction=='RBS' else float(cur['close'])<level
+    prev_vol=float(prev.get('volume',0) or 0); cur_vol=float(cur.get('volume',0) or 0)
+    vol_ok=False; volume_status='UNAVAILABLE'
+    if _volume_available(m15[-8:]) and _volume_available(structure[-21:]):
+        # Breakout volume > 1.5x 20-bar average when a real volume series exists.
+        breakout_vol=float(structure[-2].get('volume',0) or 0)
+        avgv=sum(float(x.get('volume',0) or 0) for x in structure[-21:-1])/max(1,min(20,len(structure)-1))
+        breakout_ok=breakout_vol>=1.5*avgv if avgv>0 else False
+        # Retest should contract versus the preceding M15 bar.
+        vol_ok=breakout_ok and (cur_vol<=prev_vol if prev_vol>0 else True)
+        volume_status='PASS' if vol_ok else 'FAIL'
+    # Rejection candle: bullish/bearish close with meaningful wick at the level.
+    rng=max(float(cur['high'])-float(cur['low']),0.01)
+    if direction=='RBS':
+        lower_wick=min(float(cur['open']),float(cur['close']))-float(cur['low'])
+        rejection=lower_wick/rng>=0.25 or float(cur['close'])>float(cur['open'])
+        if retest and close_ok and rejection and vol_ok:
+            return 'BUY',0.86,{'level':round(level,2),'setup':'RBS','timeframe':'H4/M15','volume':volume_status,'retest':'PASS'}
+    else:
+        upper_wick=float(cur['high'])-max(float(cur['open']),float(cur['close']))
+        rejection=upper_wick/rng>=0.25 or float(cur['close'])<float(cur['open'])
+        if retest and close_ok and rejection and vol_ok:
+            return 'SELL',0.86,{'level':round(level,2),'setup':'SBR','timeframe':'H4/M15','volume':volume_status,'retest':'PASS'}
+    return 'HOLD',0.0,{'level':round(level,2),'setup':direction,'timeframe':'H4/M15','volume':volume_status,'retest':'WATCH'}
+
 def strategy_signal(candles, strategy):
     if len(candles) < 25: return 'HOLD', 0.0, {}
     closes=[float(c['close']) for c in candles]
@@ -606,36 +695,21 @@ def strategy_signal(candles, strategy):
     last=closes[-1]
     if strategy=='EMA_CROSS':
         prev9=calc_ema_series(closes[:-1],9)[-1]; prev15=calc_ema_series(closes[:-1],15)[-1]
-        if prev9<=prev15 and ema9>ema15: return 'BUY',0.80,{'ema9':ema9,'ema15':ema15}
-        if prev9>=prev15 and ema9<ema15: return 'SELL',0.80,{'ema9':ema9,'ema15':ema15}
+        if prev9<=prev15 and ema9>ema15: return 'BUY',0.80,{'ema9':ema9,'ema15':ema15,'setup':'EMA_CROSS'}
+        if prev9>=prev15 and ema9<ema15: return 'SELL',0.80,{'ema9':ema9,'ema15':ema15,'setup':'EMA_CROSS'}
     elif strategy=='RSI_MEAN_REVERT':
-        if rsi<=30 and last>closes[-2]: return 'BUY',0.75,{'rsi':rsi}
-        if rsi>=70 and last<closes[-2]: return 'SELL',0.75,{'rsi':rsi}
+        if rsi<=30 and last>closes[-2]: return 'BUY',0.75,{'rsi':rsi,'setup':'RSI_MEAN_REVERT'}
+        if rsi>=70 and last<closes[-2]: return 'SELL',0.75,{'rsi':rsi,'setup':'RSI_MEAN_REVERT'}
     elif strategy=='VWAP_REVERT':
-        if last < vwap*0.998 and last>closes[-2]: return 'BUY',0.72,{'vwap':vwap}
-        if last > vwap*1.002 and last<closes[-2]: return 'SELL',0.72,{'vwap':vwap}
+        if last < vwap*0.998 and last>closes[-2]: return 'BUY',0.72,{'vwap':vwap,'setup':'VWAP_REVERT'}
+        if last > vwap*1.002 and last<closes[-2]: return 'SELL',0.72,{'vwap':vwap,'setup':'VWAP_REVERT'}
     elif strategy=='BREAKOUT':
-        if last>high20: return 'BUY',0.82,{'breakout':high20}
-        if last<low20: return 'SELL',0.82,{'breakout':low20}
+        if last>high20: return 'BUY',0.82,{'breakout':high20,'setup':'BREAKOUT'}
+        if last<low20: return 'SELL',0.82,{'breakout':low20,'setup':'BREAKOUT'}
     elif strategy=='RBS':
-        # Resistance -> Support: the previous candle broke the prior 20-bar resistance;
-        # the current candle retests that level and closes back above it.
-        level=max(float(c['high']) for c in candles[-21:-1])
-        # Do not include the breakout candle itself in the resistance calculation.
-        if len(candles)>=23:
-            level=max(float(c['high']) for c in candles[-22:-2])
-        prev=float(candles[-2]['close']); cur=candles[-1]
-        if prev>level and float(cur['low'])<=level*1.001 and float(cur['close'])>level:
-            return 'BUY',0.78,{'level':level,'setup':'RBS'}
+        return _rbs_sbr_signal(candles,'RBS')
     elif strategy=='SBR':
-        # Support -> Resistance: the previous candle broke prior 20-bar support;
-        # the current candle retests that level and closes back below it.
-        level=min(float(c['low']) for c in candles[-21:-1])
-        if len(candles)>=23:
-            level=min(float(c['low']) for c in candles[-22:-2])
-        prev=float(candles[-2]['close']); cur=candles[-1]
-        if prev<level and float(cur['high'])>=level*0.999 and float(cur['close'])<level:
-            return 'SELL',0.78,{'level':level,'setup':'SBR'}
+        return _rbs_sbr_signal(candles,'SBR')
     return 'HOLD',0.0,{'rsi':rsi,'ema9':ema9,'ema15':ema15,'vwap':vwap}
 
 
@@ -851,35 +925,18 @@ def _option_backtest(strategy, underlying, option_mode, days, sl_pct, tp_pct, st
     return {'ok':True,'mode':option_mode,'underlying':underlying,'strategy':strategy,'timeframe':timeframe,'trade_type':trade_type,'lot_multiplier':lot_multiplier,'candles':len(base),'trades':len(trades),'wins':int(wins),'losses':int(losses),'win_rate':round(wins/len(trades)*100,1) if trades else 0.0,'net_pnl':round(net,2),'return_pct':round(net/starting_balance*100,2),'profit_factor':round(pf,2),'max_drawdown':round(max_dd,2),'rr_ratio':_rr_ratio(sl_pct,tp_pct),'trades_detail':trades,'data_note':'Historical option candles; research only; no Angel One orders are sent.'}
 
 def build_strategy_markers(candles):
-    """Generate deterministic BUY/SELL markers for every strategy without trading."""
+    """Generate isolated markers for each strategy. UI can toggle them independently."""
     rows=_align_candles(candles)
     if len(rows)<25: return []
-    closes=[float(c['close']) for c in rows]
-    ema9=calc_ema_series(closes,9); ema15=calc_ema_series(closes,15)
     out=[]
     for i in range(24,len(rows)):
-        c=rows[i]; last=closes[i]
-        # EMA cross
-        if ema9[i-1] <= ema15[i-1] and ema9[i] > ema15[i]: out.append({'time':c['time'],'price':last,'signal':'BUY','strategy':'EMA_CROSS','confidence':0.80})
-        elif ema9[i-1] >= ema15[i-1] and ema9[i] < ema15[i]: out.append({'time':c['time'],'price':last,'signal':'SELL','strategy':'EMA_CROSS','confidence':0.80})
-        # RSI mean reversion
-        rsi=calc_rsi(closes[:i+1],14)
-        if rsi<=30 and last>closes[i-1]: out.append({'time':c['time'],'price':last,'signal':'BUY','strategy':'RSI_MEAN_REVERT','confidence':0.75})
-        elif rsi>=70 and last<closes[i-1]: out.append({'time':c['time'],'price':last,'signal':'SELL','strategy':'RSI_MEAN_REVERT','confidence':0.75})
-        # VWAP mean reversion
-        vw=calc_vwap_series(rows[max(0,i-19):i+1])[-1]
-        if last < vw*0.998 and last>closes[i-1]: out.append({'time':c['time'],'price':last,'signal':'BUY','strategy':'VWAP_REVERT','confidence':0.72})
-        elif last > vw*1.002 and last<closes[i-1]: out.append({'time':c['time'],'price':last,'signal':'SELL','strategy':'VWAP_REVERT','confidence':0.72})
-        # 20-candle breakout
-        high20=max(float(x['high']) for x in rows[i-20:i]); low20=min(float(x['low']) for x in rows[i-20:i])
-        if last>high20: out.append({'time':c['time'],'price':last,'signal':'BUY','strategy':'BREAKOUT','confidence':0.82})
-        elif last<low20: out.append({'time':c['time'],'price':last,'signal':'SELL','strategy':'BREAKOUT','confidence':0.82})
-        # RBS / SBR: prior candle breaks a prior 20-bar level; current candle retests it.
-        if i>=22:
-            level=max(float(x['high']) for x in rows[i-21:i-1]); prev=float(rows[i-1]['close'])
-            if prev>level and float(c['low'])<=level*1.001 and last>level: out.append({'time':c['time'],'price':last,'signal':'BUY','strategy':'RBS','confidence':0.78,'level':level})
-            level=min(float(x['low']) for x in rows[i-21:i-1]);
-            if prev<level and float(c['high'])>=level*0.999 and last<level: out.append({'time':c['time'],'price':last,'signal':'SELL','strategy':'SBR','confidence':0.78,'level':level})
+        history=rows[:i+1]
+        for strategy in STRATEGIES:
+            signal,conf,meta=strategy_signal(history,strategy)
+            if signal in ('BUY','SELL') and conf>=0.70:
+                m={'time':rows[i]['time'],'price':float(rows[i]['close']),'signal':signal,'strategy':strategy,'confidence':conf}
+                if isinstance(meta,dict) and 'level' in meta: m['level']=meta['level']
+                out.append(m)
     return out
 
 

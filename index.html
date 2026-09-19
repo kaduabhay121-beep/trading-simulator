@@ -201,7 +201,7 @@ canvas { width: 100% !important; height: 100% !important; display: block; }
       <span class="ind-pill" id="pillEMA9" style="color:var(--orange);" onclick="toggleInd('ema9')">9 EMA</span>
       <span class="ind-pill" id="pillEMA15" style="color:var(--purple);" onclick="toggleInd('ema15')">15 EMA</span>
       <span class="ind-pill" id="pillVWAP" style="color:var(--blue);" onclick="toggleInd('vwap')">VWAP</span>
-      <span class="ind-pill" id="pillVol" style="color:var(--green);" onclick="toggleInd('vol')">VOL</span><span class="ind-pill" id="pillSignals" style="color:#22c55e;" onclick="toggleInd('signals')">ALL SIGNALS</span>
+      <span class="ind-pill" id="pillVol" style="color:var(--green);" onclick="toggleInd('vol')">VOL</span><span class="ind-pill signal-pill" id="pillSigEMA" style="color:#f59e0b;" onclick="toggleInd('sigEMA')">EMA SIG</span><span class="ind-pill signal-pill" id="pillSigRSI" style="color:#06b6d4;" onclick="toggleInd('sigRSI')">RSI SIG</span><span class="ind-pill signal-pill" id="pillSigVWAP" style="color:#3b82f6;" onclick="toggleInd('sigVWAP')">VWAP SIG</span><span class="ind-pill signal-pill" id="pillSigBO" style="color:#22c55e;" onclick="toggleInd('sigBO')">BO SIG</span><span class="ind-pill signal-pill" id="pillSigRBS" style="color:#84cc16;" onclick="toggleInd('sigRBS')">RBS SIG</span><span class="ind-pill signal-pill" id="pillSigSBR" style="color:#ef4444;" onclick="toggleInd('sigSBR')">SBR SIG</span><span class="ind-pill" id="pillSignals" style="color:#22c55e;" onclick="toggleAllSignals()">ALL SIG</span>
       <span class="greeks-badge" id="hudDelta">Δ: 1.00</span>
       <span class="greeks-badge" id="hudTheta">Θ: 0.00</span>
       <span class="greeks-badge" id="hudGamma">Γ: 0.00</span>
@@ -637,7 +637,7 @@ let panOffset = 0;
 let panOffsetFloat = 0;
 let verticalPanOffset = 0;
 
-let configInd = { ema9: true, ema15: true, vwap: true, vol: true, signals: true };
+let configInd = { ema9: true, ema15: true, vwap: true, vol: true, signals: true, sigEMA: true, sigRSI: true, sigVWAP: true, sigBO: true, sigRBS: true, sigSBR: true };
 let userWatchlist = (() => {
   try {
     const saved = JSON.parse(localStorage.getItem('sim_watchlist') || 'null');
@@ -834,7 +834,7 @@ viewport.addEventListener('touchmove', e => {
         // Drag right = fewer candles (zoom in), drag left = more candles (zoom out).
         const factor = Math.exp(-dx / 140);
         visibleCandleCount = Math.round(Math.max(10, Math.min(150, visibleCandleCount * factor)));
-        const total = Array.isArray(marketCache?.chart?.candles) ? marketCache.chart.candles.length : 0;
+        const total = marketCache.chart.candles.length;
         panOffsetFloat = Math.max(0, Math.min(Math.max(0, total - visibleCandleCount), Number(panOffsetFloat || panOffset || 0)));
         panOffset = Math.floor(panOffsetFloat);
         dragStartX = touchX;
@@ -850,7 +850,7 @@ viewport.addEventListener('touchmove', e => {
       // Smooth horizontal panning: keep fractional candle displacement so even a small
       // finger movement visibly moves the chart instead of waiting for a full candle.
       if (Math.abs(dx) >= 0.5) {
-        const total = Array.isArray(marketCache?.chart?.candles) ? marketCache.chart.candles.length : 0;
+        const total = marketCache.chart.candles.length;
         const maxPan = Math.max(0, total - visibleCandleCount);
         panOffsetFloat = Math.max(0, Math.min(maxPan, Number(panOffsetFloat || panOffset || 0) + (dx / candlePx)));
         panOffset = Math.floor(panOffsetFloat);
@@ -978,11 +978,11 @@ function onLomQtyChange() {
 }
 
 function updateLomMargin() {
-  if (!marketCache?.chart) return;
+  if (!marketCache) return;
   var isSensex = currentChartSymbol.includes("SENSEX");
   const lotSize = isSensex ? 20 : 65;
   const qty = parseInt(document.getElementById('selectLomQty').value, 10) || lotSize;
-  const price = parseFloat(document.getElementById('inputLomPrice').value) || marketCache?.chart?.ltp || 0;
+  const price = parseFloat(document.getElementById('inputLomPrice').value) || marketCache.chart.ltp;
   
   let marginPerUnit = 0;
   if (currentChartSymbol.includes('_')) {
@@ -1004,7 +1004,6 @@ function updateLomMargin() {
 }
 
 async function submitLomOrder() {
-  if (!marketCache?.chart && !historicalChartMode) { alert('Market data is still loading. Please wait a moment.'); return; }
   if (historicalChartMode) { await historicalChartLimitTrade(); return; }
   const qty = parseInt(document.getElementById('selectLomQty').value, 10);
   const price = parseFloat(document.getElementById('inputLomPrice').value) || 0;
@@ -1056,7 +1055,7 @@ function setTradeMode(mode) {
   
   const lmtInput = document.getElementById('inputLimitPriceDirect');
   lmtInput.style.display = mode === 'LIMIT' ? 'inline-block' : 'none';
-  if (mode === 'LIMIT' && marketCache?.chart && !lmtInput.value) {
+  if (mode === 'LIMIT' && marketCache && !lmtInput.value) {
     lmtInput.value = marketCache.chart.ltp.toFixed(1);
   }
   document.getElementById('btnBuyLabel').innerText = mode === 'LIMIT' ? 'BUY LMT' : 'BUY';
@@ -1065,9 +1064,19 @@ function setTradeMode(mode) {
 
 function toggleInd(name) {
   configInd[name] = !configInd[name];
-  const ids={ema9:'pillEMA9',ema15:'pillEMA15',vwap:'pillVWAP',vol:'pillVol',signals:'pillSignals'};
+  const ids={ema9:'pillEMA9',ema15:'pillEMA15',vwap:'pillVWAP',vol:'pillVol',signals:'pillSignals',sigEMA:'pillSigEMA',sigRSI:'pillSigRSI',sigVWAP:'pillSigVWAP',sigBO:'pillSigBO',sigRBS:'pillSigRBS',sigSBR:'pillSigSBR'};
   const el = document.getElementById(ids[name]);
   if (el) el.classList.toggle('disabled', !configInd[name]);
+  if (name.startsWith('sig')) configInd.signals = ['sigEMA','sigRSI','sigVWAP','sigBO','sigRBS','sigSBR'].some(n=>configInd[n]);
+  drawChart();
+}
+
+function toggleAllSignals() {
+  const names=['sigEMA','sigRSI','sigVWAP','sigBO','sigRBS','sigSBR'];
+  const next=!names.every(n=>configInd[n]);
+  names.forEach(n=>{configInd[n]=next; const id={sigEMA:'pillSigEMA',sigRSI:'pillSigRSI',sigVWAP:'pillSigVWAP',sigBO:'pillSigBO',sigRBS:'pillSigRBS',sigSBR:'pillSigSBR'}[n]; const el=document.getElementById(id); if(el) el.classList.toggle('disabled',!next);});
+  configInd.signals=next;
+  const all=document.getElementById('pillSignals'); if(all) all.classList.toggle('disabled',!next);
   drawChart();
 }
 
@@ -1258,21 +1267,23 @@ function renderWatchlist() {
 
 // Fetch Engine
 let marketFetchInFlight = false;
-let marketFirstResponseReceived = false;
 async function fetchMarket(force=false) {
   if (historicalChartMode) return;
-  // Heavy /api/market includes candles + option-chain work. Never abort a normal
-  // in-flight refresh just because the 2s timer fired; doing so can starve the
-  // chart forever when the backend takes longer than one polling interval.
-  // A forced refresh (instrument switch / explicit reload) is allowed to cancel
-  // the previous request.
+
+  // The market endpoint is intentionally heavier than the SSE tick path because it
+  // seeds the chart with real historical candles and also refreshes option-chain data.
+  // Never abort a normal in-flight request just because the 500/1000 ms refresh timer
+  // fired again: doing so can starve the very first live chart response forever.
+  // Explicit user-driven refreshes (symbol/timeframe/New/recovery) may still abort a
+  // stale request so the newly selected instrument wins.
   if (marketFetchInFlight) {
     if (!force) return;
-    if (activeMarketAbort) { try { activeMarketAbort.abort(); } catch (_) {} }
+    if (activeMarketAbort) {
+      try { activeMarketAbort.abort(); } catch (_) {}
+    }
   }
   marketFetchInFlight = true;
   const requestSeq=++marketRequestSeq, requestSymbol=currentChartSymbol, requestTf=currentTimeframe, requestExpiry=currentSelectedExpiry;
-  if (activeMarketAbort) { try{activeMarketAbort.abort();}catch(_){} }
   const controller = new AbortController(); activeMarketAbort=controller;
   try {
     const expiryParam = requestExpiry ? `&expiry=${encodeURIComponent(requestExpiry)}` : '';
@@ -1287,7 +1298,6 @@ async function fetchMarket(force=false) {
     if (!data || !data.chart || !data.wallet) throw new Error('Invalid market response');
     marketCache = data;
     lastLiveMarketCache = data;
-    marketFirstResponseReceived = true;
     if (data.sounds && data.sounds.length > 0) data.sounds.forEach(s => playSound(s));
     updateUI(data);
     const d = document.getElementById('debugOverlay');
@@ -2187,12 +2197,13 @@ function drawChart() {
   if (configInd.signals && Array.isArray(marketCache.chart.strategy_markers)) {
     const markerColors={EMA_CROSS:'#f59e0b',RSI_MEAN_REVERT:'#06b6d4',VWAP_REVERT:'#3b82f6',BREAKOUT:'#22c55e',RBS:'#84cc16',SBR:'#ef4444'};
     const markerNames={EMA_CROSS:'EMA',RSI_MEAN_REVERT:'RSI',VWAP_REVERT:'VWAP',BREAKOUT:'BO',RBS:'RBS',SBR:'SBR'};
+    const enabled={EMA_CROSS:configInd.sigEMA,RSI_MEAN_REVERT:configInd.sigRSI,VWAP_REVERT:configInd.sigVWAP,BREAKOUT:configInd.sigBO,RBS:configInd.sigRBS,SBR:configInd.sigSBR};
     const groups=new Map();
-    marketCache.chart.strategy_markers.forEach(m=>{const mi=candles.findIndex(c=>Number(c.time)===Number(m.time));if(mi<0)return;const k=mi+'_'+m.signal;if(!groups.has(k))groups.set(k,{mi,signal:m.signal,items:[]});groups.get(k).items.push(m);});
+    marketCache.chart.strategy_markers.forEach(m=>{if(!enabled[m.strategy])return;const mi=candles.findIndex(c=>Number(c.time)===Number(m.time));if(mi<0)return;const k=mi+'_'+m.signal;if(!groups.has(k))groups.set(k,{mi,signal:m.signal,items:[]});groups.get(k).items.push(m);});
     groups.forEach(g=>{
       const x=chartLeft+g.mi*step+step/2, y=toY(Number(g.items[0].price));
       const unique=[...new Map(g.items.map(m=>[m.strategy,m])).values()];
-      const n=Math.min(unique.length,4), dir=g.signal==='BUY'?1:-1;
+      const n=Math.min(unique.length,4);
       const yy=y+(g.signal==='BUY'?10:-10);
       unique.slice(0,n).forEach((m,j)=>{
         const off=(j-(n-1)/2)*8; const col=markerColors[m.strategy]||'#94a3b8';
@@ -2887,7 +2898,7 @@ const histDateEl2=document.getElementById('histChartDate'); if(histDateEl2) hist
 const replayDateEl=document.getElementById('replayDate'); if(replayDateEl && !replayDateEl.value) replayDateEl.value=historicalDefaultDate();
 renderTabs();
 renderWatchlist();
-setInterval(() => fetchMarket(false), 2000);
+setInterval(() => fetchMarket(false), 1000);
 setInterval(() => { if (!historicalChartMode && currentChartSymbol && (!liveEventSource || liveEventSource.readyState === EventSource.CLOSED)) connectLiveStream(); }, 1000);
 connectLiveStream();
 setInterval(updateLocalCountdown, 250);
