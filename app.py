@@ -109,24 +109,27 @@ def calc_deep_greeks(spot, strike, dte_days, iv=14.3, r=0.065, is_sensex=False):
 
 
 def calc_vwap_series(candles):
-    """Session VWAP: reset cumulative price*volume at each trading date.
-    A multi-day chart must not carry yesterday's volume into today's VWAP.
+    """True session VWAP using broker-supplied traded volume.
+    Never invent volume: if an instrument provides no usable volume, VWAP is unavailable.
     """
     if not candles: return []
-    out=[]; pv=0.0; vol=0; session_key=None
+    out=[]; pv=0.0; vol=0.0; session_key=None; usable=False
     for c in candles:
         ts=float(c.get('time',0) or 0)
-        try:
-            key=datetime.fromtimestamp(ts, IST).strftime('%Y-%m-%d') if ts else None
-        except Exception:
-            key=None
+        try: key=datetime.fromtimestamp(ts, IST).strftime('%Y-%m-%d') if ts else None
+        except Exception: key=None
         if session_key is not None and key != session_key:
-            pv=0.0; vol=0
+            pv=0.0; vol=0.0; usable=False
         session_key=key
-        v=max(int(c.get('volume',0)),1)
-        pv += ((c['high']+c['low']+c['close'])/3)*v
-        vol += v
+        try: v=float(c.get('volume',0) or 0)
+        except Exception: v=0.0
+        if v <= 0:
+            out.append(None)
+            continue
+        tp=(float(c.get('high',0))+float(c.get('low',0))+float(c.get('close',0)))/3.0
+        pv += tp*v; vol += v; usable=True
         out.append(round(pv/vol,2))
+    # Preserve alignment while making unavailable sessions explicit.
     return out
 
 
@@ -977,7 +980,7 @@ class SimulationState:
         # Browser live-feed subscribers. Each symbol gets an event queue so ticks are
         # pushed immediately instead of waiting for client-side HTTP polling.
         self.tick_stream_lock=threading.Lock(); self.tick_streams={}
-        self.positions=[]; self.pending_orders=[]; self.orders=[]; self.closed_trades=[]; self.candles_1m=[]; self.order_counter=100
+        self.positions=[]; self.pending_orders=[]; self.orders=[]; self.closed_trades=[]; self.candles_1m=[]; self.sensex_candles_1m=[]; self.order_counter=100
         self.live_chain_cache={}; self.chart_cache={}; self.market_cache={}; self.market_cache_ts=0; self.angel=AngelOneData(); self.bot={'enabled':False,'strategy':'EMA_CROSS','underlying':'NIFTY','instrument_mode':'INDEX','qty':1,'risk_per_trade':1.0,'max_daily_loss':2.0,'stop_loss_pct':0.6,'target_pct':1.2,'last_signal':'HOLD','last_confidence':0,'last_reason':'Waiting for signal…','trades_today':0,'daily_pnl':0.0,'last_trade_ts':0,'last_eval_ts':0,'risk_lock':False,'risk_lock_reason':'','last_entry_price':0.0,'max_trades_per_day':5,'max_open_positions':1,'cooldown_sec':60,'trade_count_today':0,'session_date':datetime.now(IST).strftime('%Y-%m-%d'),'last_signal_change_ts':0,'strategy_stats':{k:{'trades':0,'wins':0,'loss':0,'pnl':0.0,'status':'UNVALIDATED'} for k in STRATEGIES},'initial_balance':1000000.0}; self._load_state(); self._init_history(); self.bot['enabled']=False; self._running=True
         threading.Thread(target=self._tick_loop,daemon=True).start()
 
@@ -1167,6 +1170,7 @@ class SimulationState:
                         self.prev_close=float(z['close'])
                 self.sensex_spot=self._sensex_ltp()
                 self.sensex_prev_close=self.sensex_spot
+                # SENSEX candles are hydrated lazily; live ticks build the current session cache.
                 return
         # Existing development fallback remains isolated to ANGELONE_ENABLED=0.
         now_ts=int(time.time()); cur=(now_ts//60)*60; p=self.nifty_spot; out=[]
@@ -1225,7 +1229,9 @@ class SimulationState:
         if underlying=='NIFTY':
             return list(self.candles_1m)
         # Build SENSEX history from its own instrument when available; otherwise use a small rolling cache.
-        key=('SENSEX','1m'); cached=self.chart_cache.get(key)
+        key=('SENSEX','1m');
+        if self.sensex_candles_1m: return [dict(c) for c in self.sensex_candles_1m]
+        cached=self.chart_cache.get(key)
         if cached and cached.get('candles'): return [dict(c) for c in cached['candles']]
         if self.angel.enabled:
             inst=self.angel.find_index('SENSEX'); fresh=self.angel.candles(inst,'ONE_MINUTE',2) if inst else []
@@ -1396,6 +1402,9 @@ class SimulationState:
                             if not self.candles_1m or ts>self.candles_1m[-1]['time']:
                                 p=self.nifty_spot; self.candles_1m.append({'time':ts,'is_prev_day':False,'open':p,'high':p,'low':p,'close':p,'volume':0})
                             c=self.candles_1m[-1]; c['close']=self.nifty_spot; c['high']=max(c['high'],self.nifty_spot); c['low']=min(c['low'],self.nifty_spot)
+                            if not self.sensex_candles_1m or ts>self.sensex_candles_1m[-1]['time']:
+                                p=self.sensex_spot; self.sensex_candles_1m.append({'time':ts,'is_prev_day':False,'open':p,'high':p,'low':p,'close':p,'volume':0})
+                            sc=self.sensex_candles_1m[-1]; sc['close']=self.sensex_spot; sc['high']=max(sc['high'],self.sensex_spot); sc['low']=min(sc['low'],self.sensex_spot)
                         # Push the latest index price directly to connected browsers.
                         self._push_tick('NIFTY', self.nifty_spot, self.prev_close, 'NSE', 'INDEX')
                         self._push_tick('SENSEX', self.sensex_spot, self.sensex_prev_close, 'BSE', 'INDEX')
@@ -1557,7 +1566,15 @@ class SimulationState:
             candles=[dict(c) for c in cached['candles']]
         else:
             candles=[]
-            if self.angel.enabled:
+            # Fast local-first path. Live index charts must never wait on a slow historical
+            # REST call when the rolling 1m feed already contains real candles.
+            if not is_option:
+                base=self.sensex_candles_1m if is_s else self.candles_1m
+                if base:
+                    candles=[dict(c) for c in self._resample(base,tf)]
+            # Historical REST is now a background hydration path only when the local seed
+            # is genuinely empty. This prevents multi-second/minute startup starvation.
+            if not candles and self.angel.enabled:
                 inst = self._find_option_from_ui(symbol) if is_option else self.angel.find_index('SENSEX' if is_s else 'NIFTY')
                 if inst:
                     if is_option: self.angel.subscribe_instrument(inst)
@@ -1565,7 +1582,7 @@ class SimulationState:
                     fresh=self.angel.candles(inst,interval,2)
                     if fresh: candles=fresh
             if not candles:
-                base=self._resample(self.candles_1m,tf)
+                base=self._resample(self.candles_1m if not is_s else self.sensex_candles_1m,tf)
                 candles=[dict(c) for c in base]
             # Never return a blank index chart when we have a valid live/reference price.
             # Angel One can occasionally return an empty candle array around session boundaries.
@@ -1641,7 +1658,9 @@ class SimulationState:
             countdown=kind_status.replace('_',' ')
         change = float(ltp or 0) - float(prev_close or 0) if prev_close else 0.0
         change_pct = (change / float(prev_close) * 100.0) if prev_close else 0.0
-        return {'symbol':symbol,'display_title':display,'timeframe':timeframe,'ltp':ltp,'prev_close':prev_close,'change':round(change,2),'change_pct':round(change_pct,2),'instrument_kind':instrument_kind,'exchange':exchange_name,'lot_size':lot_size,'market_status':kind_status,'countdown':countdown,'candles':candles,'ema9':calc_ema_series(closes,9)[-1] if closes else 0,'ema15':calc_ema_series(closes,15)[-1] if closes else 0,'vwap':calc_vwap_series(candles)[-1] if candles else 0,'vwap_series':calc_vwap_series(candles),'ema9_series':calc_ema_series(closes,9),'ema15_series':calc_ema_series(closes,15),'strategy_markers':build_strategy_markers(candles),'greeks':greeks}
+        vwap_series=calc_vwap_series(candles)
+        valid_vwaps=[x for x in vwap_series if x is not None]
+        return {'symbol':symbol,'display_title':display,'timeframe':timeframe,'ltp':ltp,'prev_close':prev_close,'change':round(change,2),'change_pct':round(change_pct,2),'instrument_kind':instrument_kind,'exchange':exchange_name,'lot_size':lot_size,'market_status':kind_status,'countdown':countdown,'candles':candles,'ema9':calc_ema_series(closes,9)[-1] if closes else 0,'ema15':calc_ema_series(closes,15)[-1] if closes else 0,'vwap':(valid_vwaps[-1] if valid_vwaps else None),'vwap_available':bool(valid_vwaps),'vwap_source':'BROKER VOLUME' if valid_vwaps else 'UNAVAILABLE','vwap_series':vwap_series,'ema9_series':calc_ema_series(closes,9),'ema15_series':calc_ema_series(closes,15),'strategy_markers':build_strategy_markers(candles),'greeks':greeks}
 
     def get_option_chain(self,symbol='NIFTY',expiry=None):
         is_s='SENSEX' in symbol.upper(); underlying='SENSEX' if is_s else 'NIFTY'; spot=self.sensex_spot if is_s else self.nifty_spot; step=100 if is_s else 50
@@ -1727,8 +1746,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if parsed.path=='/api/chart':
             p=parse_qs(parsed.query); symbol=p.get('symbol',['NIFTY'])[0]; tf=p.get('tf',['1m'])[0]
             try:
-                with state.lock:
-                    chart=state.get_instrument_chart_data(symbol,tf)
+                chart=state.get_instrument_chart_data(symbol,tf)
                 return self._send_json({'ok':True,'chart':chart,'market_source':'Angel One SmartAPI' if state.angel.enabled else 'Development mode','market_error':state.angel.last_error if state.angel.enabled else ''})
             except Exception as e:
                 cached=state.chart_cache.get((symbol,tf))

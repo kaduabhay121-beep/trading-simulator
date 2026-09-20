@@ -180,7 +180,7 @@ canvas { width: 100% !important; height: 100% !important; display: block; }
   .indicator-settings-btn{margin-left:auto;border:1px solid #273244;background:#111827;color:#cbd5e1;border-radius:8px;padding:5px 8px;font-size:11px;font-weight:800;cursor:pointer}
   .indicator-settings-btn:hover{background:#172033}
   .indicator-settings-panel{display:none;position:absolute;z-index:80;top:42px;right:8px;width:min(360px,calc(100vw - 20px));max-height:70vh;overflow:auto;background:#0b111b;border:1px solid #263247;border-radius:12px;box-shadow:0 18px 50px rgba(0,0,0,.45);padding:12px}
-  .indicator-settings-panel.open{display:block}
+  .indicator-settings-panel.open{display:block}.indicator-settings-panel.ind-mode #signalSettingsTitle,.indicator-settings-panel.ind-mode #signalSettingsGroup{display:none}.indicator-settings-panel.sig-mode .indicator-settings-title:first-child,.indicator-settings-panel.sig-mode #indicatorSettingsGroup{display:none}
   .indicator-settings-title{font-size:12px;font-weight:900;letter-spacing:.7px;color:#e2e8f0;margin:2px 0 9px}
   .indicator-settings-group{border-top:1px solid #1e293b;padding-top:9px;margin-top:9px}
   .indicator-setting-row{display:grid;grid-template-columns:34px 1fr auto;gap:8px;align-items:center;padding:7px 0}
@@ -209,27 +209,26 @@ canvas { width: 100% !important; height: 100% !important; display: block; }
 
     <!-- Sub-Toolbar -->
     <div class="tv-sub-toolbar">
-      <span class="tv-tool-btn active" id="tfDisplay" onclick="cycleTimeframe()">1m ▾</span>
-      <span class="tv-tool-btn" id="candleTypeBtn" onclick="toggleChartType()">🕯️</span>
-      <span class="ind-pill" id="pillEMA9" style="color:var(--orange);" onclick="toggleInd('ema9')">9 EMA</span>
-      <span class="ind-pill" id="pillEMA15" style="color:var(--purple);" onclick="toggleInd('ema15')">15 EMA</span>
-      <span class="ind-pill" id="pillVWAP" style="color:var(--blue);" onclick="toggleInd('vwap')">VWAP</span>
-      <span class="ind-pill" id="pillVol" style="color:var(--green);" onclick="toggleInd('vol')">VOL</span><span class="ind-pill signal-pill" id="pillSigEMA" style="color:#f59e0b;" onclick="toggleInd('sigEMA')">EMA SIG</span><span class="ind-pill signal-pill" id="pillSigRSI" style="color:#06b6d4;" onclick="toggleInd('sigRSI')">RSI SIG</span><span class="ind-pill signal-pill" id="pillSigVWAP" style="color:#3b82f6;" onclick="toggleInd('sigVWAP')">VWAP SIG</span><span class="ind-pill signal-pill" id="pillSigBO" style="color:#22c55e;" onclick="toggleInd('sigBO')">BO SIG</span><span class="ind-pill signal-pill" id="pillSigRBS" style="color:#84cc16;" onclick="toggleInd('sigRBS')">RBS SIG</span><span class="ind-pill signal-pill" id="pillSigSBR" style="color:#ef4444;" onclick="toggleInd('sigSBR')">SBR SIG</span><span class="ind-pill" id="pillSignals" style="color:#22c55e;" onclick="toggleAllSignals()">ALL SIG</span>
+      <button class="tv-tool-btn active" id="tfDisplay" onclick="cycleTimeframe()">TF · 1m ▾</button>
+      <button class="tv-tool-btn" id="candleTypeBtn" onclick="toggleChartType()">🕯️</button>
+      <button class="tv-tool-btn" id="indToggleBtn" onclick="toggleIndicatorMenu(event)">IND</button>
+      <button class="tv-tool-btn" id="sigToggleBtn" onclick="toggleSignalMenu(event)">SIG</button>
+      <button class="tv-tool-btn" id="histToggleBarBtn" onclick="toggleHistoricalPanel()">HIST</button>
+      <span class="greeks-badge" id="hudVWAP">VWAP: —</span>
       <span class="greeks-badge" id="hudDelta">Δ: 1.00</span>
       <span class="greeks-badge" id="hudTheta">Θ: 0.00</span>
       <span class="greeks-badge" id="hudGamma">Γ: 0.00</span>
-      <button class="indicator-settings-btn" onclick="toggleIndicatorSettings(event)" title="Indicator & signal settings">⚙</button>
     </div>
-    <div id="indicatorSettingsPanel" class="indicator-settings-panel">
+    <div id="indicatorSettingsPanel" class="indicator-settings-panel ind-mode">
       <div class="indicator-settings-title">INDICATORS</div>
-      <div class="indicator-settings-group" style="border-top:0;padding-top:0;margin-top:0">
+      <div id="indicatorSettingsGroup" class="indicator-settings-group" style="border-top:0;padding-top:0;margin-top:0">
         <label class="indicator-setting-row"><input type="checkbox" data-ind="ema9" onchange="setIndicatorSetting('ema9',this.checked)"><span><div class="indicator-setting-name">EMA 9</div><div class="indicator-setting-desc">Fast trend line</div></span><span class="indicator-setting-chip">9</span></label>
         <label class="indicator-setting-row"><input type="checkbox" data-ind="ema15" onchange="setIndicatorSetting('ema15',this.checked)"><span><div class="indicator-setting-name">EMA 15</div><div class="indicator-setting-desc">Slow confirmation line</div></span><span class="indicator-setting-chip">15</span></label>
         <label class="indicator-setting-row"><input type="checkbox" data-ind="vwap" onchange="setIndicatorSetting('vwap',this.checked)"><span><div class="indicator-setting-name">VWAP</div><div class="indicator-setting-desc">Session value reference</div></span><span class="indicator-setting-chip">VWAP</span></label>
         <label class="indicator-setting-row"><input type="checkbox" data-ind="vol" onchange="setIndicatorSetting('vol',this.checked)"><span><div class="indicator-setting-name">Volume</div><div class="indicator-setting-desc">Uses broker-provided volume only</div></span><span class="indicator-setting-chip">VOL</span></label>
       </div>
-      <div class="indicator-settings-title" style="margin-top:13px">SIGNALS</div>
-      <div class="indicator-settings-group" style="border-top:0;padding-top:0;margin-top:0">
+      <div id="signalSettingsTitle" class="indicator-settings-title" style="margin-top:13px">SIGNALS</div>
+      <div id="signalSettingsGroup" class="indicator-settings-group" style="border-top:0;padding-top:0;margin-top:0">
         <label class="indicator-setting-row"><input type="checkbox" data-ind="sigEMA" onchange="setIndicatorSetting('sigEMA',this.checked)"><span><div class="indicator-setting-name">EMA Cross Signal</div><div class="indicator-setting-desc">EMA 9 / EMA 15 strategy markers</div></span><span class="indicator-setting-chip">EMA</span></label>
         <label class="indicator-setting-row"><input type="checkbox" data-ind="sigRSI" onchange="setIndicatorSetting('sigRSI',this.checked)"><span><div class="indicator-setting-name">RSI Signal</div><div class="indicator-setting-desc">Mean-reversion markers</div></span><span class="indicator-setting-chip">RSI</span></label>
         <label class="indicator-setting-row"><input type="checkbox" data-ind="sigVWAP" onchange="setIndicatorSetting('sigVWAP',this.checked)"><span><div class="indicator-setting-name">VWAP Signal</div><div class="indicator-setting-desc">VWAP reversion markers</div></span><span class="indicator-setting-chip">VWAP</span></label>
@@ -238,7 +237,7 @@ canvas { width: 100% !important; height: 100% !important; display: block; }
         <label class="indicator-setting-row"><input type="checkbox" data-ind="sigSBR" onchange="setIndicatorSetting('sigSBR',this.checked)"><span><div class="indicator-setting-name">SBR Signal</div><div class="indicator-setting-desc">Support → Resistance retest / exit</div></span><span class="indicator-setting-chip">SBR</span></label>
         <div class="signal-filter-note">Signals are independent. Turning one off only hides that signal's markers; it does not disable the strategy engine, backtesting, or the other signals.</div>
       </div>
-      <div class="indicator-settings-footer"><button onclick="setAllIndicatorSettings(true)">ENABLE ALL</button><button onclick="setAllIndicatorSettings(false)">DISABLE ALL</button><button onclick="resetIndicatorSettings()">RESET</button></div>
+      <div class="indicator-settings-footer"><button onclick="setCurrentMenuAll(true)">ENABLE ALL</button><button onclick="setCurrentMenuAll(false)">DISABLE ALL</button><button onclick="resetIndicatorSettings()">RESET</button></div>
     </div>
 
     <!-- Canvas Viewport -->
@@ -1101,10 +1100,14 @@ function setTradeMode(mode) {
 }
 
 function persistIndicatorConfig(){ try{localStorage.setItem('tradelab_indicator_config',JSON.stringify(configInd));}catch(_){} }
+let indicatorMenuMode='ind';
 function syncIndicatorSettingsUI(){
   document.querySelectorAll('#indicatorSettingsPanel input[data-ind]').forEach(el=>{el.checked=!!configInd[el.dataset.ind];});
-  const ids={ema9:'pillEMA9',ema15:'pillEMA15',vwap:'pillVWAP',vol:'pillVol',signals:'pillSignals',sigEMA:'pillSigEMA',sigRSI:'pillSigRSI',sigVWAP:'pillSigVWAP',sigBO:'pillSigBO',sigRBS:'pillSigRBS',sigSBR:'pillSigSBR'};
-  Object.keys(ids).forEach(k=>{const el=document.getElementById(ids[k]);if(el)el.classList.toggle('disabled',!configInd[k]);});
+  const p=document.getElementById('indicatorSettingsPanel');
+  if(p){p.classList.toggle('ind-mode',indicatorMenuMode==='ind');p.classList.toggle('sig-mode',indicatorMenuMode==='sig');}
+  const ib=document.getElementById('indToggleBtn'), sb=document.getElementById('sigToggleBtn');
+  if(ib)ib.classList.toggle('active',indicatorMenuMode==='ind' && p?.classList.contains('open'));
+  if(sb)sb.classList.toggle('active',indicatorMenuMode==='sig' && p?.classList.contains('open'));
 }
 function setIndicatorSetting(name,value){
   configInd[name]=!!value;
@@ -1121,11 +1124,17 @@ function setAllIndicatorSettings(value){
   ['ema9','ema15','vwap','vol','sigEMA','sigRSI','sigVWAP','sigBO','sigRBS','sigSBR'].forEach(n=>configInd[n]=!!value);
   configInd.signals=!!value; persistIndicatorConfig(); syncIndicatorSettingsUI(); drawChart();
 }
-function resetIndicatorSettings(){configInd={...DEFAULT_INDICATOR_CONFIG};persistIndicatorConfig();syncIndicatorSettingsUI();drawChart();}
-function toggleIndicatorSettings(ev){
-  if(ev)ev.stopPropagation(); const p=document.getElementById('indicatorSettingsPanel'); if(!p)return; p.classList.toggle('open'); syncIndicatorSettingsUI();
+function setCurrentMenuAll(value){
+  const names=indicatorMenuMode==='ind'?['ema9','ema15','vwap','vol']:['sigEMA','sigRSI','sigVWAP','sigBO','sigRBS','sigSBR'];
+  names.forEach(n=>configInd[n]=!!value);
+  configInd.signals=['sigEMA','sigRSI','sigVWAP','sigBO','sigRBS','sigSBR'].some(n=>configInd[n]);
+  persistIndicatorConfig(); syncIndicatorSettingsUI(); drawChart();
 }
-document.addEventListener('click',e=>{const p=document.getElementById('indicatorSettingsPanel');if(!p||!p.classList.contains('open'))return;if(!p.contains(e.target)&&!e.target.closest('.indicator-settings-btn'))p.classList.remove('open');});
+function resetIndicatorSettings(){configInd={...DEFAULT_INDICATOR_CONFIG};persistIndicatorConfig();syncIndicatorSettingsUI();drawChart();}
+function toggleIndicatorMenu(ev){if(ev)ev.stopPropagation(); const p=document.getElementById('indicatorSettingsPanel'); if(!p)return; if(p.classList.contains('open')&&indicatorMenuMode==='ind')p.classList.remove('open'); else {indicatorMenuMode='ind';p.classList.add('open');} syncIndicatorSettingsUI();}
+function toggleSignalMenu(ev){if(ev)ev.stopPropagation(); const p=document.getElementById('indicatorSettingsPanel'); if(!p)return; if(p.classList.contains('open')&&indicatorMenuMode==='sig')p.classList.remove('open'); else {indicatorMenuMode='sig';p.classList.add('open');} syncIndicatorSettingsUI();}
+function toggleIndicatorSettings(ev){toggleIndicatorMenu(ev);}
+document.addEventListener('click',e=>{const p=document.getElementById('indicatorSettingsPanel');if(!p||!p.classList.contains('open'))return;if(!p.contains(e.target)&&!e.target.closest('#indToggleBtn')&&!e.target.closest('#sigToggleBtn'))p.classList.remove('open');});
 
 function toggleChartType() {
   chartType = chartType === 'candles' ? 'line' : 'candles';
@@ -1151,7 +1160,7 @@ function cycleTimeframe() {
   const tfs = ['1m', '3m', '5m', '10m', '15m', '30m', '1h'];
   let idx = (tfs.indexOf(currentTimeframe) + 1) % tfs.length;
   currentTimeframe = tfs[idx];
-  document.getElementById('tfDisplay').innerText = `${currentTimeframe} ▾`;
+  document.getElementById('tfDisplay').innerText = `TF · ${currentTimeframe} ▾`;
   panOffset = 0;
   panOffsetFloat = 0;
   verticalPanOffset = 0;
@@ -1422,6 +1431,12 @@ function updateUI(data) {
   pSub.innerText = `${curLTP.toFixed(2)} ${chg}`;
   pSub.style.color = chgVal >= 0 ? 'var(--green)' : 'var(--red)';
 
+  const vwapHud=document.getElementById('hudVWAP');
+  if(vwapHud){
+    const vv=Number(data.chart.vwap);
+    vwapHud.innerText=Number.isFinite(vv)&&data.chart.vwap_available ? `VWAP: ${vv.toFixed(2)}` : 'VWAP: —';
+    vwapHud.title=data.chart.vwap_available ? 'Session VWAP calculated from broker-provided traded volume' : 'VWAP unavailable: this instrument/feed did not provide usable traded volume';
+  }
   if (data.chart.greeks) {
     document.getElementById('hudDelta').innerText = `Δ: ${data.chart.greeks.delta}`;
     document.getElementById('hudTheta').innerText = `Θ: ${data.chart.greeks.theta}`;
@@ -2247,17 +2262,18 @@ function drawChart() {
 
   if (configInd.vwap && marketCache.chart) {
     const vSeries = marketCache.chart.vwap_series;
-    if (vSeries && vSeries.length) {
+    if (vSeries && vSeries.length && vSeries.some(v=>Number.isFinite(Number(v)))) {
       ctx.strokeStyle = '#2962ff';
       ctx.lineWidth = 1.5;
-      ctx.beginPath();
+      let drawing=false;
       vSeries.forEach((val, i) => {
         const x = chartLeft + i * step + step / 2 + xShift;
-        if (i === 0) ctx.moveTo(x, toY(val));
-        else ctx.lineTo(x, toY(val));
+        const n=Number(val);
+        if(!Number.isFinite(n)){drawing=false;return;}
+        if(!drawing){ctx.beginPath();ctx.moveTo(x,toY(n));drawing=true;} else ctx.lineTo(x,toY(n));
       });
-      ctx.stroke();
-    } else if (marketCache.chart.vwap) {
+      if(drawing)ctx.stroke();
+    } else if (Number.isFinite(Number(marketCache.chart.vwap))) {
       ctx.strokeStyle = '#2962ff';
       ctx.lineWidth = 1.2;
       ctx.beginPath();
