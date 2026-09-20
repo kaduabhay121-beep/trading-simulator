@@ -208,6 +208,16 @@ canvas { width: 100% !important; height: 100% !important; display: block; }
     </div>
 
     <!-- Sub-Toolbar -->
+    <div id="optionChartContext" style="display:none; align-items:center; justify-content:space-between; gap:8px; padding:6px 10px; background:#0b1220; border-bottom:1px solid #1e293b; font-size:10px;">
+      <div style="display:flex;align-items:center;gap:8px;min-width:0;">
+        <span style="font-weight:900;color:var(--blue);">OPTION PREMIUM</span>
+        <span id="optionChartName" style="font-weight:900;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">—</span>
+        <span id="optionChartLtp" style="font-weight:900;">₹—</span>
+        <span id="optionChartChange" style="font-weight:800;">—</span>
+      </div>
+      <button class="tv-tool-btn" onclick="backToUnderlyingChart()" style="padding:4px 8px;">← SPOT</button>
+    </div>
+
     <div class="tv-sub-toolbar">
       <button class="tv-tool-btn active" id="tfDisplay" onclick="cycleTimeframe()">TF · 1m ▾</button>
       <button class="tv-tool-btn" id="candleTypeBtn" onclick="toggleChartType()">🕯️</button>
@@ -1258,6 +1268,8 @@ async function openStrikeModal() {
 function closeStrikeModal() { document.getElementById('strikeSearchModal').style.display = 'none'; }
 function selectStrike(symId, label) {
   closeLiveStream();
+  const parts=String(symId||'').split('_');
+  if(parts.length>=4){ currentSelectedExpiry=parts[1]||currentSelectedExpiry; }
   if (!openTabs.find(t => t.id === symId)) openTabs.push({ id: symId, label });
   currentChartSymbol = symId;
   closeStrikeModal();
@@ -1267,6 +1279,11 @@ function selectStrike(symId, label) {
   drawChart();
   fetchChartSeed(true);
   fetchMarket(true);
+}
+
+function backToUnderlyingChart(){
+  const isSensex=String(currentChartSymbol||'').includes('SENSEX');
+  switchChartSymbol(isSensex?'SENSEX':'NIFTY');
 }
 
 // Watchlist
@@ -1403,6 +1420,21 @@ async function fetchMarket(force=false) {
 }
 
 function updateUI(data) {
+  const oc=document.getElementById('optionChartContext');
+  const isOpt=String(currentChartSymbol||'').includes('_');
+  if(oc){
+    oc.style.display=isOpt?'flex':'none';
+    if(isOpt){
+      const title=String(data?.chart?.display_title||currentChartSymbol||'OPTION');
+      const ltp=Number(data?.chart?.ltp); const ch=Number(data?.chart?.change); const pct=Number(data?.chart?.change_pct);
+      document.getElementById('optionChartName').textContent=title;
+      document.getElementById('optionChartLtp').textContent=Number.isFinite(ltp)?`₹${ltp.toFixed(2)}`:'₹—';
+      const ce=document.getElementById('optionChartChange');
+      ce.textContent=(Number.isFinite(ch)&&Number.isFinite(pct))?`${ch>=0?'+':''}₹${ch.toFixed(2)} (${pct>=0?'+':''}${pct.toFixed(2)}%)`:'—';
+      ce.style.color=ch>0?'var(--green)':ch<0?'var(--red)':'var(--text-sub)';
+    }
+  }
+
   if (data.bot) updateBotUI(data.bot);
   const curLTP = Number(data?.chart?.ltp);
   if (!Number.isFinite(curLTP)) return;
@@ -1771,7 +1803,7 @@ function renderOptionChain(data) {
   if (!Array.isArray(data.chain)) data.chain=[];
   if (!Array.isArray(data.expiries)) data.expiries=[];
   var isSensex = currentChartSymbol.includes("SENSEX");
-  var spot = isSensex ? data.sensex_spot : data.nifty_spot;
+  var spot = Number(isSensex ? data.sensex_spot : data.nifty_spot); if(!Number.isFinite(spot)) spot=Number(marketCache?.chart?.ltp)||0;
   
   // Populate expiries dropdown
   if (data.expiries) {
@@ -1790,11 +1822,11 @@ function renderOptionChain(data) {
   const expiryToUse = currentSelectedExpiry || (data.expiries ? data.expiries[0] : 'EXP');
   document.getElementById('chainTitleBadge').innerText = `${isSensex ? 'SENSEX' : 'NIFTY'} (${expiryToUse || '—'}) CHAIN`;
   const chainDiag=data.diagnostics||{}; const chainErr=data.option_chain_error||chainDiag.last_error||'';
-  const chainStatus=document.getElementById('chainStatus'); if(chainStatus){chainStatus.innerText=chainErr ? ('CHAIN: '+chainErr) : (data.chain.length ? ('LIVE CHAIN · '+(data.market_source||'DATA')) : 'CHAIN: waiting for option contracts'); chainStatus.style.color=chainErr?'var(--red)':'var(--text-sub)';}
+  const chainStatus=document.getElementById('chainStatus'); if(chainStatus){chainStatus.innerText=chainErr ? ('CHAIN: '+chainErr) : (data.chain.length ? ((data.market_source||'DATA')==='SIMULATED PAPER CHAIN' ? 'SIMULATED PAPER CHAIN · NO LIVE BROKER QUOTE' : 'LIVE CHAIN · '+(data.market_source||'DATA')) : 'CHAIN: waiting for option contracts'); chainStatus.style.color=chainErr?'var(--red)':'var(--text-sub)';}
 
   if (!data || !data.chain) return;
   var isSensex = currentChartSymbol.includes("SENSEX");
-  var spot = isSensex ? data.sensex_spot : data.nifty_spot;
+  var spot = Number(isSensex ? data.sensex_spot : data.nifty_spot); if(!Number.isFinite(spot)) spot=Number(marketCache?.chart?.ltp)||0;
   const stepVal = isSensex ? 100 : 50;
   const atmStrike = Math.round(spot / stepVal) * stepVal;
   let chainHtml = '';
@@ -2318,6 +2350,16 @@ function drawChart() {
       ctx.lineTo(chartRight, yVwap);
       ctx.stroke();
     }
+  }
+
+  // 6.45 Current strategy state panel — independent signal engines remain visible even when no new trigger occurred on the last candle.
+  if (configInd.signals) {
+    const states=marketCache?.chart?.strategy_states||{};
+    const labels={EMA_CROSS:'EMA',RSI_MEAN_REVERT:'RSI',VWAP_REVERT:'VWAP',BREAKOUT:'BO',RBS:'RBS',SBR:'SBR'};
+    const enabled={EMA_CROSS:configInd.sigEMA,RSI_MEAN_REVERT:configInd.sigRSI,VWAP_REVERT:configInd.sigVWAP,BREAKOUT:configInd.sigBO,RBS:configInd.sigRBS,SBR:configInd.sigSBR};
+    const order=Object.keys(labels).filter(k=>enabled[k] && states[k]);
+    let sx=chartLeft+8, sy=chartBottom-8; ctx.font='bold 8px sans-serif'; ctx.textAlign='left';
+    order.forEach(k=>{const st=states[k]||{}; const sig=st.signal||'HOLD'; const col=sig==='BUY'?'#00c087':sig==='SELL'?'#eb5757':'#94a3b8'; const txt=`${labels[k]}:${sig}`; ctx.fillStyle=col; ctx.fillText(txt,sx,sy); sx+=ctx.measureText(txt).width+10;});
   }
 
   // 6.5 Strategy BUY/SELL markers — group same-candle signals to prevent label collisions.

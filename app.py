@@ -938,6 +938,15 @@ def _option_backtest(strategy, underlying, option_mode, days, sl_pct, tp_pct, st
     net=balance-starting_balance; gp=sum(max(0,t['pnl']) for t in trades); gl=sum(-min(0,t['pnl']) for t in trades); pf=gp/gl if gl else (999.0 if gp else 0.0)
     return {'ok':True,'mode':option_mode,'underlying':underlying,'strategy':strategy,'timeframe':timeframe,'trade_type':trade_type,'lot_multiplier':lot_multiplier,'candles':len(base),'trades':len(trades),'wins':int(wins),'losses':int(losses),'win_rate':round(wins/len(trades)*100,1) if trades else 0.0,'net_pnl':round(net,2),'return_pct':round(net/starting_balance*100,2),'profit_factor':round(pf,2),'max_drawdown':round(max_dd,2),'rr_ratio':_rr_ratio(sl_pct,tp_pct),'trades_detail':trades,'data_note':'Historical option candles; research only; no Angel One orders are sent.'}
 
+def build_strategy_states(candles):
+    rows=_align_candles(candles)
+    if len(rows)<25: return {}
+    out={}
+    for strategy in STRATEGIES:
+        signal,conf,meta=strategy_signal(rows,strategy)
+        out[strategy]={'signal':signal,'confidence':round(float(conf),2),'meta':meta or {}}
+    return out
+
 def build_strategy_markers(candles):
     """Generate isolated markers for each strategy. UI can toggle them independently."""
     rows=_align_candles(candles)
@@ -1643,9 +1652,11 @@ class SimulationState:
                     c={'time':bucket,'is_prev_day':False,'open':ltp,'high':ltp,'low':ltp,'close':ltp,'volume':0}; candles.append(c)
                 else:
                     c['close']=ltp; c['high']=max(c['high'],ltp); c['low']=min(c['low'],ltp)
-            if not candles:
-                dte=get_dte_from_expiry(exp); g=calc_deep_greeks(spot,strike,dte,is_sensex=is_s); ltp=ltp or (g['ce_ltp'] if typ=='CE' else g['pe_ltp'])
-                candles=[{'time':int(now//60)*60,'is_prev_day':False,'open':ltp,'high':ltp,'low':ltp,'close':ltp,'volume':0}]
+            # For an individual option chart, never fabricate a premium candle.
+            # If Angel One has not supplied a real historical candle yet, keep the chart empty
+            # rather than replacing it with a theoretical Black-Scholes/deep-greeks price.
+            if not candles and not ltp:
+                candles=[]
             gg=self.angel.greek('SENSEX' if is_s else 'NIFTY',exp).get((strike,typ),{}) if self.angel.enabled else {}
             if gg: greeks={'delta':float(gg.get('delta',0) or 0),'gamma':float(gg.get('gamma',0) or 0),'theta':float(gg.get('theta',0) or 0),'vega':float(gg.get('vega',0) or 0),'iv':float(gg.get('impliedVolatility',0) or 0)}
             else:
@@ -1671,7 +1682,7 @@ class SimulationState:
         change_pct = (change / float(prev_close) * 100.0) if prev_close else 0.0
         vwap_series=calc_vwap_series(candles)
         valid_vwaps=[x for x in vwap_series if x is not None]
-        return {'symbol':symbol,'display_title':display,'timeframe':timeframe,'ltp':ltp,'prev_close':prev_close,'change':round(change,2),'change_pct':round(change_pct,2),'instrument_kind':instrument_kind,'exchange':exchange_name,'lot_size':lot_size,'market_status':kind_status,'countdown':countdown,'candles':candles,'ema9':calc_ema_series(closes,9)[-1] if closes else 0,'ema15':calc_ema_series(closes,15)[-1] if closes else 0,'vwap':(valid_vwaps[-1] if valid_vwaps else None),'vwap_available':bool(valid_vwaps),'vwap_source':'BROKER VOLUME' if valid_vwaps else 'UNAVAILABLE','vwap_series':vwap_series,'ema9_series':calc_ema_series(closes,9),'ema15_series':calc_ema_series(closes,15),'strategy_markers':build_strategy_markers(candles),'greeks':greeks}
+        return {'symbol':symbol,'display_title':display,'timeframe':timeframe,'ltp':ltp,'prev_close':prev_close,'change':round(change,2),'change_pct':round(change_pct,2),'instrument_kind':instrument_kind,'exchange':exchange_name,'lot_size':lot_size,'market_status':kind_status,'countdown':countdown,'candles':candles,'ema9':calc_ema_series(closes,9)[-1] if closes else 0,'ema15':calc_ema_series(closes,15)[-1] if closes else 0,'vwap':(valid_vwaps[-1] if valid_vwaps else None),'vwap_available':bool(valid_vwaps),'vwap_source':'BROKER VOLUME' if valid_vwaps else 'UNAVAILABLE','vwap_series':vwap_series,'ema9_series':calc_ema_series(closes,9),'ema15_series':calc_ema_series(closes,15),'strategy_markers':build_strategy_markers(candles),'strategy_states':build_strategy_states(candles),'greeks':greeks}
 
     def get_option_chain(self,symbol='NIFTY',expiry=None):
         is_s='SENSEX' in symbol.upper(); underlying='SENSEX' if is_s else 'NIFTY'; spot=self.sensex_spot if is_s else self.nifty_spot; step=100 if is_s else 50
@@ -1731,13 +1742,13 @@ class SimulationState:
                                 inst=next((i for i in insts if str(i.get('token'))==tok),None)
                                 if inst: self.angel.subscribe_instrument(inst)
                     return result
-            # Even if quote/candle retrieval fails, return the discovered expiry session
-            # so the UI never presents a blank expiry selector.
-            return {'expiries':exps,'selected_expiry':(requested if requested in exps else (exps[0] if exps else None)),'chain':[],'diagnostics':{'angel_enabled':True,'master_instruments':len(self.angel.instruments),'matching_contracts':len(option_rows),'segment':segment,'last_error':self.angel.last_error or 'No matching option contracts found in Angel One instrument master'}}
+            # If Angel is enabled but not authenticated / contract discovery failed,
+            # fall through to the clearly-labelled paper/development chain below.
+            # This keeps the simulator usable without pretending simulated prices are live.
         exps=get_available_expiries(is_s); selected=expiry if expiry in exps else exps[0]; dte=get_dte_from_expiry(selected); atm=round(spot/step)*step; rows=[]
         for strike in [atm+i*step for i in range(-8,9)]:
             g=calc_deep_greeks(spot,strike,dte,is_sensex=is_s); rows.append({'strike':strike,'expiry':selected,'ce_ltp':g['ce_ltp'],'ce_delta':g['ce_delta'],'ce_oi':'DEV','ce_chg_oi':'DEV','ce_volume':'DEV','ce_iv':g['iv'],'pe_ltp':g['pe_ltp'],'pe_delta':g['pe_delta'],'pe_oi':'DEV','pe_chg_oi':'DEV','pe_volume':'DEV','pe_iv':g['iv'],'gamma':g['gamma'],'theta':g['theta'],'vega':g['vega']})
-        return {'expiries':exps,'selected_expiry':selected,'chain':rows,'diagnostics':{'angel_enabled':False,'source':'Development mode'}}
+        return {'expiries':exps,'selected_expiry':selected,'chain':rows,'diagnostics':{'angel_enabled':bool(self.angel.enabled),'source':'SIMULATED PAPER CHAIN','live_error':self.angel.last_error if self.angel.enabled else ''},'market_source':'SIMULATED PAPER CHAIN'}
 
     def reset(self):
         self.wallet={'initial':1000000.0,'balance':1000000.0,'used_margin':0.0,'realized_pnl':0.0}; self.positions=[]; self.pending_orders=[]; self.orders=[]; self.closed_trades=[]; self.bot['daily_pnl']=0.0; self.bot['trades_today']=0; self.bot['risk_lock']=False; self.bot['risk_lock_reason']=''; self.bot['last_entry_price']=0.0; self.bot['last_trade_ts']=0; self.bot['last_signal']='HOLD'; self.bot['last_confidence']=0; self.bot['last_reason']='Reset'; self._save_state()
@@ -1771,7 +1782,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
             try:
                 with state.lock:
                     chain=state.get_option_chain(symbol,expiry)
-                return self._send_json({'ok':True,**chain,'market_source':'Angel One SmartAPI' if state.angel.enabled else 'Development mode','error':(chain.get('diagnostics') or {}).get('last_error','') if state.angel.enabled and not chain.get('chain') else ''})
+                src=chain.get('market_source') or ('Angel One SmartAPI' if state.angel.enabled and chain.get('chain') else 'SIMULATED PAPER CHAIN')
+                err=(chain.get('diagnostics') or {}).get('last_error') or (chain.get('diagnostics') or {}).get('live_error') or ''
+                return self._send_json({'ok':True,**chain,'market_source':src,'nifty_spot':state.nifty_spot,'sensex_spot':state.sensex_spot,'error':err if not chain.get('chain') and src!='SIMULATED PAPER CHAIN' else ''})
             except Exception as e:
                 cached=state.live_chain_cache.get((symbol,expiry))
                 chain=cached[1] if cached else {'chain':[],'expiries':[],'selected_expiry':expiry}
@@ -1787,7 +1800,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     chart=state.get_instrument_chart_data(symbol,tf)
                 except Exception as e:
                     chart=state.chart_cache.get((symbol,tf)) if isinstance(state.chart_cache.get((symbol,tf)),dict) else None
-                    if not chart: chart={'symbol':symbol,'display_title':symbol,'timeframe':tf,'ltp':state.sensex_spot if 'SENSEX' in symbol.upper() else state.nifty_spot,'candles':[],'countdown':'00:00','ema9':0,'ema15':0,'vwap':0,'vwap_series':[],'ema9_series':[],'ema15_series':[],'strategy_markers':[],'greeks':{'delta':1.0,'gamma':0,'theta':0,'vega':0,'iv':0}}
+                    if not chart: chart={'symbol':symbol,'display_title':symbol,'timeframe':tf,'ltp':state.sensex_spot if 'SENSEX' in symbol.upper() else state.nifty_spot,'candles':[],'countdown':'00:00','ema9':0,'ema15':0,'vwap':0,'vwap_series':[],'ema9_series':[],'ema15_series':[],'strategy_markers':[],'strategy_states':{},'greeks':{'delta':1.0,'gamma':0,'theta':0,'vega':0,'iv':0}}
                     market_errors.append('Chart: '+str(e))
                 try:
                     chain=state.get_option_chain(symbol,expiry)
