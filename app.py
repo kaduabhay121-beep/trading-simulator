@@ -396,9 +396,20 @@ class AngelOneData:
             if cached and cached.get('rows'): return [dict(x) for x in cached['rows']]
             return []
 
+    @staticmethod
+    def normalize_expiry(value):
+        v=str(value or '').strip().upper()
+        if not v: return ''
+        for fmt in ('%d%b%Y','%d%b%y','%Y-%m-%d','%d-%b-%Y','%d/%b/%Y'):
+            try: return datetime.strptime(v[:10] if fmt=='%Y-%m-%d' else v,fmt).strftime('%d%b%Y').upper()
+            except Exception: pass
+        # Handle ISO timestamps such as 2026-09-22T00:00:00+05:30.
+        try: return datetime.fromisoformat(v.replace('Z','+00:00')).date().strftime('%d%b%Y').upper()
+        except Exception: return v
+
     def option_instruments(self, underlying, expiry):
         u=underlying.upper(); segment='BFO' if u=='SENSEX' else 'NFO'
-        key=(u, str(expiry or '').upper().strip())
+        key=(u, self.normalize_expiry(expiry))
         cached=self.option_lookup_cache.get(key)
         if cached is not None and cached:
             return cached
@@ -409,7 +420,7 @@ class AngelOneData:
                     continue
                 name=str(x.get('name','')).upper().strip()
                 symbol=str(x.get('symbol','')).upper().strip()
-                exp=str(x.get('expiry','')).upper().strip()
+                exp=self.normalize_expiry(x.get('expiry'))
                 it=str(x.get('instrumenttype','')).upper().strip()
                 if exp!=key[1] or not exp:
                     continue
@@ -1671,20 +1682,22 @@ class SimulationState:
                 for x in self.angel.instruments:
                     if self.angel.api_exchange(x.get('exch_seg'))!=segment:
                         continue
-                    name=str(x.get('name','')).upper().strip(); sym=str(x.get('symbol','')).upper().strip(); exp=str(x.get('expiry','')).upper().strip(); it=str(x.get('instrumenttype','')).upper().strip()
+                    name=str(x.get('name','')).upper().strip(); sym=str(x.get('symbol','')).upper().strip(); exp=self.angel.normalize_expiry(x.get('expiry')); it=str(x.get('instrumenttype','')).upper().strip()
                     if not exp or not (name==underlying or sym.startswith(underlying)):
                         continue
                     if not sym.endswith(('CE','PE')):
                         continue
                     if it not in ('OPTIDX','CE','PE',''):
                         continue
-                    rows.append(x)
+                    # Work with canonical expiry so master variants cannot break selection.
+                    y=dict(x); y['_canonical_expiry']=exp; rows.append(y)
                 return rows
             option_rows=discover()
             if not option_rows and self.angel.refresh_master():
                 option_rows=discover()
-            exps=sorted({str(x.get('expiry','')).upper().strip() for x in option_rows if x.get('expiry')}, key=lambda e: _expiry_sort_key(e))
-            selected=expiry if expiry in exps else (exps[0] if exps else None)
+            exps=sorted({str(x.get('_canonical_expiry') or self.angel.normalize_expiry(x.get('expiry'))) for x in option_rows if x.get('expiry')}, key=lambda e: _expiry_sort_key(e))
+            requested=self.angel.normalize_expiry(expiry) if expiry else ''
+            selected=requested if requested in exps else (exps[0] if exps else None)
             if selected:
                 arr=self.angel.option_instruments(underlying,selected)
                 if not arr and self.angel.refresh_master():
@@ -1709,7 +1722,7 @@ class SimulationState:
                                 row[prefix+'_delta']=float(g.get('delta',0) or 0); row[prefix+'_oi']=str(z.get('opnInterest','—') if z else '—'); row[prefix+'_chg_oi']='—'; row[prefix+'_volume']=str(z.get('tradeVolume',z.get('volume',0)) if z else '—'); row[prefix+'_iv']=float(g.get('impliedVolatility',0) or 0)
                             rows.append(row)
                         base=(time.time(),{'expiries':exps,'selected_expiry':selected,'chain':rows}); self.live_chain_cache[(symbol,selected)]=base
-                    result=base[1]
+                    result=dict(base[1]); result['diagnostics']={'angel_enabled':True,'master_instruments':len(self.angel.instruments),'matching_contracts':len(arr),'quoted_rows':len(result.get('chain',[]))}
                     for row in result['chain']:
                         for prefix in ('ce','pe'):
                             tok=row.get(prefix+'_token'); q=self.angel.quote_cache.get(tok) if tok else None
@@ -1720,11 +1733,11 @@ class SimulationState:
                     return result
             # Even if quote/candle retrieval fails, return the discovered expiry session
             # so the UI never presents a blank expiry selector.
-            return {'expiries':exps,'selected_expiry':(expiry if expiry in exps else (exps[0] if exps else None)),'chain':[]}
+            return {'expiries':exps,'selected_expiry':(requested if requested in exps else (exps[0] if exps else None)),'chain':[],'diagnostics':{'angel_enabled':True,'master_instruments':len(self.angel.instruments),'matching_contracts':len(option_rows),'segment':segment,'last_error':self.angel.last_error or 'No matching option contracts found in Angel One instrument master'}}
         exps=get_available_expiries(is_s); selected=expiry if expiry in exps else exps[0]; dte=get_dte_from_expiry(selected); atm=round(spot/step)*step; rows=[]
         for strike in [atm+i*step for i in range(-8,9)]:
             g=calc_deep_greeks(spot,strike,dte,is_sensex=is_s); rows.append({'strike':strike,'expiry':selected,'ce_ltp':g['ce_ltp'],'ce_delta':g['ce_delta'],'ce_oi':'DEV','ce_chg_oi':'DEV','ce_volume':'DEV','ce_iv':g['iv'],'pe_ltp':g['pe_ltp'],'pe_delta':g['pe_delta'],'pe_oi':'DEV','pe_chg_oi':'DEV','pe_volume':'DEV','pe_iv':g['iv'],'gamma':g['gamma'],'theta':g['theta'],'vega':g['vega']})
-        return {'expiries':exps,'selected_expiry':selected,'chain':rows}
+        return {'expiries':exps,'selected_expiry':selected,'chain':rows,'diagnostics':{'angel_enabled':False,'source':'Development mode'}}
 
     def reset(self):
         self.wallet={'initial':1000000.0,'balance':1000000.0,'used_margin':0.0,'realized_pnl':0.0}; self.positions=[]; self.pending_orders=[]; self.orders=[]; self.closed_trades=[]; self.bot['daily_pnl']=0.0; self.bot['trades_today']=0; self.bot['risk_lock']=False; self.bot['risk_lock_reason']=''; self.bot['last_entry_price']=0.0; self.bot['last_trade_ts']=0; self.bot['last_signal']='HOLD'; self.bot['last_confidence']=0; self.bot['last_reason']='Reset'; self._save_state()
@@ -1758,7 +1771,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             try:
                 with state.lock:
                     chain=state.get_option_chain(symbol,expiry)
-                return self._send_json({'ok':True,**chain,'market_source':'Angel One SmartAPI' if state.angel.enabled else 'Development mode','error':state.angel.last_error if state.angel.enabled and not chain.get('chain') else ''})
+                return self._send_json({'ok':True,**chain,'market_source':'Angel One SmartAPI' if state.angel.enabled else 'Development mode','error':(chain.get('diagnostics') or {}).get('last_error','') if state.angel.enabled and not chain.get('chain') else ''})
             except Exception as e:
                 cached=state.live_chain_cache.get((symbol,expiry))
                 chain=cached[1] if cached else {'chain':[],'expiries':[],'selected_expiry':expiry}

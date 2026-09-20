@@ -1758,7 +1758,7 @@ async function fetchOptionChain(force=false){
     marketCache.chain=Array.isArray(d.chain)?d.chain:[];
     marketCache.expiries=Array.isArray(d.expiries)?d.expiries:[];
     marketCache.selected_expiry=d.selected_expiry||expiry||null;
-    marketCache.option_chain_error=d.error||'';
+    marketCache.option_chain_error=d.error||''; marketCache.diagnostics=d.diagnostics||{}; marketCache.market_source=d.market_source||'';
     renderOptionChain(marketCache);
     const dbg=document.getElementById('debugOverlay');
     if(dbg && marketCache.chain.length) dbg.style.display='none';
@@ -1788,7 +1788,9 @@ function renderOptionChain(data) {
     }
   }
   const expiryToUse = currentSelectedExpiry || (data.expiries ? data.expiries[0] : 'EXP');
-  document.getElementById('chainTitleBadge').innerText = `${isSensex ? 'SENSEX' : 'NIFTY'} (${expiryToUse}) CHAIN`;
+  document.getElementById('chainTitleBadge').innerText = `${isSensex ? 'SENSEX' : 'NIFTY'} (${expiryToUse || '—'}) CHAIN`;
+  const chainDiag=data.diagnostics||{}; const chainErr=data.option_chain_error||chainDiag.last_error||'';
+  const chainStatus=document.getElementById('chainStatus'); if(chainStatus){chainStatus.innerText=chainErr ? ('CHAIN: '+chainErr) : (data.chain.length ? ('LIVE CHAIN · '+(data.market_source||'DATA')) : 'CHAIN: waiting for option contracts'); chainStatus.style.color=chainErr?'var(--red)':'var(--text-sub)';}
 
   if (!data || !data.chain) return;
   var isSensex = currentChartSymbol.includes("SENSEX");
@@ -2040,8 +2042,11 @@ function drawChart() {
   const endIdx = total - panOffset;
   const startIdx = Math.max(0, endIdx - visibleCandleCount - (panFrac > 0 ? 1 : 0));
   const candles = allCandles.slice(startIdx, endIdx);
-  const ema9 = (marketCache.chart.ema9_series || []).slice(startIdx, endIdx);
-  const ema15 = (marketCache.chart.ema15_series || []).slice(startIdx, endIdx);
+  const allCloses = allCandles.map(c=>Number(c.close)).filter(Number.isFinite);
+  const ema9All = Array.isArray(marketCache.chart.ema9_series) && marketCache.chart.ema9_series.length===total ? marketCache.chart.ema9_series : calcEmaLocal(allCloses,9);
+  const ema15All = Array.isArray(marketCache.chart.ema15_series) && marketCache.chart.ema15_series.length===total ? marketCache.chart.ema15_series : calcEmaLocal(allCloses,15);
+  const ema9 = ema9All.slice(startIdx, endIdx);
+  const ema15 = ema15All.slice(startIdx, endIdx);
 
   if (candles.length === 0) return;
 
@@ -2218,6 +2223,9 @@ function drawChart() {
     }
   });
 
+  // Active indicator/signal legend — confirms what is actually enabled on the canvas.
+  { const parts=[]; if(configInd.ema9)parts.push('EMA9'); if(configInd.ema15)parts.push('EMA15'); if(configInd.vwap)parts.push('VWAP'); if(configInd.vol)parts.push('VOL'); if(configInd.sigEMA)parts.push('EMA'); if(configInd.sigRSI)parts.push('RSI'); if(configInd.sigVWAP)parts.push('VWAP-S'); if(configInd.sigBO)parts.push('BO'); if(configInd.sigRBS)parts.push('RBS'); if(configInd.sigSBR)parts.push('SBR'); ctx.font='bold 8px sans-serif';ctx.textAlign='left';ctx.fillStyle='#94a3b8';ctx.fillText(parts.length?'ACTIVE: '+parts.join(' · '):'IND/SIG OFF',chartLeft+8,chartTop-10); }
+
   // 4. Volume Histogram
   if (configInd.vol) {
     const maxVol = Math.max(...candles.map(c => c.volume)) || 1;
@@ -2272,6 +2280,7 @@ function drawChart() {
       else ctx.lineTo(x, toY(val));
     });
     ctx.stroke();
+    const last=ema9[ema9.length-1]; if(Number.isFinite(Number(last))){ctx.font='bold 9px sans-serif';ctx.textAlign='left';ctx.fillStyle='#f59e0b';ctx.fillText('EMA 9', chartLeft+8, Math.max(chartTop+10, toY(Number(last))-5));}
   }
 
   if (configInd.ema15 && ema15.length > 1) {
@@ -2284,6 +2293,7 @@ function drawChart() {
       else ctx.lineTo(x, toY(val));
     });
     ctx.stroke();
+    const last=ema15[ema15.length-1]; if(Number.isFinite(Number(last))){ctx.font='bold 9px sans-serif';ctx.textAlign='left';ctx.fillStyle='#a855f7';ctx.fillText('EMA 15', chartLeft+8, Math.max(chartTop+20, toY(Number(last))-5));}
   }
 
   if (configInd.vwap && marketCache.chart) {
@@ -2330,6 +2340,7 @@ function drawChart() {
       const names=unique.map(m=>markerNames[m.strategy]); const label=names.length>3?names.slice(0,3).join('/')+'+'+(names.length-3):names.join('/');
       ctx.font='bold 7px sans-serif';ctx.textAlign='center';ctx.fillStyle=unique.length?markerColors[unique[0].strategy]:'#94a3b8';ctx.fillText(label,x,yy+(g.signal==='BUY'?18:-18));
     });
+    if(!groups.size){ctx.font='bold 8px sans-serif';ctx.textAlign='right';ctx.fillStyle='#64748b';ctx.fillText('No signal trigger in visible candles',chartRight-8,chartTop-10);}
   }
 
   // 7. Entry, SL, TP Lines
