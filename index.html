@@ -1404,7 +1404,8 @@ async function fetchMarket(force=false) {
 
 function updateUI(data) {
   if (data.bot) updateBotUI(data.bot);
-  const curLTP = data.chart.ltp;
+  const curLTP = Number(data?.chart?.ltp);
+  if (!Number.isFinite(curLTP)) return;
   document.getElementById('headerBal').innerText = `₹${data.wallet.balance.toFixed(0)}`;
   document.getElementById('btnSellLTP').innerText = curLTP.toFixed(2);
   document.getElementById('btnBuyLTP').innerText = curLTP.toFixed(2);
@@ -1443,10 +1444,11 @@ function updateUI(data) {
     document.getElementById('hudGamma').innerText = `Γ: ${data.chart.greeks.gamma}`;
   }
 
-  const spotVal = isSensex ? data.sensex_spot : data.nifty_spot;
-  document.getElementById('chainSpotBadge').innerText = `SPOT: ₹${spotVal.toFixed(2)}`;
+  const spotVal = Number(isSensex ? data.sensex_spot : data.nifty_spot);
+  document.getElementById('chainSpotBadge').innerText = Number.isFinite(spotVal) ? `SPOT: ₹${spotVal.toFixed(2)}` : 'SPOT: —';
 
   renderOptionChain(data);
+  fetchOptionChain(false);
   updatePositionPills(data);
   renderJournal();
 
@@ -1738,8 +1740,32 @@ function renderJournal() {
 let currentSelectedExpiry = '';
 function onExpiryChange() {
   currentSelectedExpiry = document.getElementById('expirySelectDropdown').value;
+  fetchOptionChain(true);
   fetchMarket();
 }
+let optionChainInFlight=false;
+let optionChainSeq=0;
+async function fetchOptionChain(force=false){
+  if(historicalChartMode || optionChainInFlight) return;
+  const symbol=currentChartSymbol, expiry=currentSelectedExpiry||''; const seq=++optionChainSeq;
+  optionChainInFlight=true;
+  try{
+    const qs=`symbol=${encodeURIComponent(symbol)}${expiry?`&expiry=${encodeURIComponent(expiry)}`:''}${force?`&t=${Date.now()}`:''}`;
+    const res=await fetch(`/api/option_chain?${qs}`,{cache:'no-store'});
+    const d=await res.json();
+    if(seq!==optionChainSeq||symbol!==currentChartSymbol) return;
+    if(!marketCache) marketCache={chart:null,wallet:{balance:0,used_margin:0,realized_pnl:0,net_pnl:0},positions:[],pending_orders:[],orders:[],closed_trades:[],chain:[],expiries:[]};
+    marketCache.chain=Array.isArray(d.chain)?d.chain:[];
+    marketCache.expiries=Array.isArray(d.expiries)?d.expiries:[];
+    marketCache.selected_expiry=d.selected_expiry||expiry||null;
+    marketCache.option_chain_error=d.error||'';
+    renderOptionChain(marketCache);
+    const dbg=document.getElementById('debugOverlay');
+    if(dbg && marketCache.chain.length) dbg.style.display='none';
+  }catch(e){ console.warn('Option chain fetch failed:',e); }
+  finally{ if(seq===optionChainSeq) optionChainInFlight=false; }
+}
+
 function renderOptionChain(data) {
   if (!data) return;
   if (!Array.isArray(data.chain)) data.chain=[];
@@ -1791,13 +1817,13 @@ function renderOptionChain(data) {
           <span style="font-size:8px; color:var(--text-sub); margin-left:2px;">${isCallITM ? 'ITM' : (isATM ? 'ATM' : 'OTM')}</span>
         </td>
         <td class="${isCallITM ? 'itm-call' : ''}">
-          <span class="opt-btn" onclick="selectStrike('${ceKey}', '${row.strike} CE')">${row.ce_ltp.toFixed(1)}</span>
+          <span class="opt-btn" onclick="selectStrike('${ceKey}', '${row.strike} CE')">${Number.isFinite(Number(row.ce_ltp)) ? Number(row.ce_ltp).toFixed(1) : '—'}</span>
         </td>
         <td class="strike-cell" onclick="selectStrike('${ceKey}', '${row.strike} CE')">
           ${row.strike}
         </td>
         <td class="${isPutITM ? 'itm-put' : ''}">
-          <span class="opt-btn pe" onclick="selectStrike('${peKey}', '${row.strike} PE')">${row.pe_ltp.toFixed(1)}</span>
+          <span class="opt-btn pe" onclick="selectStrike('${peKey}', '${row.strike} PE')">${Number.isFinite(Number(row.pe_ltp)) ? Number(row.pe_ltp).toFixed(1) : '—'}</span>
         </td>
         <td class="${isPutITM ? 'itm-put' : ''}">
           <span style="font-size:8px; color:var(--text-sub); margin-right:2px;">${isPutITM ? 'ITM' : (isATM ? 'ATM' : 'OTM')}</span>
@@ -2376,7 +2402,8 @@ function drawChart() {
   }
 
   // 8. Live Price Line & Countdown Badge
-  const curLTP = marketCache.chart.ltp;
+  const curLTP = Number(marketCache?.chart?.ltp);
+  if (!Number.isFinite(curLTP)) return;
   const yLTP = toY(curLTP);
   const lastC = candles[candles.length - 1];
   const isUpTick = lastC ? lastC.close >= lastC.open : true;
@@ -2694,7 +2721,7 @@ function historicalChartPayload(){
   const ema9=calcEmaLocal(closes,9), ema15=calcEmaLocal(closes,15), vwap=calcVwapLocal(candles);
   return {symbol:h.contract_symbol||h.underlying,display_title:h.contract_symbol|| (h.underlying==='SENSEX'?'SENSEX':'NIFTY 50'),timeframe:(h.tf/60)+'m',ltp:Number(candles[candles.length-1]?.close||0),countdown:'HIST',candles,ema9_series:ema9,ema15_series:ema15,ema9:ema9[ema9.length-1]||0,ema15:ema15[ema15.length-1]||0,vwap_series:vwap,vwap:vwap[vwap.length-1]||0,strategy_markers:[],greeks:{delta:0,gamma:0,theta:0,vega:0,iv:0}};
 }
-function calcVwapLocal(candles){let pv=0,v=0,out=[],day=null; for(const c of candles){const ms=(Number(c.time||0)<100000000000?Number(c.time||0)*1000:Number(c.time||0)); const d=new Date(ms); const key=`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`; if(day!==null&&key!==day){pv=0;v=0;} day=key; const q=Math.max(Number(c.volume||0),1);pv+=((c.high+c.low+c.close)/3)*q;v+=q;out.push(Number((pv/v).toFixed(2)));}return out;}
+function calcVwapLocal(candles){let pv=0,v=0,out=[],day=null; for(const c of candles){const ms=(Number(c.time||0)<100000000000?Number(c.time||0)*1000:Number(c.time||0)); const d=new Date(ms); const key=`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`; if(day!==null&&key!==day){pv=0;v=0;} day=key; const q=Number(c.volume||0); if(!Number.isFinite(q)||q<=0){out.push(null); continue;} pv+=((Number(c.high)+Number(c.low)+Number(c.close))/3)*q;v+=q;out.push(v>0?Number((pv/v).toFixed(2)):null);}return out;}
 function resetHistoricalViewport(){
   historicalYMin=null; historicalYMax=null; smoothMinP=null; smoothMaxP=null;
 }

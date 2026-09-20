@@ -1753,6 +1753,16 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 if isinstance(cached,dict) and isinstance(cached.get('candles'),list) and cached.get('candles'):
                     return self._send_json({'ok':True,'chart':cached,'market_source':'Angel One SmartAPI' if state.angel.enabled else 'Development mode','market_error':str(e)})
                 return self._send_json({'ok':False,'error':str(e)},503)
+        if parsed.path=='/api/option_chain':
+            p=parse_qs(parsed.query); symbol=p.get('symbol',['NIFTY'])[0]; expiry=p.get('expiry',[None])[0]
+            try:
+                with state.lock:
+                    chain=state.get_option_chain(symbol,expiry)
+                return self._send_json({'ok':True,**chain,'market_source':'Angel One SmartAPI' if state.angel.enabled else 'Development mode','error':state.angel.last_error if state.angel.enabled and not chain.get('chain') else ''})
+            except Exception as e:
+                cached=state.live_chain_cache.get((symbol,expiry))
+                chain=cached[1] if cached else {'chain':[],'expiries':[],'selected_expiry':expiry}
+                return self._send_json({'ok':False,**chain,'error':str(e)},200)
         if parsed.path=='/api/market':
             p=parse_qs(parsed.query); symbol=p.get('symbol',['NIFTY'])[0]; tf=p.get('tf',['1m'])[0]; expiry=p.get('expiry',[None])[0]
             cache_key=(symbol,tf,expiry)
