@@ -1724,6 +1724,17 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if parsed.path in ('/','/index.html'):
             with open('index.html','rb') as f: body=f.read()
             self.send_response(200); self.send_header('Content-Type','text/html; charset=utf-8'); self.send_header('Content-Length',str(len(body))); self.end_headers(); self.wfile.write(body); return
+        if parsed.path=='/api/chart':
+            p=parse_qs(parsed.query); symbol=p.get('symbol',['NIFTY'])[0]; tf=p.get('tf',['1m'])[0]
+            try:
+                with state.lock:
+                    chart=state.get_instrument_chart_data(symbol,tf)
+                return self._send_json({'ok':True,'chart':chart,'market_source':'Angel One SmartAPI' if state.angel.enabled else 'Development mode','market_error':state.angel.last_error if state.angel.enabled else ''})
+            except Exception as e:
+                cached=state.chart_cache.get((symbol,tf))
+                if isinstance(cached,dict) and isinstance(cached.get('candles'),list) and cached.get('candles'):
+                    return self._send_json({'ok':True,'chart':cached,'market_source':'Angel One SmartAPI' if state.angel.enabled else 'Development mode','market_error':str(e)})
+                return self._send_json({'ok':False,'error':str(e)},503)
         if parsed.path=='/api/market':
             p=parse_qs(parsed.query); symbol=p.get('symbol',['NIFTY'])[0]; tf=p.get('tf',['1m'])[0]; expiry=p.get('expiry',[None])[0]
             cache_key=(symbol,tf,expiry)

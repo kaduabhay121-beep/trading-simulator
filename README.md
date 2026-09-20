@@ -122,3 +122,11 @@ Use the same startup/deployment process as the previous TradeLab build. Render c
 - Chart strategy markers are independently toggleable: EMA, RSI, VWAP, Breakout, RBS, and SBR.
 - Existing EMA/EMA15/VWAP/volume chart indicators remain independently toggleable.
 - RBS/SBR structural calculations use only candles already available to the engine; they do not fabricate missing multi-month history.
+
+## v2.13.1 — Modular Indicator & Signal Settings
+- Added independent indicator/signal settings panel.
+- Indicator visibility: EMA 9, EMA 15, VWAP, Volume.
+- Signal visibility: EMA, RSI, VWAP, Breakout, RBS, SBR.
+- Settings persist locally in the browser/WebView.
+- Signals remain independent: hiding one signal does not disable the others or the strategy engine.
+- Added Enable All / Disable All / Reset controls.
