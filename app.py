@@ -857,6 +857,90 @@ def _resample_candles(rows, timeframe_seconds):
         out.append({'time':key,'is_prev_day':False,'open':float(arr[0]['open']),'high':max(float(x['high']) for x in arr),'low':min(float(x['low']) for x in arr),'close':float(arr[-1]['close']),'volume':int(sum(float(x.get('volume',0) or 0) for x in arr))})
     return out
 
+def _offline_rule_engine_replay(underlying, base, timeframe, sl_pct, tp_pct, starting_balance, lot_multiplier=1, trade_type='INTRADAY', replay_start=None, replay_end=None):
+    """Run the real SignalEngine candle-by-candle against persisted historical data only."""
+    if not state.signal_engine:
+        return {'ok':False,'error':'Signal engine unavailable'}
+    base=_align_candles(base)
+    if len(base)<2:
+        return {'ok':False,'error':'Not enough persisted historical candles for offline replay'}
+    # Only snapshots saved at or before each decision timestamp are eligible.
+    balance=float(starting_balance); peak=balance; max_dd=0.0; position=None; trades=[]; rejected=0; rejection_reasons={}
+    evaluated=0; calls=puts=0; wins=losses=0; last_entry_ts=0
+    cache={}
+    def tf_data_at(ts):
+        prefix=[c for c in base if int(c['time'])<=int(ts)]
+        return {'5m':state._resample(prefix,300),'15m':state._resample(prefix,900),'1h':state._resample(prefix,3600)}
+    def chain_at(ts):
+        snap=state._load_option_chain_snapshot(underlying,int(ts))
+        return (snap or {}).get('chain',[]) if snap else []
+    def option_ltp_at(symbol,ts):
+        snap=state._load_option_chain_snapshot(underlying,int(ts))
+        if not snap:return None
+        for r in snap.get('chain',[]):
+            if str(r.get('ce_symbol') or r.get('pe_symbol') or r.get('symbol') or '')==str(symbol):
+                return r
+        return None
+    for i in range(1,len(base)-1):
+        c=base[i]; nxt=base[i+1]; ts=int(c['time']); nts=int(nxt['time'])
+        if position:
+            if trade_type=='INTRADAY' and _session_date(ts)!=position['session']:
+                exitp=position['last_price']; pnl=(exitp-position['entry'])*position['qty']; balance+=pnl
+                trades.append({**position,'exit_time':ts,'exit':round(exitp,2),'pnl':round(pnl,2),'reason':'TIME_EXIT'}); position=None
+            else:
+                row=option_ltp_at(position['symbol'],nts)
+                px=None
+                if row:
+                    for key in ('ce_ltp','pe_ltp','ltp'):
+                        if key in row and str(row.get(key)) not in ('','None'):
+                            try:px=float(row[key]);break
+                            except:pass
+                if px is not None:
+                    position['last_price']=px
+                    hit_sl=px<=position['sl']; hit_tp=px>=position['tp']
+                    if hit_sl or hit_tp:
+                        exitp=position['sl'] if hit_sl else position['tp']; pnl=(exitp-position['entry'])*position['qty']; balance+=pnl
+                        trades.append({k:position.get(k) for k in ('signal_time','entry_time','exit_time','entry','exit','qty','lots','symbol','rr') } | {'exit_time':nts,'exit':round(exitp,2),'pnl':round(pnl,2),'reason':'STOP_LOSS' if hit_sl else 'TARGET'})
+                        wins += pnl>0; losses += pnl<=0; position=None; peak=max(peak,balance); max_dd=max(max_dd,peak-balance)
+                        continue
+        tf=tf_data_at(ts); chain=chain_at(ts); evaluated+=1
+        risk={'daily_loss':(balance-starting_balance)<=-float(starting_balance)*0.02,'max_trades':(calls+puts)>=5,'open_position':position is not None,'cooldown':last_entry_ts>0 and ts-last_entry_ts<60}
+        spot=float(c['close'])
+        out=state.signal_engine.evaluate(underlying,tf,chain,spot,expiry=None,risk=risk,market_open=True,now=ts)
+        sig=out.get('signal','NO_TRADE')
+        if sig=='CALL': calls+=1
+        elif sig=='PUT': puts+=1
+        if sig=='NO_TRADE':
+            rejected+=1
+            for reason in (out.get('reasons') or ['NO_TRADE']):
+                rejection_reasons[reason]=rejection_reasons.get(reason,0)+1
+            continue
+        if position is not None:
+            rejected+=1; rejection_reasons['OPEN_POSITION']=rejection_reasons.get('OPEN_POSITION',0)+1; continue
+        pick=out.get('option') or {}
+        symbol=pick.get('symbol'); entry=float(out.get('entry_low') or pick.get('premium') or 0)
+        if not symbol or entry<=0:
+            rejected+=1; rejection_reasons['MISSING_ENTRY_DATA']=rejection_reasons.get('MISSING_ENTRY_DATA',0)+1; continue
+        entry_row=option_ltp_at(symbol,nts)
+        if not entry_row:
+            rejected+=1; rejection_reasons['NO_NEXT_CANDLE_OPTION_DATA']=rejection_reasons.get('NO_NEXT_CANDLE_OPTION_DATA',0)+1; continue
+        try:
+            pfx='ce_' if sig=='CALL' else 'pe_'
+            actual=float(entry_row.get(pfx+'ltp') or entry_row.get('ltp') or 0)
+        except: actual=0
+        if actual<=0:
+            rejected+=1; rejection_reasons['INVALID_ENTRY_PRICE']=rejection_reasons.get('INVALID_ENTRY_PRICE',0)+1; continue
+        qty=max(1,int(lot_multiplier))
+        position={'signal_time':ts,'entry_time':nts,'exit_time':None,'entry':actual,'exit':None,'qty':qty,'lots':lot_multiplier,'symbol':symbol,'rr':float(out.get('rr') or 0),'sl':actual*(1-sl_pct/100),'tp':actual*(1+tp_pct/100),'last_price':actual,'session':_session_date(nts),'strike':pick.get('strike'),'option_type':sig,'underlying_spot':spot}
+        last_entry_ts=nts
+    if position:
+        exitp=position.get('last_price',position['entry']); pnl=(exitp-position['entry'])*position['qty']; balance+=pnl
+        trades.append({k:position.get(k) for k in ('signal_time','entry_time','entry','qty','lots','symbol','rr')} | {'exit_time':base[-1]['time'],'exit':round(exitp,2),'pnl':round(pnl,2),'reason':'TIME_EXIT'})
+        wins += pnl>0; losses += pnl<=0
+    net=balance-starting_balance; gp=sum(max(0,float(t['pnl'])) for t in trades); gl=sum(-min(0,float(t['pnl'])) for t in trades)
+    return {'ok':True,'strategy':'RULE_ENGINE','underlying':underlying,'mode':'OFFLINE','timeframe':timeframe,'trade_type':trade_type,'lot_multiplier':lot_multiplier,'candles':len(base),'signals_evaluated':evaluated,'call_signals':calls,'put_signals':puts,'no_trade':rejected,'trades':len(trades),'wins':int(wins),'losses':int(losses),'win_rate':round(wins/len(trades)*100,1) if trades else 0.0,'gross_pnl':round(net+gl,2),'net_pnl':round(net,2),'profit_factor':round(gp/gl,2) if gl else (999.0 if gp else 0.0),'max_drawdown':round(max_dd,2),'avg_rr':round(sum(float(t.get('rr') or 0) for t in trades)/len(trades),2) if trades else 0.0,'avg_win':round(sum(float(t['pnl']) for t in trades if t['pnl']>0)/max(wins,1),2) if wins else 0.0,'avg_loss':round(sum(float(t['pnl']) for t in trades if t['pnl']<0)/max(losses,1),2) if losses else 0.0,'rejected_signals':rejected,'rejection_reasons':rejection_reasons,'trades_detail':trades,'data_note':'OFFLINE/HISTORICAL only; point-in-time snapshots; no Angel One connection and no orders.'}
+
+
 def _option_backtest(strategy, underlying, option_mode, days, sl_pct, tp_pct, starting_balance, angel, timeframe=60, lot_multiplier=1, trade_type='INTRADAY', shared_cache=None, base_override=None, replay_start=None, replay_end=None):
     inst=angel.find_index(underlying); interval=TF_INTERVALS.get(int(timeframe),'ONE_MINUTE')
     base=_align_candles(base_override if base_override is not None else (angel.candles_range(inst,interval,replay_start,replay_end) if replay_start and replay_end else (angel.candles(inst,interval,days) if inst else [])))
@@ -1028,6 +1112,7 @@ class SimulationState:
                 "CREATE TABLE IF NOT EXISTS research_trades (id BIGSERIAL PRIMARY KEY, run_id BIGINT, created_at BIGINT NOT NULL, trade_json TEXT NOT NULL)",
                 "CREATE TABLE IF NOT EXISTS paper_trade_journal (id BIGSERIAL PRIMARY KEY, created_at BIGINT NOT NULL, trade_json TEXT NOT NULL)",
                 "CREATE TABLE IF NOT EXISTS historical_datasets (dataset_key TEXT PRIMARY KEY, saved_at BIGINT NOT NULL, meta_json TEXT NOT NULL, candles_json TEXT NOT NULL)",
+                "CREATE TABLE IF NOT EXISTS historical_option_chain_snapshots (underlying TEXT NOT NULL, snapshot_time BIGINT NOT NULL, expiry TEXT NOT NULL, created_at BIGINT NOT NULL, chain_json TEXT NOT NULL, PRIMARY KEY (underlying,snapshot_time,expiry))",
                 "CREATE TABLE IF NOT EXISTS historical_replay_sessions (session_id TEXT PRIMARY KEY, created_at BIGINT NOT NULL, updated_at BIGINT NOT NULL, run_id BIGINT, replay_day TEXT NOT NULL, underlying TEXT NOT NULL, mode TEXT NOT NULL, timeframe INTEGER NOT NULL, trade_type TEXT NOT NULL, state_json TEXT NOT NULL)"
             ]
             for sql in stmts: db.execute(sql)
@@ -1041,9 +1126,56 @@ class SimulationState:
         db.execute("CREATE TABLE IF NOT EXISTS research_trades (id INTEGER PRIMARY KEY AUTOINCREMENT, run_id INTEGER, created_at INTEGER NOT NULL, trade_json TEXT NOT NULL)")
         db.execute("CREATE TABLE IF NOT EXISTS paper_trade_journal (id INTEGER PRIMARY KEY AUTOINCREMENT, created_at INTEGER NOT NULL, trade_json TEXT NOT NULL)")
         db.execute("CREATE TABLE IF NOT EXISTS historical_datasets (dataset_key TEXT PRIMARY KEY, saved_at INTEGER NOT NULL, meta_json TEXT NOT NULL, candles_json TEXT NOT NULL)")
+        db.execute("CREATE TABLE IF NOT EXISTS historical_option_chain_snapshots (underlying TEXT NOT NULL, snapshot_time INTEGER NOT NULL, expiry TEXT NOT NULL, created_at INTEGER NOT NULL, chain_json TEXT NOT NULL, PRIMARY KEY (underlying,snapshot_time,expiry))")
         db.execute("CREATE TABLE IF NOT EXISTS historical_replay_sessions (session_id TEXT PRIMARY KEY, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, run_id INTEGER, replay_day TEXT NOT NULL, underlying TEXT NOT NULL, mode TEXT NOT NULL, timeframe INTEGER NOT NULL, trade_type TEXT NOT NULL, state_json TEXT NOT NULL)")
         # Research/replay history is permanent by design. Nothing is auto-deleted.
         return _DBAdapter(db, False)
+
+    def _store_option_chain_snapshot(self, underlying, ts, expiry, chain):
+        """Persist a point-in-time broker option-chain snapshot for future offline replay."""
+        if not chain:
+            return
+        try:
+            db=self._db(); now=int(time.time())
+            payload=json.dumps(chain,separators=(',',':'))
+            if self.DATABASE_URL:
+                db.execute("INSERT INTO historical_option_chain_snapshots(underlying,snapshot_time,expiry,created_at,chain_json) VALUES(%s,%s,%s,%s,%s) ON CONFLICT(underlying,snapshot_time,expiry) DO UPDATE SET chain_json=excluded.chain_json,created_at=excluded.created_at",(str(underlying).upper(),int(ts),str(expiry or ''),now,payload))
+            else:
+                db.execute("INSERT INTO historical_option_chain_snapshots(underlying,snapshot_time,expiry,created_at,chain_json) VALUES(?,?,?,?,?) ON CONFLICT(underlying,snapshot_time,expiry) DO UPDATE SET chain_json=excluded.chain_json,created_at=excluded.created_at",(str(underlying).upper(),int(ts),str(expiry or ''),now,payload))
+            db.commit(); db.close()
+        except Exception:
+            pass
+
+    def _load_option_chain_snapshot(self, underlying, ts, expiry=None):
+        """Return the latest saved chain at or before T. Never reads a future snapshot."""
+        try:
+            db=self._db()
+            if expiry:
+                row=db.execute("SELECT snapshot_time,expiry,chain_json FROM historical_option_chain_snapshots WHERE underlying=? AND snapshot_time<=? AND expiry=? ORDER BY snapshot_time DESC LIMIT 1",(str(underlying).upper(),int(ts),str(expiry))).fetchone()
+            else:
+                row=db.execute("SELECT snapshot_time,expiry,chain_json FROM historical_option_chain_snapshots WHERE underlying=? AND snapshot_time<=? ORDER BY snapshot_time DESC LIMIT 1",(str(underlying).upper(),int(ts))).fetchone()
+            db.close()
+            if not row: return None
+            return {'snapshot_time':int(row[0]),'expiry':row[1],'chain':json.loads(row[2])}
+        except Exception:
+            return None
+
+    def _list_historical_option_datasets(self, underlying, start_date, end_date):
+        """Load previously persisted option candles without contacting Angel One."""
+        try:
+            db=self._db()
+            rows=db.execute("SELECT meta_json,candles_json FROM historical_datasets WHERE meta_json LIKE ? AND meta_json LIKE ?",('%"start_date": "'+str(start_date)+'"%','%"end_date": "'+str(end_date)+'"%')).fetchall()
+            db.close(); out=[]
+            for meta_raw,candles_raw in rows:
+                try:
+                    meta=json.loads(meta_raw); mode=str(meta.get('mode','')).upper()
+                    if str(meta.get('underlying','')).upper() in (str(underlying).upper(),) or mode in ('NFO_1M','BFO_1M'):
+                        out.append({'meta':meta,'candles':json.loads(candles_raw)})
+                except Exception:
+                    continue
+            return out
+        except Exception:
+            return []
 
     def _historical_key(self, underlying, mode, timeframe, start_date, end_date):
         return f'{str(underlying).upper()}|{str(mode).upper()}|{int(timeframe)}|{start_date}|{end_date}'
@@ -1797,6 +1929,8 @@ def _build_live_signal(symbol='NIFTY', expiry=None):
         out=state.signal_engine.evaluate(symbol,tf_data,live_chain,spot,chain.get('selected_expiry') or expiry,risk=risk,market_open=market_open,now=now)
     else:
         out={'signal':'NO_TRADE','status':'NO_TRADE','symbol':symbol,'reasons':['SIGNAL_ENGINE_UNAVAILABLE'],'warnings':[],'paper_only':True,'no_real_orders':True,'timestamp':now}
+    if live_chain:
+        state._store_option_chain_snapshot(symbol, int(now), chain.get('selected_expiry') or expiry or '', live_chain)
     out['market_source']=source or ('Angel One SmartAPI' if state.angel.enabled else 'Development mode')
     out['data_quality']='LIVE_BROKER' if live_chain and source != 'SIMULATED PAPER CHAIN' else 'NO_LIVE_CHAIN'
     out['selected_expiry']=chain.get('selected_expiry')
@@ -1998,11 +2132,20 @@ class Handler(http.server.BaseHTTPRequestHandler):
             trade_type=p.get('trade_type',['INTRADAY'])[0].upper(); trade_type='BTST' if trade_type=='BTST' else 'INTRADAY'
             try: tf=max(60,min(3600,int(p.get('tf',['300'])[0]))); lots=max(1,min(20,int(p.get('lots',['1'])[0]))); sl=max(0.1,min(20,float(p.get('sl',[state.bot.get('stop_loss_pct',0.6)])[0]))); tp=max(0.1,min(50,float(p.get('tp',[state.bot.get('target_pct',1.2)])[0])))
             except Exception: tf,lots,sl,tp=300,1,0.6,1.2
-            if not state.angel.enabled: return self._send_json({'ok':False,'error':'Historical replay needs Angel One historical market data. Enable ANGELONE_ENABLED.'},400)
-            inst=state.angel.find_index(under)
-            if not inst: return self._send_json({'ok':False,'error':f'Index instrument not found for {under}.'},400)
+            offline=str(p.get('offline',['1'])[0]).lower() in ('1','true','yes','on') or strategy=='RULE_ENGINE'
             interval=TF_INTERVALS.get(tf,'FIVE_MINUTE')
             end_day=_next_weekday(day) if trade_type=='BTST' else day
+            base=state._load_historical_dataset(under,'INDEX',tf,day.isoformat(),end_day.isoformat())
+            if not base:
+                base=state._load_historical_dataset(under,'INDEX_1M',60,day.isoformat(),day.isoformat())
+                if base and tf!=60: base=state._resample(_align_candles(base),tf)
+            if offline:
+                if not base: return self._send_json({'ok':False,'error':'Offline replay requires persisted historical candles for this symbol/date. Angel One is not contacted in Offline mode.'},404)
+                r=_offline_rule_engine_replay(under,base,tf,sl,tp,state.bot.get('initial_balance',1000000.0),lots,trade_type,day,end_day)
+                if r.get('ok'): state._store_research('REPLAY_DAY',r,1 if trade_type=='INTRADAY' else 2,sl,tp,lots)
+                return self._send_json(r,200 if r.get('ok') else 400)
+            inst=state.angel.find_index(under)
+            if not inst: return self._send_json({'ok':False,'error':f'Index instrument not found for {under}.'},400)
             base=state._load_historical_dataset(under,mode,tf,day.isoformat(),end_day.isoformat())
             data_source='Persistent historical dataset' if base else 'Angel One Historical API'
             if not base:
