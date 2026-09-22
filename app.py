@@ -867,6 +867,7 @@ def _offline_rule_engine_replay(underlying, base, timeframe, sl_pct, tp_pct, sta
     # Only snapshots saved at or before each decision timestamp are eligible.
     balance=float(starting_balance); peak=balance; max_dd=0.0; position=None; trades=[]; rejected=0; rejection_reasons={}
     evaluated=0; calls=puts=0; wins=losses=0; last_entry_ts=0
+    engine_log=[]
     cache={}
     def tf_data_at(ts):
         prefix=[c for c in base if int(c['time'])<=int(ts)]
@@ -908,6 +909,9 @@ def _offline_rule_engine_replay(underlying, base, timeframe, sl_pct, tp_pct, sta
         spot=float(c['close'])
         out=state.signal_engine.evaluate(underlying,tf,chain,spot,expiry=None,risk=risk,market_open=True,now=ts)
         sig=out.get('signal','NO_TRADE')
+        # Persist a point-in-time decision frame for the visual offline chart. This frame
+        # is derived only from candles/snapshots at or before ts; no future data is attached.
+        engine_log.append({'time':ts,'spot':spot,'signal':sig,'call_score':out.get('call_score',0),'put_score':out.get('put_score',0),'confidence':out.get('confidence',0),'trend':((out.get('analysis') or {}).get('timeframes') or {}).get('5m',{}).get('trend','—'),'structure':((out.get('analysis') or {}).get('structure') or {}).get('state','—'),'momentum':((out.get('analysis') or {}).get('momentum') or {}).get('state','—'),'volume':((out.get('analysis') or {}).get('volume') or {}).get('state','—'),'vwap':((out.get('analysis') or {}).get('support_resistance') or {}).get('support',None),'breakout':('CONFIRMED' if 'BREAKOUT_CONFIRMED' in (out.get('reasons') or []) else '—'),'option_chain':((out.get('analysis') or {}).get('option_chain') or {}).get('bias','UNAVAILABLE'),'strike':out.get('strike'),'option_type':out.get('option_type'),'entry_low':out.get('entry_low'),'entry_high':out.get('entry_high'),'sl':out.get('sl'),'target':((out.get('targets') or [None])[0]),'rr':out.get('rr',0),'reasons':out.get('reasons') or [],'warnings':out.get('warnings') or []})
         if sig=='CALL': calls+=1
         elif sig=='PUT': puts+=1
         if sig=='NO_TRADE':
@@ -938,7 +942,7 @@ def _offline_rule_engine_replay(underlying, base, timeframe, sl_pct, tp_pct, sta
         trades.append({k:position.get(k) for k in ('signal_time','entry_time','entry','qty','lots','symbol','rr')} | {'exit_time':base[-1]['time'],'exit':round(exitp,2),'pnl':round(pnl,2),'reason':'TIME_EXIT'})
         wins += pnl>0; losses += pnl<=0
     net=balance-starting_balance; gp=sum(max(0,float(t['pnl'])) for t in trades); gl=sum(-min(0,float(t['pnl'])) for t in trades)
-    return {'ok':True,'strategy':'RULE_ENGINE','underlying':underlying,'mode':'OFFLINE','timeframe':timeframe,'trade_type':trade_type,'lot_multiplier':lot_multiplier,'candles':len(base),'signals_evaluated':evaluated,'call_signals':calls,'put_signals':puts,'no_trade':rejected,'trades':len(trades),'wins':int(wins),'losses':int(losses),'win_rate':round(wins/len(trades)*100,1) if trades else 0.0,'gross_pnl':round(net+gl,2),'net_pnl':round(net,2),'profit_factor':round(gp/gl,2) if gl else (999.0 if gp else 0.0),'max_drawdown':round(max_dd,2),'avg_rr':round(sum(float(t.get('rr') or 0) for t in trades)/len(trades),2) if trades else 0.0,'avg_win':round(sum(float(t['pnl']) for t in trades if t['pnl']>0)/max(wins,1),2) if wins else 0.0,'avg_loss':round(sum(float(t['pnl']) for t in trades if t['pnl']<0)/max(losses,1),2) if losses else 0.0,'rejected_signals':rejected,'rejection_reasons':rejection_reasons,'trades_detail':trades,'data_note':'OFFLINE/HISTORICAL only; point-in-time snapshots; no Angel One connection and no orders.'}
+    return {'ok':True,'strategy':'RULE_ENGINE','underlying':underlying,'mode':'OFFLINE','timeframe':timeframe,'trade_type':trade_type,'lot_multiplier':lot_multiplier,'candles':len(base),'signals_evaluated':evaluated,'call_signals':calls,'put_signals':puts,'no_trade':rejected,'trades':len(trades),'wins':int(wins),'losses':int(losses),'win_rate':round(wins/len(trades)*100,1) if trades else 0.0,'gross_pnl':round(net+gl,2),'net_pnl':round(net,2),'profit_factor':round(gp/gl,2) if gl else (999.0 if gp else 0.0),'max_drawdown':round(max_dd,2),'avg_rr':round(sum(float(t.get('rr') or 0) for t in trades)/len(trades),2) if trades else 0.0,'avg_win':round(sum(float(t['pnl']) for t in trades if t['pnl']>0)/max(wins,1),2) if wins else 0.0,'avg_loss':round(sum(float(t['pnl']) for t in trades if t['pnl']<0)/max(losses,1),2) if losses else 0.0,'rejected_signals':rejected,'rejection_reasons':rejection_reasons,'trades_detail':trades,'engine_log':engine_log,'candles_data':base,'data_note':'OFFLINE/HISTORICAL only; point-in-time snapshots; no Angel One connection and no orders.'}
 
 
 def _option_backtest(strategy, underlying, option_mode, days, sl_pct, tp_pct, starting_balance, angel, timeframe=60, lot_multiplier=1, trade_type='INTRADAY', shared_cache=None, base_override=None, replay_start=None, replay_end=None):
