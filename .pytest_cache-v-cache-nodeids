@@ -1,0 +1,4 @@
+[
+  "test_signal_engine.py::test_missing_chain_is_no_trade",
+  "test_signal_engine.py::test_missing_history_is_no_trade"
+]

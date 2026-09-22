@@ -18,6 +18,11 @@ import re
 import sqlite3
 
 try:
+    from signal_engine import SignalEngine
+except Exception:
+    SignalEngine = None
+
+try:
     import psycopg
 except Exception:
     psycopg = None
@@ -996,6 +1001,9 @@ class _DBAdapter:
 class SimulationState:
     def __init__(self):
         self.lock=threading.Lock(); self.nifty_spot=23765.0; self.sensex_spot=81200.0; self.prev_close=23897.70; self.sensex_prev_close=0.0
+        self.signal_engine = SignalEngine() if SignalEngine else None
+        self.signal_cache = {}
+        self.signal_cache_ts = 0.0
         self.wallet={'initial':1000000.0,'balance':1000000.0,'used_margin':0.0,'realized_pnl':0.0}
         # Browser live-feed subscribers. Each symbol gets an event queue so ticks are
         # pushed immediately instead of waiting for client-side HTTP polling.
@@ -1755,6 +1763,42 @@ class SimulationState:
 
 state=SimulationState()
 
+def _signal_tf_data(symbol):
+    """Build deterministic 5m/15m/1h input from the existing 1m feed."""
+    base = state.sensex_candles_1m if 'SENSEX' in str(symbol).upper() else state.candles_1m
+    return {
+        '5m': state._resample(base, 300),
+        '15m': state._resample(base, 900),
+        '1h': state._resample(base, 3600),
+    }
+
+def _build_live_signal(symbol='NIFTY', expiry=None):
+    now=time.time()
+    key=(str(symbol).upper(), expiry or '')
+    if state.signal_engine and state.signal_cache.get(key) and now-state.signal_cache_ts < 3.0:
+        return state.signal_cache[key]
+    spot=state.sensex_spot if 'SENSEX' in str(symbol).upper() else state.nifty_spot
+    chain=state.get_option_chain(symbol, expiry)
+    source=chain.get('market_source') or ''
+    live_chain=chain.get('chain',[]) if source != 'SIMULATED PAPER CHAIN' else []
+    tf_data=_signal_tf_data(symbol)
+    risk={
+        'daily_loss': float(state.bot.get('daily_pnl',0) or 0) <= -float(state.bot.get('max_daily_loss',2) or 2)/100*float(state.bot.get('initial_balance',1000000) or 1000000),
+        'max_trades': int(state.bot.get('trades_today',0) or 0) >= int(state.bot.get('max_trades_per_day',5) or 5),
+        'open_position': len(state._bot_positions()) >= int(state.bot.get('max_open_positions',1) or 1),
+        'cooldown': (now-float(state.bot.get('last_trade_ts',0) or 0)) < float(state.bot.get('cooldown_sec',60) or 60),
+    }
+    market_open = is_market_open('OPTION')
+    if state.signal_engine:
+        out=state.signal_engine.evaluate(symbol,tf_data,live_chain,spot,chain.get('selected_expiry') or expiry,risk=risk,market_open=market_open,now=now)
+    else:
+        out={'signal':'NO_TRADE','status':'NO_TRADE','symbol':symbol,'reasons':['SIGNAL_ENGINE_UNAVAILABLE'],'warnings':[],'paper_only':True,'no_real_orders':True,'timestamp':now}
+    out['market_source']=source or ('Angel One SmartAPI' if state.angel.enabled else 'Development mode')
+    out['data_quality']='LIVE_BROKER' if live_chain and source != 'SIMULATED PAPER CHAIN' else 'NO_LIVE_CHAIN'
+    out['selected_expiry']=chain.get('selected_expiry')
+    state.signal_cache[key]=out; state.signal_cache_ts=now
+    return out
+
 def invalidate_market_cache():
     state.market_cache={}; state.market_cache_ts=0
 
@@ -1777,6 +1821,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 if isinstance(cached,dict) and isinstance(cached.get('candles'),list) and cached.get('candles'):
                     return self._send_json({'ok':True,'chart':cached,'market_source':'Angel One SmartAPI' if state.angel.enabled else 'Development mode','market_error':str(e)})
                 return self._send_json({'ok':False,'error':str(e)},503)
+        if parsed.path=='/api/signal':
+            p=parse_qs(parsed.query); symbol=p.get('symbol',['NIFTY'])[0]; expiry=p.get('expiry',[None])[0]
+            try:
+                result=_build_live_signal(symbol,expiry)
+                return self._send_json({'ok':True,**result})
+            except Exception as e:
+                return self._send_json({'ok':False,'signal':'NO_TRADE','status':'NO_TRADE','reasons':['SIGNAL_ENGINE_ERROR'],'error':str(e),'paper_only':True,'no_real_orders':True},200)
         if parsed.path=='/api/option_chain':
             p=parse_qs(parsed.query); symbol=p.get('symbol',['NIFTY'])[0]; expiry=p.get('expiry',[None])[0]
             try:

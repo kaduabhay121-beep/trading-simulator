@@ -360,6 +360,13 @@ canvas { width: 100% !important; height: 100% !important; display: block; }
   <!-- 3. OPTION CHAIN TAB -->
   <div id="tab-chain" class="view-tab">
     <div class="chain-scroll-container">
+      <div id="ruleSignalCard" style="background:#11151e;border:1px solid #1e2430;border-radius:8px;margin-bottom:10px;padding:10px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;">
+          <div><div style="font-size:9px;color:#64748b;font-weight:900;letter-spacing:1px;">RULE-BASED OPTIONS SIGNAL</div><div id="ruleSignal" style="font-size:22px;font-weight:950;margin-top:2px;">NO_TRADE</div></div>
+          <div style="text-align:right;font-size:9px;color:#64748b;">CONFIDENCE <b id="ruleConfidence" style="color:#fff">0%</b><br>CALL <b id="ruleCallScore">0</b> · PUT <b id="rulePutScore">0</b></div>
+        </div>
+        <div id="ruleSignalMeta" style="font-size:10px;color:#94a3b8;margin-top:6px;line-height:1.45;">Waiting for validated multi-timeframe + live option-chain data…</div>
+      </div>
       <div style="background:#11151e; border:1px solid #1e2430; border-radius:8px; margin-bottom: 24px;">
         <div style="display:flex; justify-content:space-between; align-items:center; padding:8px 12px; background:#0c0f15; border-bottom:1px solid #1e2430;">
           
@@ -1419,6 +1426,28 @@ async function fetchMarket(force=false) {
   }
 }
 
+let ruleSignalInFlight=false;
+async function fetchRuleSignal(){
+  if(ruleSignalInFlight || historicalChartMode) return;
+  ruleSignalInFlight=true;
+  try{
+    const symbol=currentChartSymbol.includes('SENSEX')?'SENSEX':'NIFTY';
+    const exp=currentSelectedExpiry?`&expiry=${encodeURIComponent(currentSelectedExpiry)}`:'';
+    const r=await fetch(`/api/signal?symbol=${encodeURIComponent(symbol)}${exp}`,{cache:'no-store'});
+    const d=await r.json(); if(d) renderRuleSignal(d);
+  }catch(e){} finally{ruleSignalInFlight=false;}
+}
+function renderRuleSignal(d){
+  const sig=document.getElementById('ruleSignal'); if(!sig)return;
+  sig.textContent=d.signal||'NO_TRADE';
+  sig.style.color=d.signal==='CALL'?'var(--green)':d.signal==='PUT'?'var(--red)':'#e2e8f0';
+  document.getElementById('ruleConfidence').textContent=`${Number(d.confidence||0).toFixed(0)}%`;
+  document.getElementById('ruleCallScore').textContent=Number(d.call_score||0).toFixed(0);
+  document.getElementById('rulePutScore').textContent=Number(d.put_score||0).toFixed(0);
+  const o=d.option||{}; const why=(d.reasons||[]).slice(0,4).join(' · '); const warn=(d.warnings||[]).slice(0,2).join(' · ');
+  document.getElementById('ruleSignalMeta').textContent = d.signal==='NO_TRADE' ? `${why||'No qualified setup'}${warn?' | '+warn:''} | ${d.data_quality||'DATA'}` : `${d.option_type||''} ${d.strike||''} ${d.expiry||''} · ₹${Number(o.premium||0).toFixed(2)} · SL ₹${Number(d.sl||0).toFixed(2)} · Target ₹${Number((d.targets||[])[0]||0).toFixed(2)} · R:R ${Number(d.rr||0).toFixed(2)} | ${d.data_quality||'DATA'}`;
+}
+
 function updateUI(data) {
   const oc=document.getElementById('optionChartContext');
   const isOpt=String(currentChartSymbol||'').includes('_');
@@ -1480,7 +1509,7 @@ function updateUI(data) {
   document.getElementById('chainSpotBadge').innerText = Number.isFinite(spotVal) ? `SPOT: ₹${spotVal.toFixed(2)}` : 'SPOT: —';
 
   renderOptionChain(data);
-  fetchOptionChain(false);
+  if(data.signal) renderRuleSignal(data.signal);
   updatePositionPills(data);
   renderJournal();
 
@@ -3072,6 +3101,7 @@ const replayDateEl=document.getElementById('replayDate'); if(replayDateEl && !re
 renderTabs();
 renderWatchlist();
 setInterval(() => fetchMarket(false), 1000);
+setInterval(() => fetchRuleSignal(), 3000);
 setInterval(() => { if (!historicalChartMode && currentChartSymbol && (!liveEventSource || liveEventSource.readyState === EventSource.CLOSED)) connectLiveStream(); }, 1000);
 connectLiveStream();
 setInterval(updateLocalCountdown, 250);
