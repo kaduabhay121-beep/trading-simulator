@@ -491,11 +491,19 @@ canvas { width: 100% !important; height: 100% !important; display: block; }
         <div id="replayResult" class="bot-reason">Replay runs the same strategy engine on historical candles. It never changes your live paper account.</div>
         <div id="replayMetrics" class="bot-grid4"></div>
         <button id="replayLogBtn" class="bot-small-btn bot-test replay-log-btn" style="display:none" onclick="openReplayTradeLog()">VIEW TRADE LOG</button>
+        <div class="bot-card-title" style="margin-top:12px">Offline Engine Test · Historical Replay</div>
+        <div class="bot-safe" style="margin-bottom:6px">OFFLINE ONLY · no Angel One connection · no order placement · candle-by-candle point-in-time evaluation</div>
+        <div class="bot-row2"><select id="offlineSymbol" class="bot-select"><option value="NIFTY">NIFTY</option><option value="SENSEX">SENSEX</option></select><input id="offlineDate" class="bot-input" type="date" title="Historical trading day"></div>
+        <div class="bot-row2"><select id="offlineTf" class="bot-select"><option value="300" selected>5M</option><option value="900">15M</option><option value="3600">1H</option></select><select id="offlineSpeed" class="bot-select"><option value="1">1x</option><option value="5">5x</option><option value="20">20x</option><option value="max">MAX</option></select></div>
+        <div class="bot-row2"><button class="bot-small-btn bot-test" style="width:100%" onclick="runOfflineEngineReplay()">▶ START REPLAY</button></div>
+        <div id="offlineReplayResult" class="bot-reason">Historical candles → MTF analysis → rule engine → risk filters → paper simulation. No future candle is visible to the decision at T.</div>
+        <div id="offlineReplayMetrics" class="bot-grid4"></div>
+        <div id="offlineReplayRejects" class="bot-reason" style="max-height:220px;overflow:auto"></div>
         <div class="bot-card-title" style="margin-top:12px">Historical Trading · Exact Day Replay</div>
         <div class="bot-row2"><input id="replayDate" class="bot-input" type="date" title="Historical trading day"><select id="replayTradeType" class="bot-select"><option value="INTRADAY">Intraday</option><option value="BTST">BTST</option></select></div>
         <div class="bot-row2"><select id="replayTf" class="bot-select"><option value="60">1m</option><option value="180">3m</option><option value="300" selected>5m</option><option value="600">10m</option><option value="900">15m</option><option value="1800">30m</option><option value="3600">1h</option></select><select id="replayMode" class="bot-select"><option value="INDEX">Index</option><option value="ATM_OPTIONS">ATM Options</option><option value="ITM_1">ITM 1</option><option value="ITM_2">ITM 2</option><option value="ITM_3">ITM 3</option><option value="OTM_1">OTM 1</option><option value="OTM_2">OTM 2</option><option value="OTM_3">OTM 3</option></select></div>
         <div class="bot-row2"><input id="replayLots" class="bot-input" type="number" min="1" max="20" value="1" placeholder="Lots"><button class="bot-small-btn bot-test" style="width:100%" onclick="runHistoricalDayReplay()">▶ RUN SELECTED DAY</button></div>
-        <div id="historicalReplayResult" class="bot-reason">Choose a previous trading day and run the selected strategy as paper trades. Results and the historical candles used are saved permanently.</div>
+        <div id="historicalReplayResult" class="bot-reason">Exact-day replay now uses the same offline Rule Engine when Offline Engine Test is selected.</div>
         <div id="historicalReplayMetrics" class="bot-grid4"></div>
         <button id="historicalReplayLogBtn" class="bot-small-btn bot-test replay-log-btn" style="display:none" onclick="openHistoricalReplayLog()">VIEW SAVED TRADE LOG</button>
         <div class="bot-card-title" style="margin-top:10px">Saved historical sessions</div>
@@ -3031,12 +3039,32 @@ function defaultReplayDate(){
   while(d.getDay()===0||d.getDay()===6)d.setDate(d.getDate()-1);
   return d.toISOString().slice(0,10);
 }
+async function runOfflineEngineReplay(){
+  const out=document.getElementById('offlineReplayResult'),metrics=document.getElementById('offlineReplayMetrics'),rej=document.getElementById('offlineReplayRejects');
+  const symbol=document.getElementById('offlineSymbol')?.value||'NIFTY',date=document.getElementById('offlineDate')?.value||defaultReplayDate(),tf=Number(document.getElementById('offlineTf')?.value||300);
+  if(out)out.innerText='Running offline candle-by-candle replay…'; if(metrics)metrics.innerHTML=''; if(rej)rej.innerHTML='';
+  try{
+    const q='/api/historical/replay_day?'+new URLSearchParams({date,underlying:symbol,tf:String(tf),lots:'1',sl:'0.6',tp:'1.2',trade_type:'INTRADAY',mode:'OFFLINE',strategy:'RULE_ENGINE',offline:'1'});
+    const r=await fetch(q,{cache:'no-store'}),d=await r.json(); if(!r.ok||!d.ok)throw new Error(d.error||'Offline replay failed');
+    window.lastOfflineReplay=d;
+    if(out)out.innerText=`${symbol} · ${date} · OFFLINE · ${tf/60}M · ${d.candles} candles processed · paper-only`;
+    if(metrics)metrics.innerHTML=[
+      ['Signals evaluated',d.signals_evaluated],['CALL',d.call_signals],['PUT',d.put_signals],['NO_TRADE',d.no_trade],
+      ['Trades',d.trades],['Win rate',(d.win_rate??0)+'%'],['Gross P&L',money(d.gross_pnl??0)],['Net P&L',money(d.net_pnl??0)],
+      ['Profit factor',d.profit_factor??0],['Max DD',money(d.max_drawdown??0)],['Avg R:R',d.avg_rr??0],['Rejected',d.rejected_signals??0]
+    ].map(x=>`<div class="bot-result"><span>${x[0]}</span><b>${x[1]}</b></div>`).join('');
+    if(rej){
+      const rows=Object.entries(d.rejection_reasons||{}).sort((a,b)=>b[1]-a[1]);
+      rej.innerHTML='<b>Rejection reasons</b><br>'+ (rows.length?rows.map(x=>`${x[0]}: ${x[1]}`).join(' · '):'None');
+    }
+  }catch(e){if(out)out.innerText=e.message||'Offline replay unavailable'}
+}
 async function runHistoricalDayReplay(){
   const out=document.getElementById('historicalReplayResult'),metrics=document.getElementById('historicalReplayMetrics'),btn=document.getElementById('historicalReplayLogBtn');
   const date=document.getElementById('replayDate')?.value||defaultReplayDate();
-  const strategy=document.getElementById('botStrategy')?.value||'EMA_CROSS',under=document.getElementById('botUnderlying')?.value||'NIFTY',mode=document.getElementById('replayMode')?.value||'INDEX',tradeType=document.getElementById('replayTradeType')?.value||'INTRADAY',tf=document.getElementById('replayTf')?.value||'300',lots=document.getElementById('replayLots')?.value||'1',sl=document.getElementById('botSL')?.value||'0.6',tp=document.getElementById('botTP')?.value||'1.2';
+  const strategy='RULE_ENGINE',under=document.getElementById('botUnderlying')?.value||document.getElementById('offlineSymbol')?.value||'NIFTY',mode='OFFLINE',tradeType=document.getElementById('replayTradeType')?.value||'INTRADAY',tf=document.getElementById('replayTf')?.value||'300',lots=document.getElementById('replayLots')?.value||'1',sl=document.getElementById('botSL')?.value||'0.6',tp=document.getElementById('botTP')?.value||'1.2';
   if(out)out.innerText=`Loading exact historical session ${date}…`; if(metrics)metrics.innerHTML=''; if(btn)btn.style.display='none';
-  try{const q=`/api/historical/replay_day?date=${encodeURIComponent(date)}&strategy=${encodeURIComponent(strategy)}&underlying=${encodeURIComponent(under)}&mode=${encodeURIComponent(mode)}&trade_type=${encodeURIComponent(tradeType)}&tf=${tf}&lots=${lots}&sl=${sl}&tp=${tp}`;const r=await fetch(q,{cache:'no-store'});const d=await r.json();if(!r.ok||!d.ok)throw new Error(d.error||`Replay failed (HTTP ${r.status})`);window.lastHistoricalReplay=d;
+  try{const q=`/api/historical/replay_day?date=${encodeURIComponent(date)}&strategy=${encodeURIComponent(strategy)}&underlying=${encodeURIComponent(under)}&mode=${encodeURIComponent(mode)}&trade_type=${encodeURIComponent(tradeType)}&tf=${tf}&lots=${lots}&sl=${sl}&tp=${tp}&offline=1`;const r=await fetch(q,{cache:'no-store'});const d=await r.json();if(!r.ok||!d.ok)throw new Error(d.error||`Replay failed (HTTP ${r.status})`);window.lastHistoricalReplay=d;
     if(out)out.innerText=`${d.replay_day} · ${strategy} · ${under} · ${mode} · ${tf/60}m · ${d.trades} paper trades · ${d.data_note}`;
     if(metrics)metrics.innerHTML=[['Candles',d.candles],['Trades',d.trades],['Win %',d.win_rate+'%'],['P&L',money(d.net_pnl)]].map(x=>`<div class="bot-result"><span>${x[0]}</span><b class="${x[0]==='P&L'?(Number(d.net_pnl)>=0?'bot-good':'bot-bad'):''}">${x[1]}</b></div>`).join('');
     if(btn)btn.style.display=d.trades?'block':'none';
@@ -3108,6 +3136,7 @@ const histDateEl2=document.getElementById('histChartDate'); if(histDateEl2) hist
   if(document.getElementById('histChartInstrument')?.value==='OPTION')loadHistoricalOptionContracts();
 });
 const replayDateEl=document.getElementById('replayDate'); if(replayDateEl && !replayDateEl.value) replayDateEl.value=historicalDefaultDate();
+const offlineDateEl=document.getElementById('offlineDate'); if(offlineDateEl && !offlineDateEl.value) offlineDateEl.value=historicalDefaultDate();
 renderTabs();
 renderWatchlist();
 setInterval(() => fetchMarket(false), 1000);
