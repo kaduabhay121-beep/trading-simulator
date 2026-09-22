@@ -2167,10 +2167,21 @@ class Handler(http.server.BaseHTTPRequestHandler):
             try:
                 days=max(1,min(30,int(p.get('days',['5'])[0]))); sl=max(0.1,min(20,float(p.get('sl',[state.bot.get('stop_loss_pct',0.6)])[0]))); tp=max(0.1,min(50,float(p.get('tp',[state.bot.get('target_pct',1.2)])[0])))
             except Exception: days,sl,tp=5,0.6,1.2
-            strategy=p.get('strategy',[state.bot.get('strategy','EMA_CROSS')])[0]; under=p.get('underlying',[state.bot.get('underlying','NIFTY')])[0]; mode=p.get('mode',[state.bot.get('instrument_mode','ATM_OPTIONS')])[0]
+            strategy=p.get('strategy',[state.bot.get('strategy','EMA_CROSS')])[0]; under=p.get('underlying',[state.bot.get('underlying','NIFTY')])[0].upper(); mode=p.get('mode',[state.bot.get('instrument_mode','ATM_OPTIONS')])[0]
             try: timeframe=max(60,min(3600,int(p.get('tf',['60'])[0]))); lot_multiplier=max(1,min(20,int(p.get('lots',['1'])[0])))
             except Exception: timeframe,lot_multiplier=60,1
             trade_type=p.get('trade_type',['INTRADAY'])[0].upper(); trade_type='BTST' if trade_type=='BTST' else 'INTRADAY'
+            offline=str(p.get('offline',['0'])[0]).lower() in ('1','true','yes','on') or strategy=='RULE_ENGINE'
+            if offline:
+                day=_parse_replay_date(p.get('date',[''])[0]) or _previous_trading_day(datetime.now(IST).date())
+                base=state._load_historical_dataset(under,'INDEX',timeframe,day.isoformat(),day.isoformat())
+                if not base:
+                    base=state._load_historical_dataset(under,'INDEX_1M',60,day.isoformat(),day.isoformat())
+                    if base and timeframe!=60: base=state._resample(_align_candles(base),timeframe)
+                if not base: return self._send_json({'ok':False,'error':'Offline replay requires persisted historical candles for the requested day. No Angel One request is made.'},404)
+                r=_offline_rule_engine_replay(under,base,timeframe,sl,tp,state.bot.get('initial_balance',1000000.0),lot_multiplier,trade_type,day,day)
+                if r.get('ok'): state._store_research('REPLAY',r,1,sl,tp,lot_multiplier)
+                return self._send_json(r,200 if r.get('ok') else 400)
             if not state.angel.enabled: return self._send_json({'ok':False,'error':'Replay needs Angel One historical market data. Enable ANGELONE_ENABLED.'},400)
             if mode=='INDEX':
                 interval=TF_INTERVALS.get(timeframe,'ONE_MINUTE'); inst=state.angel.find_index(under); candles=state.angel.candles(inst,interval,days) if inst else []
@@ -2180,10 +2191,20 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if r.get('ok'): state._store_research('REPLAY',r,days,sl,tp,lot_multiplier)
             return self._send_json(r,200 if r.get('ok') else 400)
         if parsed.path=='/api/backtest':
-            p=parse_qs(parsed.query); strategy=p.get('strategy',[state.bot.get('strategy','EMA_CROSS')])[0]
+            p=parse_qs(parsed.query); strategy=p.get('strategy',[state.bot.get('strategy','EMA_CROSS')])[0]; under=p.get('underlying',[state.bot.get('underlying','NIFTY')])[0].upper()
             try: days=max(1,min(60,int(p.get('days',['2'])[0]))); sl=max(0.1,min(20,float(p.get('sl',['0.6'])[0]))); tp=max(0.1,min(50,float(p.get('tp',['1.2'])[0])))
             except Exception: days,sl,tp=2,0.6,1.2
-            candles=state._bot_underlying_candles(state.bot.get('underlying','NIFTY'))
+            offline=str(p.get('offline',['0'])[0]).lower() in ('1','true','yes','on') or strategy=='RULE_ENGINE'
+            if offline:
+                day=_parse_replay_date(p.get('date',[''])[0]) or _previous_trading_day(datetime.now(IST).date())
+                tf=300
+                candles=state._load_historical_dataset(under,'INDEX',tf,day.isoformat(),day.isoformat()) or state._load_historical_dataset(under,'INDEX_1M',60,day.isoformat(),day.isoformat())
+                if candles and len(candles)>1 and tf!=60: candles=state._resample(_align_candles(candles),tf)
+                if not candles: return self._send_json({'ok':False,'error':'Offline backtest requires persisted historical candles for the requested day. No Angel One request is made.'},404)
+                result=_offline_rule_engine_replay(under,candles,tf,sl,tp,state.bot.get('initial_balance',1000000.0),1,'INTRADAY',day,day)
+                if result.get('ok'): state._store_research('BACKTEST',result,1,sl,tp,1)
+                return self._send_json(result,200 if result.get('ok') else 400)
+            candles=state._bot_underlying_candles(under)
             if state.angel.enabled:
                 inst=state.angel.find_index(state.bot.get('underlying','NIFTY')); fresh=state.angel.candles(inst,'ONE_MINUTE',days) if inst else []
                 if fresh: candles=fresh
