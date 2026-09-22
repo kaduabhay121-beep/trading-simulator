@@ -44,7 +44,7 @@ window.onerror = function(msg, src, line) { alert("FATAL JS ERROR: " + msg + " (
   .greeks-badge { font-size: 9px; font-family: monospace; background: #131b2c; border: 1px solid #1e293b; padding: 2px 4px; border-radius: 3px; color: #93c5fd; }
 
   /* Chart Viewport */
-  .chart-viewport { position: relative; flex: 1; width: 100%; background: #05070a; overflow: hidden; touch-action: none !important; user-select: none; -webkit-user-select: none; }
+  .chart-viewport { position: relative; flex: 1; width: 100%; background: #05070a; overflow: hidden; touch-action: none !important; user-select: none; -webkit-user-select: none; } .offline-engine-panel{position:absolute;top:8px;right:42px;z-index:45;display:none;min-width:270px;max-width:calc(100% - 54px);background:rgba(8,12,20,.96);border:1px solid #29405e;border-radius:9px;padding:7px;box-shadow:0 8px 24px rgba(0,0,0,.35);font-size:9px;pointer-events:auto}.offline-engine-panel.open{display:block}.offline-engine-head{display:flex;justify-content:space-between;gap:8px;align-items:center;font-weight:900;letter-spacing:.5px}.offline-engine-status{color:#93c5fd;font-size:8px}.offline-engine-controls{display:flex;gap:4px;flex-wrap:wrap;margin-top:5px}.offline-engine-controls button,.offline-engine-controls select{height:25px;border:1px solid #334155;background:#111827;color:#e5e7eb;border-radius:5px;padding:0 7px;font-size:8px;font-weight:900}.offline-engine-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:4px;margin-top:5px}.offline-engine-cell{background:#0b111b;border:1px solid #1d2a3b;border-radius:5px;padding:4px}.offline-engine-cell span{display:block;color:#64748b;font-size:7px}.offline-engine-cell b{font-size:9px}.offline-engine-decision{margin-top:5px;padding:5px;background:#0b111b;border:1px solid #1d2a3b;border-radius:5px;line-height:1.35;color:#cbd5e1}.offline-engine-decision .buy{color:#86efac}.offline-engine-decision .sell{color:#fca5a5}.offline-engine-decision .hold{color:#fbbf24}.offline-engine-tick{position:absolute;right:8px;top:42px;z-index:44;display:none;padding:4px 6px;border-radius:5px;background:rgba(8,12,20,.9);border:1px solid #29405e;color:#93c5fd;font:900 9px monospace}.offline-engine-tick.open{display:block}
   #chartCanvas { width: 100%; height: 100%; display: block; touch-action: none !important; }
 
   /* Fast Trade Widget */
@@ -339,7 +339,7 @@ canvas { width: 100% !important; height: 100% !important; display: block; }
         <button class="pill-close-btn" id="btnOverlayClose">✕ CLOSE</button>
       </div>
 
-      <canvas id="chartCanvas" style="width:100%;height:100%;display:block;"></canvas>
+      <div id="offlineEnginePanel" class="offline-engine-panel"><div class="offline-engine-head"><span>OFFLINE ENGINE · TICK REPLAY</span><span id="offlineEngineStatus" class="offline-engine-status">READY</span></div><div class="offline-engine-controls"><button onclick="offlineEnginePlay()">▶ PLAY</button><button onclick="offlineEnginePause()">⏸ PAUSE</button><button onclick="offlineEngineStep()">STEP 1s</button><button onclick="offlineEngineReset()">↺ RESET</button><select id="offlineChartSpeed"><option value="1">1×</option><option value="5" selected>5×</option><option value="20">20×</option><option value="max">MAX</option></select></div><div class="offline-engine-grid"><div class="offline-engine-cell"><span>TIME</span><b id="offlineEngineTime">—</b></div><div class="offline-engine-cell"><span>TICK</span><b id="offlineEngineTick">0/0</b></div><div class="offline-engine-cell"><span>PRICE</span><b id="offlineEnginePrice">—</b></div><div class="offline-engine-cell"><span>SIGNAL</span><b id="offlineEngineSignal">—</b></div></div><div id="offlineEngineDecision" class="offline-engine-decision">Waiting for replay data…</div></div><div id="offlineEngineTickBadge" class="offline-engine-tick">T-00:00</div>      <canvas id="chartCanvas" style="width:100%;height:100%;display:block;"></canvas>
     </div>
 
     <!-- Bottom Bar -->
@@ -724,7 +724,7 @@ let touchCoordinates = { x: 0, y: 0 };
 let smoothMinP = null;
 let smoothMaxP = null;
 let historicalChartMode = false;
-let historicalReplay = null;
+let historicalReplay = null; let offlineReplayMode=false;let offlineReplayTimer=null;let offlineReplayTick=0;let offlineReplayLastSecond=-1;
 // Historical replay viewport state: keep the Y-axis stable between candles so the chart does not repeatedly drift vertically.
 let historicalYMin = null;
 let historicalYMax = null;
@@ -2521,6 +2521,7 @@ function drawChart() {
   ctx.font = '8px monospace';
   ctx.fillText(marketCache.chart.countdown || '00:00', chartRight + priceColWidth / 2, yLTP + 8);
 
+  if(offlineReplayMode&&historicalReplay){const visibleTime=Number(candles[candles.length-1]?.time||0),price=Number(candles[candles.length-1]?.close||0),trades=historicalReplay.trades||[],active=trades.find(t=>Number(t.entry_time||0)<=visibleTime&&Number(t.exit_time||1e30)>visibleTime),events=trades.filter(t=>Number(t.entry_time||0)===visibleTime||Number(t.exit_time||0)===visibleTime);const yFor=p=>toY(Number(p));const xFor=tm=>{const ii=candles.findIndex(x=>Number(x.time)===Number(tm));return ii<0?null:chartLeft+ii*step+step/2+xShift;};events.forEach(t=>{const ex=Number(t.entry_time||0)===visibleTime,xx=xFor(ex?t.entry_time:t.exit_time);if(xx==null)return;const yy=yFor(Number(ex?t.entry:t.exit||price));ctx.fillStyle=ex?(t.option_type==='PUT'?'#eb5757':'#00c087'):'#f59e0b';ctx.beginPath();ctx.arc(xx,yy,4,0,Math.PI*2);ctx.fill();ctx.fillStyle='#e5e7eb';ctx.font='bold 8px sans-serif';ctx.textAlign='center';ctx.fillText(ex?((t.option_type||'TRADE')+' ENTRY'):(t.reason||'EXIT'),xx,Math.max(chartTop+10,yy-8));});if(active){for(const [label,val] of [['ENTRY',active.entry],['SL',active.sl],['TARGET',active.tp]]){if(!Number.isFinite(Number(val))||Number(val)<=0)continue;const yy=yFor(val);ctx.setLineDash(label==='ENTRY'?[4,2]:[6,3]);ctx.strokeStyle=label==='SL'?'#eb5757':label==='TARGET'?'#00c087':'#93c5fd';ctx.beginPath();ctx.moveTo(chartLeft,yy);ctx.lineTo(chartRight,yy);ctx.stroke();ctx.setLineDash([]);ctx.fillStyle=ctx.strokeStyle;ctx.font='bold 8px monospace';ctx.textAlign='right';ctx.fillText(label+' '+Number(val).toFixed(2),chartRight-4,yy-3);}}document.getElementById('offlineEngineTickBadge')?.classList.add('open');}else document.getElementById('offlineEngineTickBadge')?.classList.remove('open');
   const overlayPill = document.getElementById('livePriceOverlayPill');
   if (matchingPos) { overlayPill.style.display = 'flex';
     const yEntry = toY(matchingPos.buy_price);
@@ -2806,14 +2807,9 @@ function openSavedHistoricalData(){
   const target=document.getElementById('researchHistory'); if(target){target.scrollIntoView({behavior:'smooth',block:'start'}); if(typeof loadResearchHistory==='function')loadResearchHistory();}
   const st=document.getElementById('histChartStatus'); if(st)st.innerText='Saved data is in Research History / permanent Neon storage.';
 }
-function historicalCurrentCandle(){
-  const h=historicalReplay; if(!h||!h.candles) return null;
-  return h.candles[Math.max(0,Math.min(h.index,h.candles.length-1))]||null;
-}
-function historicalVisibleCandles(){
-  const h=historicalReplay; if(!h) return [];
-  return h.candles.slice(0,Math.max(1,h.index+1));
-}
+function offlineTickCandle(c,p){if(!offlineReplayMode||!c)return c;const q=Math.max(0,Math.min(1,Number(p||0))),o=Number(c.open),h=Number(c.high),l=Number(c.low),cl=Number(c.close);let px=o,hi=o,lo=o;if(q<=.25){const z=q/.25;px=o+(h-o)*z;hi=px;lo=Math.min(o,px);}else if(q<=.70){const z=(q-.25)/.45;px=h+(l-h)*z;hi=h;lo=Math.min(l,px);}else{const z=(q-.70)/.30;px=l+(cl-l)*z;hi=h;lo=l;}return {...c,open:o,high:Math.max(hi,o,px),low:Math.min(lo,o,px),close:px};}
+function historicalCurrentCandle(){const h=historicalReplay;if(!h||!h.candles)return null;const raw=h.candles[Math.max(0,Math.min(h.index,h.candles.length-1))]||null;return offlineReplayMode?offlineTickCandle(raw,offlineReplayTick/Math.max(1,(h.tf||300))):raw;}
+function historicalVisibleCandles(){const h=historicalReplay;if(!h)return [];const arr=h.candles.slice(0,Math.max(1,h.index+1));if(offlineReplayMode&&arr.length)arr[arr.length-1]=offlineTickCandle(arr[arr.length-1],offlineReplayTick/Math.max(1,(h.tf||300)));return arr;}
 function historicalChartPayload(){
   const h=historicalReplay; if(!h) return null;
   const candles=historicalVisibleCandles();
@@ -2835,7 +2831,7 @@ function updateHistoricalChartView(){
   document.getElementById('onChartSymbol').innerText=`${ch.display_title} • ${histTfLabel} • HISTORICAL`;
   document.getElementById('tfDisplay').innerText=`${histTfLabel} ▾`;
   ch.market_status='HISTORICAL';
-  ch.countdown='HIST';
+  if(offlineReplayMode){const totalSec=Math.max(1,Number(historicalReplay.tf||300)),remain=Math.max(0,totalSec-1-offlineReplayTick),mm=Math.floor(remain/60),ss=remain%60;ch.countdown='T-'+String(mm).padStart(2,'0')+':'+String(ss).padStart(2,'0');}else ch.countdown='HIST';
   document.getElementById('onChartPriceSub').innerText=`${ch.ltp.toFixed(2)} · ${historicalReplay.date}`;
   document.getElementById('chainSpotBadge').innerText=`HIST: ${ch.ltp.toFixed(2)}`;
   document.getElementById('btnSellLTP').innerText=ch.ltp.toFixed(2); document.getElementById('btnBuyLTP').innerText=ch.ltp.toFixed(2);
@@ -3039,26 +3035,14 @@ function defaultReplayDate(){
   while(d.getDay()===0||d.getDay()===6)d.setDate(d.getDate()-1);
   return d.toISOString().slice(0,10);
 }
-async function runOfflineEngineReplay(){
-  const out=document.getElementById('offlineReplayResult'),metrics=document.getElementById('offlineReplayMetrics'),rej=document.getElementById('offlineReplayRejects');
-  const symbol=document.getElementById('offlineSymbol')?.value||'NIFTY',date=document.getElementById('offlineDate')?.value||defaultReplayDate(),tf=Number(document.getElementById('offlineTf')?.value||300);
-  if(out)out.innerText='Running offline candle-by-candle replay…'; if(metrics)metrics.innerHTML=''; if(rej)rej.innerHTML='';
-  try{
-    const q='/api/historical/replay_day?'+new URLSearchParams({date,underlying:symbol,tf:String(tf),lots:'1',sl:'0.6',tp:'1.2',trade_type:'INTRADAY',mode:'OFFLINE',strategy:'RULE_ENGINE',offline:'1'});
-    const r=await fetch(q,{cache:'no-store'}),d=await r.json(); if(!r.ok||!d.ok)throw new Error(d.error||'Offline replay failed');
-    window.lastOfflineReplay=d;
-    if(out)out.innerText=`${symbol} · ${date} · OFFLINE · ${tf/60}M · ${d.candles} candles processed · paper-only`;
-    if(metrics)metrics.innerHTML=[
-      ['Signals evaluated',d.signals_evaluated],['CALL',d.call_signals],['PUT',d.put_signals],['NO_TRADE',d.no_trade],
-      ['Trades',d.trades],['Win rate',(d.win_rate??0)+'%'],['Gross P&L',money(d.gross_pnl??0)],['Net P&L',money(d.net_pnl??0)],
-      ['Profit factor',d.profit_factor??0],['Max DD',money(d.max_drawdown??0)],['Avg R:R',d.avg_rr??0],['Rejected',d.rejected_signals??0]
-    ].map(x=>`<div class="bot-result"><span>${x[0]}</span><b>${x[1]}</b></div>`).join('');
-    if(rej){
-      const rows=Object.entries(d.rejection_reasons||{}).sort((a,b)=>b[1]-a[1]);
-      rej.innerHTML='<b>Rejection reasons</b><br>'+ (rows.length?rows.map(x=>`${x[0]}: ${x[1]}`).join(' · '):'None');
-    }
-  }catch(e){if(out)out.innerText=e.message||'Offline replay unavailable'}
-}
+async function runOfflineEngineReplay(){const out=document.getElementById('offlineReplayResult'),metrics=document.getElementById('offlineReplayMetrics'),rej=document.getElementById('offlineReplayRejects');const symbol=document.getElementById('offlineSymbol')?.value||'NIFTY',date=document.getElementById('offlineDate')?.value||defaultReplayDate(),tf=Number(document.getElementById('offlineTf')?.value||300);if(out)out.innerText='Loading offline engine replay data…';if(metrics)metrics.innerHTML='';if(rej)rej.innerHTML='';try{const q='/api/historical/replay_day?'+new URLSearchParams({date,underlying:symbol,tf:String(tf),lots:'1',sl:'0.6',tp:'1.2',trade_type:'INTRADAY',mode:'OFFLINE',strategy:'RULE_ENGINE',offline:'1'});const r=await fetch(q,{cache:'no-store'}),d=await r.json();if(!r.ok||!d.ok)throw new Error(d.error||'Offline replay failed');window.lastOfflineReplay=d;const candles=Array.isArray(d.candles_data)?d.candles_data:[];if(!candles.length)throw new Error('Offline replay returned no historical candles.');if(offlineReplayTimer)offlineEnginePause();offlineReplayMode=true;offlineReplayTick=0;offlineReplayLastSecond=-1;historicalChartMode=true;historicalReplay={session_id:null,run_id:null,date:d.replay_day,underlying:d.underlying,tf:Number(d.timeframe||tf),candles:candles,index:0,playing:false,speed:1,lots:1,lot_size:1,position:null,trades:d.trades_detail||[],realized_pnl:0,unrealized_pnl:0,balance:1000000,starting_balance:1000000,max_drawdown:Number(d.max_drawdown||0),engine_log:d.engine_log||[],offline_result:d};currentChartSymbol=symbol;currentTimeframe=(tf/60)+'m';currentTradeMode='MARKET';panOffset=0;panOffsetFloat=0;verticalPanOffset=0;resetHistoricalViewport();renderTabs();switchNavTab('chart');document.getElementById('offlineEnginePanel')?.classList.add('open');syncOfflineEngineVisual();if(out)out.innerText=symbol+' · '+date+' · OFFLINE · '+(tf/60)+'M · '+d.candles+' candles · tick-by-tick visual replay ready · paper-only';if(metrics)metrics.innerHTML=[['Signals evaluated',d.signals_evaluated],['CALL',d.call_signals],['PUT',d.put_signals],['NO_TRADE',d.no_trade],['Trades',d.trades],['Win rate',(d.win_rate??0)+'%'],['Net P&L',money(d.net_pnl??0)],['Max DD',money(d.max_drawdown??0)]].map(x=>'<div class="bot-result"><span>'+x[0]+'</span><b>'+x[1]+'</b></div>').join('');if(rej){const rows=Object.entries(d.rejection_reasons||{}).sort((a,b)=>b[1]-a[1]);rej.innerHTML='<b>Rejection reasons</b><br>'+(rows.length?rows.map(x=>x[0]+': '+x[1]).join(' · '):'None');}}catch(e){if(out)out.innerText=e.message||'Offline replay unavailable'}}
+
+function syncOfflineEngineVisual(){if(!offlineReplayMode||!historicalReplay)return;const c=historicalCurrentCandle(),t=Number(c?.time||0),frame=(historicalReplay.engine_log||[]).find(x=>Number(x.time)===t),totalSec=Math.max(1,Number(historicalReplay.tf||300)),remain=Math.max(0,totalSec-1-offlineReplayTick),mm=Math.floor(remain/60),ss=remain%60;const status=document.getElementById('offlineEngineStatus'),tick=document.getElementById('offlineEngineTick'),tm=document.getElementById('offlineEngineTime'),pr=document.getElementById('offlineEnginePrice'),sg=document.getElementById('offlineEngineSignal'),dec=document.getElementById('offlineEngineDecision');if(status)status.innerText='PLAYING · '+historicalReplay.date;if(tick)tick.innerText=offlineReplayTick+'/'+totalSec;if(tm)tm.innerText=c?replayLogTime(c.time):'—';if(pr)pr.innerText=c?'₹'+Number(c.close).toFixed(2):'—';if(sg)sg.innerText=frame?.signal||'WARMUP';if(dec){if(frame)dec.innerHTML='<b class="'+(frame.signal==='CALL'?'buy':frame.signal==='PUT'?'sell':'hold')+'">'+frame.signal+'</b> · CALL '+Number(frame.call_score||0).toFixed(0)+' / PUT '+Number(frame.put_score||0).toFixed(0)+' · Conf '+Number(frame.confidence||0).toFixed(0)+'%<br>Trend '+(frame.trend||'—')+' · Structure '+(frame.structure||'—')+' · Momentum '+(frame.momentum||'—')+' · Volume '+(frame.volume||'—')+'<br>Option chain '+(frame.option_chain||'UNAVAILABLE')+' · Strike '+(frame.strike||'—')+' · RR '+Number(frame.rr||0).toFixed(2)+'<br>'+(frame.reasons||[]).join(' · ')||'No rejection reason.';else dec.innerHTML='<span class="offline-engine-status">Building point-in-time history…</span>';}updateHistoricalChartView();}
+function offlineEngineTick(){if(!offlineReplayMode||!historicalReplay)return;const totalSec=Math.max(1,Number(historicalReplay.tf||300));if(offlineReplayTick<totalSec){offlineReplayTick++;syncOfflineEngineVisual();return;}if(historicalReplay.index>=historicalReplay.candles.length-1){offlineEnginePause();if(document.getElementById('offlineEngineStatus'))document.getElementById('offlineEngineStatus').innerText='FINISHED';return;}historicalReplay.index++;offlineReplayTick=0;offlineReplayLastSecond=-1;syncOfflineEngineVisual();}
+function offlineEnginePlay(){if(!offlineReplayMode||!historicalReplay)return;offlineEnginePause();const speed=String(document.getElementById('offlineChartSpeed')?.value||'5'),stepMs=speed==='max'?50:Math.max(25,1000/Math.max(1,Number(speed)));historicalReplay.playing=true;if(document.getElementById('offlineEngineStatus'))document.getElementById('offlineEngineStatus').innerText='PLAYING';offlineReplayTimer=setInterval(offlineEngineTick,stepMs);}
+function offlineEnginePause(){if(offlineReplayTimer){clearInterval(offlineReplayTimer);offlineReplayTimer=null;}if(historicalReplay)historicalReplay.playing=false;if(offlineReplayMode&&document.getElementById('offlineEngineStatus'))document.getElementById('offlineEngineStatus').innerText='PAUSED';}
+function offlineEngineStep(){if(!offlineReplayMode)return;offlineEnginePause();offlineEngineTick();}
+function offlineEngineReset(){offlineEnginePause();if(!historicalReplay)return;historicalReplay.index=0;offlineReplayTick=0;offlineReplayLastSecond=-1;syncOfflineEngineVisual();}
 async function runHistoricalDayReplay(){
   const out=document.getElementById('historicalReplayResult'),metrics=document.getElementById('historicalReplayMetrics'),btn=document.getElementById('historicalReplayLogBtn');
   const date=document.getElementById('replayDate')?.value||defaultReplayDate();
