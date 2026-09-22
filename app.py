@@ -2126,7 +2126,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if not day: return self._send_json({'ok':False,'error':'Choose a valid trading date in YYYY-MM-DD format.'},400)
             if day.weekday()>=5: return self._send_json({'ok':False,'error':'Selected date is a weekend. Choose an NSE trading day.'},400)
             strategy=p.get('strategy',[state.bot.get('strategy','EMA_CROSS')])[0]
-            if strategy not in STRATEGIES: strategy='EMA_CROSS'
+            if strategy!='RULE_ENGINE' and strategy not in STRATEGIES: strategy='EMA_CROSS'
             under=p.get('underlying',[state.bot.get('underlying','NIFTY')])[0].upper()
             mode=p.get('mode',[state.bot.get('instrument_mode','INDEX')])[0]
             trade_type=p.get('trade_type',['INTRADAY'])[0].upper(); trade_type='BTST' if trade_type=='BTST' else 'INTRADAY'
