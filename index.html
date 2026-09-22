@@ -189,6 +189,8 @@ canvas { width: 100% !important; height: 100% !important; display: block; }
   .indicator-setting-chip{font-size:9px;font-weight:900;padding:3px 6px;border-radius:5px;background:#111827;color:#94a3b8}
   .indicator-settings-footer{display:flex;gap:7px;margin-top:10px}.indicator-settings-footer button{flex:1;border:1px solid #263247;background:#111827;color:#cbd5e1;border-radius:7px;padding:7px;font-size:10px;font-weight:900}
   .signal-filter-note{font-size:9px;color:#64748b;line-height:1.35;margin-top:5px}
+
+.hist-indicator-legend{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:4px}.hist-indicator-legend span{font-size:10px;font-weight:800;padding:3px 7px;border-radius:6px;background:#111827;border:1px solid #263247}.hist-indicator-legend .ind-ema9{color:#f59e0b}.hist-indicator-legend .ind-ema15{color:#a855f7}.hist-indicator-legend .ind-vwap{color:#2962ff}
 </style>
 </head>
 <body>
@@ -266,8 +268,8 @@ canvas { width: 100% !important; height: 100% !important; display: block; }
         <div class="hist-ct-row">
           <select id="histChartTf" class="hist-ct-select"><option value="60">1m</option><option value="180">3m</option><option value="300" selected>5m</option><option value="600">10m</option><option value="900">15m</option><option value="1800">30m</option><option value="3600">1h</option></select>
           <div class="hist-qty-stepper" title="Historical trade lots"><span class="hist-ct-badge">LOTS</span><button type="button" class="hist-qty-btn" onclick="adjustHistoricalQty(-1)">−</button><input id="histChartQty" class="hist-ct-input hist-qty-input" type="number" min="1" max="10000" step="1" value="1" inputmode="numeric" placeholder="Lots" oninput="normalizeHistoricalQty()"><button type="button" class="hist-qty-btn" onclick="adjustHistoricalQty(1)">+</button></div><span id="histLotMeta" class="hist-ct-badge">Lot size: 1 · Qty: 1</span>
-          <button type="button" id="histLoadBtn" class="hist-ct-btn primary" onclick="safeHistoricalAction(event, startHistoricalChartTrading)">LOAD HISTORICAL</button>
-          <button type="button" id="histExitBtn" class="hist-ct-btn" style="display:none" onclick="safeHistoricalAction(event, exitHistoricalChartTrading)">EXIT</button>
+          <button type="button" id="histLoadBtn" class="hist-ct-btn primary" onclick="safeHistoricalAction(event, startHistoricalChartTrading)">LOAD HISTORICAL</button><div class="hist-indicator-legend"><span class="ind-ema9">EMA 9</span><span class="ind-ema15">EMA 15</span><span class="ind-vwap">VWAP</span></div>
+          <button type="button" id="histExitBtn" class="hist-ct-btn" style="display:none" onclick="safeHistoricalAction(event, exitHistoricalChartTrading)">EXIT</button><button type="button" id="histCloseBtn" class="hist-ct-btn" onclick="safeHistoricalAction(event, exitHistoricalChartTrading)">CLOSE ✕</button>
           <span id="histChartStatus" class="hist-ct-status">Historical mode off</span>
         </div>
         <div class="hist-ct-row" id="histControls" style="display:none">
@@ -459,7 +461,7 @@ canvas { width: 100% !important; height: 100% !important; display: block; }
       <div class="bot-card">
         <div class="bot-card-title">Setup</div>
         <select id="botStrategy" class="bot-select" onchange="saveBotConfig()"><option value="EMA_CROSS">EMA 9/15 · Trend</option><option value="RSI_MEAN_REVERT">RSI · Mean Reversion</option><option value="VWAP_REVERT">VWAP · Mean Reversion</option><option value="BREAKOUT">20-Candle · Breakout</option><option value="RBS">RBS · Resistance → Support</option><option value="SBR">SBR · Support → Resistance</option></select>
-        <div class="bot-row2"><select id="botUnderlying" class="bot-select" onchange="saveBotConfig()"><option value="NIFTY">NIFTY</option><option value="SENSEX">SENSEX</option></select><select id="botMode" class="bot-select" onchange="saveBotConfig()"><option value="INDEX">Index</option><option value="ATM_OPTIONS">ATM Options</option><option value="ITM_1">ITM 1</option><option value="ITM_2">ITM 2</option><option value="ITM_3">ITM 3</option><option value="OTM_1">OTM 1</option><option value="OTM_2">OTM 2</option><option value="OTM_3">OTM 3</option></select></div>
+        <div class="bot-row2"><select id="botUnderlying" class="bot-select" onchange="saveBotConfig()"><option value="NIFTY">NIFTY</option><option value="SENSEX">SENSEX</option></select><select id="botMode" class="bot-select" onchange="saveBotConfig()"><option value="INDEX">Index</option><option value="ATM_OPTIONS">ATM Options</option><option value="ITM_1">ITM 1</option><option value="ITM_2">ITM 2</option><option value="ITM_3">ITM 3</option><option value="OTM_1">OTM 1</option><option value="OTM_2">OTM 2</option><option value="OTM_3">OTM 3</option></select></div><label style="display:flex;align-items:center;gap:7px;margin-top:7px;font-size:11px;color:var(--text-sub)"><input id="botOffline" type="checkbox" onchange="saveBotConfig()"> Run strategy on offline/historical market (paper only)</label>
       </div>
 
       <div class="bot-card">
@@ -2358,7 +2360,8 @@ function drawChart() {
   }
 
   if (configInd.vwap && marketCache.chart) {
-    const vSeries = marketCache.chart.vwap_series;
+    const vAll = marketCache.chart.vwap_series;
+    const vSeries = Array.isArray(vAll) && vAll.length===total ? vAll.slice(startIdx,endIdx) : vAll;
     if (vSeries && vSeries.length && vSeries.some(v=>Number.isFinite(Number(v)))) {
       ctx.strokeStyle = '#2962ff';
       ctx.lineWidth = 1.5;
@@ -2574,10 +2577,17 @@ async function cancelPendingOrder(id) {
 }
 
 async function exitPosition(id) {
-  const res = await fetch('/api/exit', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({id}) });
-  if (!res.ok) { const d=await res.json().catch(()=>({})); alert(d.error || 'Position exit failed'); return; }
-  await fetchChartSeed(true);
-  fetchMarket(true);
+  try {
+    if(id==null || id==='') throw new Error('Position ID missing');
+    const res = await fetch('/api/exit', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({id}) });
+    const d=await res.json().catch(()=>({}));
+    if (!res.ok || d.ok===false || d.status==='not_found') throw new Error(d.error || 'Position exit failed');
+    if(window.marketCache?.positions) marketCache.positions=marketCache.positions.filter(p=>String(p.id)!==String(id));
+    await fetchChartSeed(true);
+    await fetchMarket(true);
+    renderWatchlist();
+    return true;
+  } catch(e) { console.error('Position exit failed',e); alert(e.message || 'Position exit failed'); return false; }
 }
 
 async function botControl(action) {
@@ -2586,7 +2596,7 @@ async function botControl(action) {
 }
 async function saveBotConfig(showMessage=false) {
   try{
-    const payload={action:'CONFIG',strategy:document.getElementById('botStrategy').value,underlying:document.getElementById('botUnderlying').value,instrument_mode:document.getElementById('botMode').value,qty:+document.getElementById('botQty').value,risk_per_trade:+document.getElementById('botRiskTrade').value,stop_loss_pct:+document.getElementById('botSL').value,target_pct:+document.getElementById('botTP').value,max_daily_loss:+document.getElementById('botDailyLoss').value,max_trades_per_day:+document.getElementById('botMaxTrades').value};
+    const payload={action:'CONFIG',strategy:document.getElementById('botStrategy').value,underlying:document.getElementById('botUnderlying').value,instrument_mode:document.getElementById('botMode').value,offline_mode:!!document.getElementById('botOffline')?.checked,qty:+document.getElementById('botQty').value,risk_per_trade:+document.getElementById('botRiskTrade').value,stop_loss_pct:+document.getElementById('botSL').value,target_pct:+document.getElementById('botTP').value,max_daily_loss:+document.getElementById('botDailyLoss').value,max_trades_per_day:+document.getElementById('botMaxTrades').value};
     const r=await fetch('/api/bot/control',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)}); const d=await r.json(); if(!r.ok||!d.ok)throw new Error(d.error||'Config save failed'); if(d.bot) updateBotUI(d.bot);
     const msg=document.getElementById('botConfigSaved'); if(msg)msg.innerText=showMessage?'✓ Risk & limits saved.':'Edit the fields above, then save.';
     return d.bot;
@@ -2608,7 +2618,7 @@ function updateBotUI(b) {
   if(!b)return;
   const st=document.getElementById('botStatus'); if(st){st.innerText=b.risk_lock?'LOCKED':(b.enabled?'RUNNING':'STOPPED');st.className='bot-status '+(b.risk_lock?'locked':(b.enabled?'running':'stopped'));}
   const set=(id,v)=>{const e=document.getElementById(id);if(e && document.activeElement!==e)e.value=v};
-  set('botStrategy',b.strategy);set('botUnderlying',b.underlying);set('botMode',b.instrument_mode);set('botQty',b.qty);set('botRiskTrade',b.risk_per_trade);set('botSL',b.stop_loss_pct);set('botTP',b.target_pct);set('botDailyLoss',b.max_daily_loss);set('botMaxTrades',b.max_trades_per_day||5); const rr=document.getElementById('botRR');if(rr)rr.innerText='1 : '+(Number(b.target_pct||0)/Math.max(Number(b.stop_loss_pct||1),0.1)).toFixed(2);
+  set('botStrategy',b.strategy);set('botUnderlying',b.underlying);set('botMode',b.instrument_mode);const bo=document.getElementById('botOffline');if(bo&&document.activeElement!==bo)bo.checked=!!b.offline_mode;set('botQty',b.qty);set('botRiskTrade',b.risk_per_trade);set('botSL',b.stop_loss_pct);set('botTP',b.target_pct);set('botDailyLoss',b.max_daily_loss);set('botMaxTrades',b.max_trades_per_day||5); const rr=document.getElementById('botRR');if(rr)rr.innerText='1 : '+(Number(b.target_pct||0)/Math.max(Number(b.stop_loss_pct||1),0.1)).toFixed(2);
   const sig=document.getElementById('botSignal');if(sig){sig.innerText=b.last_signal||'HOLD';sig.className='bot-signal '+String(b.last_signal||'HOLD').toLowerCase()}
   const cf=document.getElementById('botConfidence');if(cf)cf.innerText=((b.last_confidence||0)*100).toFixed(0)+'%';
   const tr=document.getElementById('botTrades');if(tr)tr.innerText=(b.trades_today||0)+' / '+(b.max_trades_per_day||5);
@@ -2617,7 +2627,7 @@ function updateBotUI(b) {
   const pnl=document.getElementById('botPnl');if(pnl){pnl.innerText=money(b.daily_pnl);pnl.className=(b.daily_pnl||0)>0?'bot-good':((b.daily_pnl||0)<0?'bot-bad':'')}
   const rs=document.getElementById('botReason');if(rs)rs.innerText=b.risk_lock?'🔒 '+(b.risk_lock_reason||'Risk lock active'):(b.last_reason||'Waiting for signal…');
   const val=document.getElementById('botValidation');if(val)val.innerText=(b.strategy_stats&&b.strategy_stats[b.strategy]&&b.strategy_stats[b.strategy].status)||'UNVALIDATED';
-  const pos=document.getElementById('botPosition'); if(pos){const ps=(window.marketCache&&marketCache.positions||[]).filter(x=>x.bot_tag);if(ps.length){const p=ps[0];pos.style.display='block';pos.innerHTML=`<div class="bot-card-title">OPEN POSITION</div><b>${p.symbol}</b><div class="bot-row2"><span class="bot-muted">Entry ₹${Number(p.buy_price).toFixed(2)}</span><span style="text-align:right">LTP ₹${Number(p.ltp).toFixed(2)}</span><span class="bot-muted">SL ₹${Number(p.stop_loss||0).toFixed(2)}</span><span style="text-align:right">P&L <b class="${p.pnl>=0?'bot-good':'bot-bad'}">₹${Number(p.pnl||0).toFixed(2)}</b></span></div>`}else pos.style.display='none';}
+  const pos=document.getElementById('botPosition'); if(pos){const ps=(window.marketCache&&marketCache.positions||[]).filter(x=>x.bot_tag);if(ps.length){const p=ps[0];pos.style.display='block';pos.innerHTML=`<div class="bot-card-title">OPEN POSITION <button class="bot-small-btn bot-test" style="float:right" onclick="exitPosition('${p.id}')">CLOSE</button></div><b>${p.symbol}</b><div class="bot-row2"><span class="bot-muted">Entry ₹${Number(p.buy_price).toFixed(2)}</span><span style="text-align:right">LTP ₹${Number(p.ltp).toFixed(2)}</span><span class="bot-muted">SL ₹${Number(p.stop_loss||0).toFixed(2)}</span><span style="text-align:right">P&L <b class="${p.pnl>=0?'bot-good':'bot-bad'}">₹${Number(p.pnl||0).toFixed(2)}</b></span></div>`}else pos.style.display='none';}
 }
 async function runBotBacktest(){
   const result=document.getElementById('btResult'),metrics=document.getElementById('btMetrics'); if(result)result.innerText='Running…';if(metrics)metrics.innerHTML='';

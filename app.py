@@ -435,7 +435,7 @@ class AngelOneData:
                     continue
                 if not symbol.endswith(('CE','PE')):
                     continue
-                if it not in ('OPTIDX','CE','PE',''):
+                if it not in ('OPTIDX','OPTSTK','CE','PE',''):
                     continue
                 out.append(x)
             return out
@@ -1009,7 +1009,7 @@ class SimulationState:
         # pushed immediately instead of waiting for client-side HTTP polling.
         self.tick_stream_lock=threading.Lock(); self.tick_streams={}
         self.positions=[]; self.pending_orders=[]; self.orders=[]; self.closed_trades=[]; self.candles_1m=[]; self.sensex_candles_1m=[]; self.order_counter=100
-        self.live_chain_cache={}; self.chart_cache={}; self.market_cache={}; self.market_cache_ts=0; self.angel=AngelOneData(); self.bot={'enabled':False,'strategy':'EMA_CROSS','underlying':'NIFTY','instrument_mode':'INDEX','qty':1,'risk_per_trade':1.0,'max_daily_loss':2.0,'stop_loss_pct':0.6,'target_pct':1.2,'last_signal':'HOLD','last_confidence':0,'last_reason':'Waiting for signal…','trades_today':0,'daily_pnl':0.0,'last_trade_ts':0,'last_eval_ts':0,'risk_lock':False,'risk_lock_reason':'','last_entry_price':0.0,'max_trades_per_day':5,'max_open_positions':1,'cooldown_sec':60,'trade_count_today':0,'session_date':datetime.now(IST).strftime('%Y-%m-%d'),'last_signal_change_ts':0,'strategy_stats':{k:{'trades':0,'wins':0,'loss':0,'pnl':0.0,'status':'UNVALIDATED'} for k in STRATEGIES},'initial_balance':1000000.0}; self._load_state(); self._init_history(); self.bot['enabled']=False; self._running=True
+        self.live_chain_cache={}; self.live_chain_lock=threading.Lock(); self.chart_cache={}; self.market_cache={}; self.market_cache_ts=0; self.angel=AngelOneData(); self.bot={'enabled':False,'strategy':'EMA_CROSS','underlying':'NIFTY','instrument_mode':'INDEX','qty':1,'risk_per_trade':1.0,'max_daily_loss':2.0,'stop_loss_pct':0.6,'target_pct':1.2,'last_signal':'HOLD','last_confidence':0,'last_reason':'Waiting for signal…','trades_today':0,'daily_pnl':0.0,'last_trade_ts':0,'last_eval_ts':0,'risk_lock':False,'risk_lock_reason':'','last_entry_price':0.0,'max_trades_per_day':5,'max_open_positions':1,'cooldown_sec':60,'trade_count_today':0,'session_date':datetime.now(IST).strftime('%Y-%m-%d'),'last_signal_change_ts':0,'strategy_stats':{k:{'trades':0,'wins':0,'loss':0,'pnl':0.0,'status':'UNVALIDATED'} for k in STRATEGIES},'initial_balance':1000000.0,'offline_mode':False}; self._load_state(); self._init_history(); self.bot['enabled']=False; self._running=True
         threading.Thread(target=self._tick_loop,daemon=True).start()
 
     DB_PATH=os.environ.get('SIM_DB_PATH', os.path.join(os.path.dirname(os.path.abspath(__file__)), 'simulator_state.db'))
@@ -1303,7 +1303,7 @@ class SimulationState:
     def _run_bot_once(self):
         b=self.bot
         self._reset_bot_session_if_needed()
-        if not b['enabled'] or not self.angel.enabled: return
+        if not b['enabled'] or (not self.angel.enabled and not b.get('offline_mode',False)): return
         now=time.time()
         if now-b.get('last_eval_ts',0)<0.5: return
         b['last_eval_ts']=now
@@ -1321,8 +1321,8 @@ class SimulationState:
         loss_limit=abs(float(b['max_daily_loss'])/100.0)*float(b['initial_balance'])
         if b['daily_pnl'] <= -loss_limit:
             b['risk_lock']=True; b['risk_lock_reason']=f'Daily loss limit ₹{loss_limit:.0f} reached'; b['enabled']=False; self._save_state(); return
-        if not is_market_open('OPTION' if b.get('instrument_mode') and b.get('instrument_mode')!='INDEX' else 'INDEX'):
-            b['last_reason']='Market closed — bot is armed but waiting for market hours.'
+        if not b.get('offline_mode',False) and not is_market_open('OPTION' if b.get('instrument_mode') and b.get('instrument_mode')!='INDEX' else 'INDEX'):
+            b['last_reason']='Market closed — bot is armed but waiting for market hours. Enable Offline mode to run paper strategy evaluation on the latest historical candles.'
             return
         if signal=='HOLD' or conf<0.70:
             if not self._bot_positions(): b['last_reason']=self._bot_reason(signal,meta)
@@ -1526,10 +1526,12 @@ class SimulationState:
         self.orders.insert(0,{'id':pos_id,'time':datetime.now(IST).strftime('%H:%M:%S'),'symbol':symbol,'action':action,'qty':qty,'price':price,'status':'FILLED','bot_tag':bool(bot_tag)}); self._save_state()
 
     def _internal_exit(self,pos_id,reason='MANUAL'):
+        target=str(pos_id or '')
         for i,p in enumerate(self.positions):
-            if p['id']==pos_id:
-                p=self.positions.pop(i); cost=round(p['buy_price']*p['qty'],2); pnl=p['pnl']; self.wallet['used_margin']=max(0,round(self.wallet['used_margin']-cost,2)); self.wallet['balance']=round(self.wallet['balance']+cost+pnl,2); self.wallet['realized_pnl']=round(self.wallet['realized_pnl']+pnl,2); self.bot['daily_pnl']=round(self.bot.get('daily_pnl',0)+pnl,2) if p.get('bot_tag') else self.bot.get('daily_pnl',0)
-                trade={'id':p['id'],'symbol':p['symbol'],'action':p['action'],'qty':p['qty'],'buy_price':p['buy_price'],'exit_price':p['ltp'],'pnl':pnl,'reason':reason,'time':datetime.now(IST).isoformat(),'bot_tag':bool(p.get('bot_tag'))}; self.closed_trades.insert(0,trade); self._journal_paper_trade(trade); self._save_state(); return
+            if str(p.get('id'))==target:
+                p=self.positions.pop(i); cost=round(float(p.get('buy_price',0))*int(p.get('qty',0)),2); pnl=float(p.get('pnl',0) or 0); self.wallet['used_margin']=max(0,round(self.wallet['used_margin']-cost,2)); self.wallet['balance']=round(self.wallet['balance']+cost+pnl,2); self.wallet['realized_pnl']=round(self.wallet['realized_pnl']+pnl,2); self.bot['daily_pnl']=round(self.bot.get('daily_pnl',0)+pnl,2) if p.get('bot_tag') else self.bot.get('daily_pnl',0)
+                trade={'id':p['id'],'symbol':p['symbol'],'action':p['action'],'qty':p['qty'],'buy_price':p['buy_price'],'exit_price':p.get('ltp',p.get('buy_price',0)),'pnl':pnl,'reason':reason,'time':datetime.now(IST).isoformat(),'bot_tag':bool(p.get('bot_tag'))}; self.closed_trades.insert(0,trade); self._journal_paper_trade(trade); self._save_state(); return True
+        return False
 
     def _resample(self,candles,tf):
         if tf<=60:return candles
@@ -1668,7 +1670,7 @@ class SimulationState:
             gg=self.angel.greek('SENSEX' if is_s else 'NIFTY',exp).get((strike,typ),{}) if self.angel.enabled else {}
             if gg: greeks={'delta':float(gg.get('delta',0) or 0),'gamma':float(gg.get('gamma',0) or 0),'theta':float(gg.get('theta',0) or 0),'vega':float(gg.get('vega',0) or 0),'iv':float(gg.get('impliedVolatility',0) or 0)}
             else:
-                g=calc_deep_greeks(spot,strike,get_dte_from_expiry(exp),is_sensex=is_s); greeks={'delta':g['ce_delta'] if typ=='CE' else g['pe_delta'],'gamma':g['gamma'],'theta':g['theta'],'vega':g['vega'],'iv':g['iv']}
+                greeks={'delta':None,'gamma':None,'theta':None,'vega':None,'iv':None}
         else:
             status=market_session_status('INDEX')
             if candles and status == 'OPEN':
@@ -1706,30 +1708,32 @@ class SimulationState:
                         continue
                     if not sym.endswith(('CE','PE')):
                         continue
-                    if it not in ('OPTIDX','CE','PE',''):
+                    if it not in ('OPTIDX','OPTSTK','CE','PE',''):
                         continue
                     # Work with canonical expiry so master variants cannot break selection.
                     y=dict(x); y['_canonical_expiry']=exp; rows.append(y)
                 return rows
             option_rows=discover()
-            if not option_rows and self.angel.refresh_master():
+            if not option_rows and (time.time()-float(self.angel.last_master or 0)>3600) and self.angel.refresh_master():
                 option_rows=discover()
             exps=sorted({str(x.get('_canonical_expiry') or self.angel.normalize_expiry(x.get('expiry'))) for x in option_rows if x.get('expiry')}, key=lambda e: _expiry_sort_key(e))
             requested=self.angel.normalize_expiry(expiry) if expiry else ''
             selected=requested if requested in exps else (exps[0] if exps else None)
             if selected:
                 arr=self.angel.option_instruments(underlying,selected)
-                if not arr and self.angel.refresh_master():
+                if not arr and (time.time()-float(self.angel.last_master or 0)>3600) and self.angel.refresh_master():
                     arr=self.angel.option_instruments(underlying,selected)
                 strikes=sorted({round(float(x.get('strike',0))/100,2) for x in arr if float(x.get('strike',0) or 0)>0})
                 if strikes:
                     atm=min(strikes,key=lambda x:abs(x-spot)); strikes=sorted(strikes,key=lambda x:abs(x-atm))[:17]; strikes=sorted(strikes)
                     insts=[x for x in arr if round(float(x.get('strike',0))/100,2) in strikes]
                     self.angel.subscribe_instruments(insts)
-                    base=self.live_chain_cache.get((symbol,selected)); stale=not base or time.time()-base[0]>=5.0
+                    base=self.live_chain_cache.get((symbol,selected)); stale=not base or time.time()-base[0]>=2.0
                     if stale:
-                        q=self.angel.quote(insts)
-                        gk=self.angel.greek(underlying,selected)
+                        from concurrent.futures import ThreadPoolExecutor
+                        with ThreadPoolExecutor(max_workers=2) as ex:
+                            fq=ex.submit(self.angel.quote,insts); fg=ex.submit(self.angel.greek,underlying,selected)
+                            q=fq.result(); gk=fg.result()
                         rows=[]
                         for strike in strikes:
                             row={'strike':strike,'expiry':selected}
@@ -2372,8 +2376,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 else: state._execute_fill(symbol,action,qty,ltp if ot=='MARKET' else lp,sl,tp,tsl)
                 invalidate_market_cache(); self._send_json({'status':'ok'}); return
             if parsed.path=='/api/exit':
-                before=len(state.positions); state._internal_exit(payload.get('id')); invalidate_market_cache();
-                self._send_json({'status':'ok' if len(state.positions)<before else 'not_found'}, 200 if len(state.positions)<before else 404); return
+                before=len(state.positions); ok=state._internal_exit(payload.get('id')); invalidate_market_cache();
+                self._send_json({'status':'ok' if ok else 'not_found','ok':bool(ok)}, 200 if ok else 404); return
             if parsed.path=='/api/cancel_order': state.pending_orders=[x for x in state.pending_orders if x['id']!=payload.get('id')]; state._save_state(); invalidate_market_cache(); self._send_json({'status':'ok'}); return
             if parsed.path=='/api/research/matrix_cancel':
                 job_id=str(payload.get('job_id',''))
