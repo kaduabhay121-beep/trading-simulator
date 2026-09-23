@@ -497,8 +497,7 @@ canvas { width: 100% !important; height: 100% !important; display: block; }
         <div class="bot-row2"><button class="bot-small-btn bot-test" style="width:100%" onclick="refreshDataVaultStatus()">CHECK LOCAL DATA</button><button class="bot-small-btn bot-test" style="width:100%" onclick="finalizeDataVault()">FINALIZE SESSION</button></div>
         <div id="vaultStatus" class="bot-reason">Local data status will appear here. No broker connection is used by this panel after capture.</div>
         <div class="bot-card-title" style="margin-top:12px">Offline Engine Test · Historical Replay</div>
-        <div class="bot-safe" style="margin-bottom:6px">OFFLINE ONLY · no Angel One connection · no order placement · candle-by-candle point-in-time evaluation</div>
-        <div class="bot-row2"><select id="offlineSymbol" class="bot-select"><option value="NIFTY">NIFTY</option><option value="SENSEX">SENSEX</option></select><input id="offlineDate" class="bot-input" type="date" title="Historical trading day"></div>
+        <div class="bot-safe" style="margin-bottom:6px">OFFLINE ONLY · no Angel One connection · no order placement · candle-by-candle point-in-time evaluation</div>        <div class="bot-row2"><select id="offlineSymbol" class="bot-select"><option value="NIFTY">NIFTY</option><option value="SENSEX">SENSEX</option></select><input id="offlineDate" class="bot-input" type="date" title="Historical trading day"></div>
         <div class="bot-row2"><select id="offlineTf" class="bot-select"><option value="300" selected>5M</option><option value="900">15M</option><option value="3600">1H</option></select><select id="offlineSpeed" class="bot-select"><option value="1">1x</option><option value="5">5x</option><option value="20">20x</option><option value="max">MAX</option></select></div>
         <div class="bot-row2"><button class="bot-small-btn bot-test" style="width:100%" onclick="runOfflineEngineReplay()">▶ START REPLAY</button></div>
         <div id="offlineReplayResult" class="bot-reason">Historical candles → MTF analysis → rule engine → risk filters → paper simulation. No future candle is visible to the decision at T.</div>
@@ -998,7 +997,6 @@ function openChartLimitModal(targetPrice) {
   document.getElementById('inputLomSL').value = (numP * 0.90).toFixed(1);
   document.getElementById('inputLomTarget').value = (numP * 1.20).toFixed(1);
   document.getElementById('inputLomTSL').value = '';
-
   const qtySelect = document.getElementById('selectLomQty');
   const lotSize = isSensex ? 20 : 65;
   document.getElementById('lomLotTitle').innerText = `Quantity (Lot Size: ${lotSize})`;
@@ -1497,8 +1495,7 @@ function updateUI(data) {
   if(statusEl){ statusEl.innerText=status.replace('_',' '); statusEl.className='market-status-pill '+(status==='OPEN'?'open':status==='PRE_OPEN'?'preopen':status==='POST_CLOSE'?'post':'closed'); }
   const canTrade=status==='OPEN';
   ['btnSellLTP','btnBuyLTP','btnModeMKT','btnModeLMT','directQtySelect','inputLimitPriceDirect'].forEach(id=>{const el=document.getElementById(id); if(el) el.disabled=!canTrade;});
-  if(!canTrade){ document.getElementById('btnBuyLabel').innerText='CLOSED'; document.getElementById('btnSellLabel').innerText='CLOSED'; } else { setTradeMode(currentTradeMode); }
-  
+  if(!canTrade){ document.getElementById('btnBuyLabel').innerText='CLOSED'; document.getElementById('btnSellLabel').innerText='CLOSED'; } else { setTradeMode(currentTradeMode); }  
   var isSensex = currentChartSymbol.includes("SENSEX");
   const chgVal = Number.isFinite(Number(data.chart.change)) ? Number(data.chart.change) : (isSensex ? data.sensex_chg : data.nifty_chg);
   const pctVal = Number.isFinite(Number(data.chart.change_pct)) ? Number(data.chart.change_pct) : (isSensex ? data.sensex_pct : data.nifty_pct);
@@ -1997,8 +1994,7 @@ function openBracketEdit(mode) {
 
 function openBracketEditForPos(posId, mode, curVal) {
   activePosId = posId;
-  activeEditBracket = mode;
-  const titles = { 'SL': 'Set Stop Loss Price (₹)', 'TP': 'Set Target Price (₹)', 'TSL': 'Set Trailing SL Gap (₹)' };
+  activeEditBracket = mode;  const titles = { 'SL': 'Set Stop Loss Price (₹)', 'TP': 'Set Target Price (₹)', 'TSL': 'Set Trailing SL Gap (₹)' };
   document.getElementById('bracketModalTitle').innerText = titles[mode];
   document.getElementById('bracketInputSub').innerText = mode === 'TSL' ? 'Trailing Distance from Price' : 'Absolute Price Level';
   document.getElementById('inputBracketPrice').value = curVal > 0 ? curVal : '';
@@ -2498,7 +2494,6 @@ function drawChart() {
       }
     });
   }
-
   // 8. Live Price Line & Countdown Badge
   const curLTP = Number(marketCache?.chart?.ltp);
   if (!Number.isFinite(curLTP)) return;
@@ -2997,8 +2992,7 @@ async function historicalChartTrade(side){
   const manualTp=Number(document.getElementById('histTargetPrice')?.value||0);
   const sl=isClosing?Number(existing.stop_loss||0):(riskOn?manualSl:0);
   const tp=isClosing?Number(existing.target||0):(riskOn?manualTp:0);
-  if(!isClosing && riskOn && ((!sl&& !tp) || (action==='BUY' && sl>=price) || (action==='BUY' && tp && tp<=price) || (action==='SELL' && sl<=price) || (action==='SELL' && tp && tp>=price))){
-    const st=document.getElementById('histChartStatus');if(st)st.innerText='Invalid SL/Target for this side. Leave risk OFF for a manual trade, or enter valid prices.';return;
+  if(!isClosing && riskOn && ((!sl&& !tp) || (action==='BUY' && sl>=price) || (action==='BUY' && tp && tp<=price) || (action==='SELL' && sl<=price) || (action==='SELL' && tp && tp>=price))){    const st=document.getElementById('histChartStatus');if(st)st.innerText='Invalid SL/Target for this side. Leave risk OFF for a manual trade, or enter valid prices.';return;
   }
   try{
     const r=await fetch('/api/historical/chart_trade',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({session_id:h.session_id,action,lots:existing?Number(existing.lots||Math.max(1,Math.round(Number(existing.qty||1)/Math.max(Number(existing.lot_size||lotSize),1)))):lots,qty:existing?Number(existing.qty):qty,price,stop_loss:sl,target:tp,trailing_sl:0,candle_time:c.time,candle_index:h.index})});
@@ -3142,29 +3136,17 @@ const vaultDateEl=document.getElementById('vaultDate'); if(vaultDateEl && !vault
 const vaultSymbolEl=document.getElementById('vaultSymbol'); if(vaultSymbolEl) vaultSymbolEl.addEventListener('change',refreshDataVaultStatus);
 renderTabs();
 renderWatchlist();
-setInterval(() => fetchMarket(false), 1000);
-setInterval(() => fetchRuleSignal(), 3000);
-setInterval(() => { if (!historicalChartMode && currentChartSymbol && (!liveEventSource || liveEventSource.readyState === EventSource.CLOSED)) connectLiveStream(); }, 1000);
+// Performance: SSE carries live ticks; REST is deliberately throttled because /api/market also refreshes option-chain/wallet state.
+setInterval(() => fetchMarket(false), 3000);
+setInterval(() => { if (!historicalChartMode && currentChartSymbol && (!liveEventSource || liveEventSource.readyState === EventSource.CLOSED)) connectLiveStream(); }, 2000);
+setInterval(() => { if (document.getElementById('botSignal')) fetchRuleSignal(); }, 5000);
 connectLiveStream();
-setInterval(updateLocalCountdown, 250);
+setInterval(updateLocalCountdown, 500);
+// Seed the chart immediately, then let the heavier market snapshot follow once.
 fetchChartSeed();
-fetchMarket();
+setTimeout(() => fetchMarket(false), 250);
 </script>
 
-    <script>
-    window.addEventListener("DOMContentLoaded", () => {
-        console.log("Initializing Dhan Simulator UI...");
-        try {
-            if (typeof fetchMarket === "function") {
-                fetchMarket();
-                
-            }
-        } catch(err) {
-            console.error("Initialization crash:", err);
-        }
-    });
-    </script>
-    
     <div id="debugOverlay" style="position:fixed;bottom:60px;left:0;right:0;background:rgba(220,50,50,0.9);color:white;font-size:11px;padding:6px 10px;z-index:99999;display:none;word-break:break-all;font-family:monospace;"></div>
     <script>
     window.onerror = function(msg, url, line) {
