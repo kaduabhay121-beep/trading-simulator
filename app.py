@@ -1145,6 +1145,10 @@ class SimulationState:
             if not rows:
                 return
             day = day or _session_date(rows[-1].get('time'))
+            # _init_history may contain prior sessions; the Data Vault stores only today's session.
+            rows=[x for x in rows if _session_date(x.get('time'))==str(day)]
+            if not rows:
+                return
             self._store_historical_dataset(str(underlying).upper(),'INDEX_1M',60,day,day,rows)
         except Exception:
             pass
