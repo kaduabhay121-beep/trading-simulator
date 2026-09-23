@@ -58,4 +58,4 @@ TradeLab now includes a native Android module under `android/`. It is local-firs
 
 No historical NIFTY/SENSEX dataset is required from the user. The Data Vault is designed to bootstrap itself from genuine market information captured during market hours. A session is only eligible for offline research when the required local dataset has been captured and validated; missing data must not be fabricated.
 
-The permanent product definition remains the uploaded TradeLab goal: genuine NIFTY/SENSEX information → local Data Vault → one deterministic Rule Engine → paper execution → journal/analytics → replay/backtest/strategy comparison/walk-forward validation, with no future-data leakage and no real orders. fileciteturn83file0L1765-L1789
+The permanent product definition remains the uploaded TradeLab goal: genuine NIFTY/SENSEX information → local Data Vault → one deterministic Rule Engine → paper execution → journal/analytics → replay/backtest/strategy comparison/walk-forward validation, with no future-data leakage and no real orders.
