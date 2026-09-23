@@ -1644,9 +1644,9 @@ class SimulationState:
                             if not self.sensex_candles_1m or ts>self.sensex_candles_1m[-1]['time']:
                                 p=self.sensex_spot; self.sensex_candles_1m.append({'time':ts,'is_prev_day':False,'open':p,'high':p,'low':p,'close':p,'volume':0})
                             sc=self.sensex_candles_1m[-1]; sc['close']=self.sensex_spot; sc['high']=max(sc['high'],self.sensex_spot); sc['low']=min(sc['low'],self.sensex_spot)
-                            # Persist the current session locally. This path is market-hours only.
-                            try: self._capture_live_data_vault(False)
-                            except Exception: pass
+                        # Persist the current session locally. This path is market-hours only.
+                        try: self._capture_live_data_vault(False)
+                        except Exception: pass
                         # Push the latest index price directly to connected browsers.
                         self._push_tick('NIFTY', self.nifty_spot, self.prev_close, 'NSE', 'INDEX')
                         self._push_tick('SENSEX', self.sensex_spot, self.sensex_prev_close, 'BSE', 'INDEX')
