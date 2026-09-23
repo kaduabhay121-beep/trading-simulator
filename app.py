@@ -1679,23 +1679,23 @@ class SimulationState:
                     try: self._capture_live_data_vault(False)
                     except Exception: pass
                     # Push the latest index price directly to connected browsers.
-                        self._push_tick('NIFTY', self.nifty_spot, self.prev_close, 'NSE', 'INDEX')
-                        self._push_tick('SENSEX', self.sensex_spot, self.sensex_prev_close, 'BSE', 'INDEX')
-                        # Push actively watched option contracts from the WebSocket cache.
-                        with self.tick_stream_lock:
-                            option_symbols=[k for k in self.tick_streams.keys() if '_' in k]
-                        for sym in option_symbols:
-                            try:
-                                inst=self._find_option_from_ui(sym)
-                                if inst:
-                                    ltp=self.angel.websocket_ltp(inst) or 0.0
-                                    if ltp:
-                                        q=self.angel.quote_cache.get(str(inst.get('token'))) or {}
-                                        pc=float(q.get('close') or 0.0)
-                                        ex='BFO' if str(inst.get('exch_seg','')).upper()=='BFO' else 'NFO'
-                                        self._push_tick(sym, ltp, pc, ex, 'OPTION')
-                            except Exception:
-                                pass
+                    self._push_tick('NIFTY', self.nifty_spot, self.prev_close, 'NSE', 'INDEX')
+                    self._push_tick('SENSEX', self.sensex_spot, self.sensex_prev_close, 'BSE', 'INDEX')
+                    # Push actively watched option contracts from the WebSocket cache.
+                    with self.tick_stream_lock:
+                        option_symbols=[k for k in self.tick_streams.keys() if '_' in k]
+                    for sym in option_symbols:
+                        try:
+                            inst=self._find_option_from_ui(sym)
+                            if inst:
+                                ltp=self.angel.websocket_ltp(inst) or 0.0
+                                if ltp:
+                                    q=self.angel.quote_cache.get(str(inst.get('token'))) or {}
+                                    pc=float(q.get('close') or 0.0)
+                                    ex='BFO' if str(inst.get('exch_seg','')).upper()=='BFO' else 'NFO'
+                                    self._push_tick(sym, ltp, pc, ex, 'OPTION')
+                        except Exception:
+                            pass
                 else:
                     with self.lock:
                         self.nifty_spot=round(self.nifty_spot+random.choice([-0.8,-0.4,0,0.4,0.8]),2); self.sensex_spot=round(self.nifty_spot*3.41,2)
