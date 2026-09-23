@@ -1097,7 +1097,7 @@ class SimulationState:
         # pushed immediately instead of waiting for client-side HTTP polling.
         self.tick_stream_lock=threading.Lock(); self.tick_streams={}
         self.positions=[]; self.pending_orders=[]; self.orders=[]; self.closed_trades=[]; self.candles_1m=[]; self.sensex_candles_1m=[]; self.order_counter=100
-        self.live_chain_cache={}; self.live_chain_lock=threading.Lock(); self.chart_cache={}; self.market_cache={}; self.market_cache_ts=0; self.angel=AngelOneData(); self.bot={'enabled':False,'strategy':'EMA_CROSS','underlying':'NIFTY','instrument_mode':'INDEX','qty':1,'risk_per_trade':1.0,'max_daily_loss':2.0,'stop_loss_pct':0.6,'target_pct':1.2,'last_signal':'HOLD','last_confidence':0,'last_reason':'Waiting for signal…','trades_today':0,'daily_pnl':0.0,'last_trade_ts':0,'last_eval_ts':0,'risk_lock':False,'risk_lock_reason':'','last_entry_price':0.0,'max_trades_per_day':5,'max_open_positions':1,'cooldown_sec':60,'trade_count_today':0,'session_date':datetime.now(IST).strftime('%Y-%m-%d'),'last_signal_change_ts':0,'strategy_stats':{k:{'trades':0,'wins':0,'loss':0,'pnl':0.0,'status':'UNVALIDATED'} for k in STRATEGIES},'initial_balance':1000000.0,'offline_mode':False}; self._load_state(); self._init_history(); self.bot['enabled']=False; self._running=True
+        self.live_chain_cache={}; self.live_chain_lock=threading.Lock(); self.chart_cache={}; self.market_cache={}; self.market_cache_ts=0; self.last_local_capture_minute=0; self.last_option_capture=0; self.angel=AngelOneData(); self.bot={'enabled':False,'strategy':'EMA_CROSS','underlying':'NIFTY','instrument_mode':'INDEX','qty':1,'risk_per_trade':1.0,'max_daily_loss':2.0,'stop_loss_pct':0.6,'target_pct':1.2,'last_signal':'HOLD','last_confidence':0,'last_reason':'Waiting for signal…','trades_today':0,'daily_pnl':0.0,'last_trade_ts':0,'last_eval_ts':0,'risk_lock':False,'risk_lock_reason':'','last_entry_price':0.0,'max_trades_per_day':5,'max_open_positions':1,'cooldown_sec':60,'trade_count_today':0,'session_date':datetime.now(IST).strftime('%Y-%m-%d'),'last_signal_change_ts':0,'strategy_stats':{k:{'trades':0,'wins':0,'loss':0,'pnl':0.0,'status':'UNVALIDATED'} for k in STRATEGIES},'initial_balance':1000000.0,'offline_mode':False}; self._load_state(); self._init_history(); self.bot['enabled']=False; self._running=True
         threading.Thread(target=self._tick_loop,daemon=True).start()
 
     DB_PATH=os.environ.get('SIM_DB_PATH', os.path.join(os.path.dirname(os.path.abspath(__file__)), 'simulator_state.db'))
@@ -1134,6 +1134,81 @@ class SimulationState:
         db.execute("CREATE TABLE IF NOT EXISTS historical_replay_sessions (session_id TEXT PRIMARY KEY, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, run_id INTEGER, replay_day TEXT NOT NULL, underlying TEXT NOT NULL, mode TEXT NOT NULL, timeframe INTEGER NOT NULL, trade_type TEXT NOT NULL, state_json TEXT NOT NULL)")
         # Research/replay history is permanent by design. Nothing is auto-deleted.
         return _DBAdapter(db, False)
+
+    def _persist_live_market_session(self, underlying, candles, day=None):
+        """Persist the current market session locally while the market is open.
+        This is the offline Data Vault: after close, replay never needs the broker."""
+        if not candles:
+            return
+        try:
+            rows=_align_candles(candles)
+            if not rows:
+                return
+            day = day or _session_date(rows[-1].get('time'))
+            self._store_historical_dataset(str(underlying).upper(),'INDEX_1M',60,day,day,rows)
+        except Exception:
+            pass
+
+    def _capture_live_data_vault(self, force=False):
+        """Capture NIFTY/SENSEX candles and real option-chain snapshots during market hours only."""
+        if not self.angel.enabled or market_session_status('INDEX') != 'OPEN':
+            return {'ok':True,'captured':False,'reason':'MARKET_CLOSED_OR_ANGEL_DISABLED'}
+        now=time.time(); minute=int(now//60)
+        if not force and minute==self.last_local_capture_minute:
+            return {'ok':True,'captured':False,'reason':'ALREADY_CAPTURED'}
+        with self.lock:
+            nifty=list(self.candles_1m); sensex=list(self.sensex_candles_1m)
+        self._persist_live_market_session('NIFTY',nifty)
+        self._persist_live_market_session('SENSEX',sensex)
+        self.last_local_capture_minute=minute
+        # Option-chain snapshots are deliberately throttled to avoid unnecessary broker calls.
+        option_captured=0
+        if force or now-self.last_option_capture >= 60:
+            for u in ('NIFTY','SENSEX'):
+                try:
+                    ch=self.get_option_chain(u)
+                    chain=ch.get('chain',[]) if isinstance(ch,dict) else []
+                    source=ch.get('market_source','') if isinstance(ch,dict) else ''
+                    exp=ch.get('selected_expiry','') if isinstance(ch,dict) else ''
+                    if chain and source != 'SIMULATED PAPER CHAIN':
+                        self._store_option_chain_snapshot(u,int(now),exp,chain)
+                        option_captured += 1
+                except Exception:
+                    pass
+            self.last_option_capture=now
+        return {'ok':True,'captured':True,'minute':minute,'nifty_candles':len(nifty),'sensex_candles':len(sensex),'option_chains':option_captured}
+
+    def _offline_data_status(self, underlying=None, day=None):
+        """Return what is locally available without contacting Angel One."""
+        try:
+            day=day or datetime.now(IST).date().isoformat()
+            under=(underlying or 'ALL').upper()
+            db=self._db()
+            if under in ('NIFTY','SENSEX'):
+                rows=db.execute("SELECT meta_json,candles_json FROM historical_datasets WHERE dataset_key LIKE ?",(under+'|INDEX_1M|60|'+str(day)+'|'+str(day),)).fetchall()
+            else:
+                rows=db.execute("SELECT meta_json,candles_json FROM historical_datasets WHERE dataset_key LIKE ?",('%|INDEX_1M|60|'+str(day)+'|'+str(day),)).fetchall()
+            db.close()
+            items=[]
+            for meta_raw,candles_raw in rows:
+                try:
+                    m=json.loads(meta_raw); c=json.loads(candles_raw)
+                    items.append({'underlying':m.get('underlying'),'date':m.get('start_date'),'candles':len(c),'first_time':c[0].get('time') if c else None,'last_time':c[-1].get('time') if c else None})
+                except Exception:
+                    pass
+            snapshots=0
+            try:
+                db=self._db()
+                if under in ('NIFTY','SENSEX'):
+                    row=db.execute("SELECT COUNT(*) FROM historical_option_chain_snapshots WHERE underlying=? AND snapshot_time>=? AND snapshot_time<?",(under,int(IST.localize(datetime.fromisoformat(str(day))).timestamp()),int(IST.localize(datetime.fromisoformat(str(day))+timedelta(days=1)).timestamp()))).fetchone()
+                else:
+                    row=db.execute("SELECT COUNT(*) FROM historical_option_chain_snapshots WHERE snapshot_time>=? AND snapshot_time<?",(int(IST.localize(datetime.fromisoformat(str(day))).timestamp()),int(IST.localize(datetime.fromisoformat(str(day))+timedelta(days=1)).timestamp()))).fetchone()
+                snapshots=int(row[0] if row else 0); db.close()
+            except Exception:
+                pass
+            return {'ok':True,'offline_only':True,'date':day,'datasets':items,'option_snapshots':snapshots,'ready':bool(items)}
+        except Exception as e:
+            return {'ok':False,'error':str(e),'offline_only':True}
 
     def _store_option_chain_snapshot(self, underlying, ts, expiry, chain):
         """Persist a point-in-time broker option-chain snapshot for future offline replay."""
@@ -1569,6 +1644,9 @@ class SimulationState:
                             if not self.sensex_candles_1m or ts>self.sensex_candles_1m[-1]['time']:
                                 p=self.sensex_spot; self.sensex_candles_1m.append({'time':ts,'is_prev_day':False,'open':p,'high':p,'low':p,'close':p,'volume':0})
                             sc=self.sensex_candles_1m[-1]; sc['close']=self.sensex_spot; sc['high']=max(sc['high'],self.sensex_spot); sc['low']=min(sc['low'],self.sensex_spot)
+                            # Persist the current session locally. This path is market-hours only.
+                            try: self._capture_live_data_vault(False)
+                            except Exception: pass
                         # Push the latest index price directly to connected browsers.
                         self._push_tick('NIFTY', self.nifty_spot, self.prev_close, 'NSE', 'INDEX')
                         self._push_tick('SENSEX', self.sensex_spot, self.sensex_prev_close, 'BSE', 'INDEX')
@@ -2124,6 +2202,19 @@ class Handler(http.server.BaseHTTPRequestHandler):
             p=parse_qs(parsed.query); sid=p.get('session_id',[''])[0].strip(); session=state._get_historical_chart_session(sid) if sid else None
             if not session: return self._send_json({'ok':False,'error':'Historical chart session not found.'},404)
             return self._send_json({'ok':True,'session':session,'paper_only':True})
+        if parsed.path=='/api/offline/data_status':
+            p=parse_qs(parsed.query); under=p.get('underlying',['ALL'])[0].upper(); day=p.get('date',[datetime.now(IST).date().isoformat()])[0]
+            return self._send_json(state._offline_data_status(under,day))
+        if parsed.path=='/api/offline/capture':
+            # Manual capture is still restricted to live market hours and never fabricates data.
+            r=state._capture_live_data_vault(True)
+            return self._send_json(r,200 if r.get('ok') else 400)
+        if parsed.path=='/api/offline/finalize':
+            # Finalize writes only already-received candles. It never calls the broker after close.
+            r=state._capture_live_data_vault(True)
+            r['finalized']=True
+            r['market_status']=market_session_status('INDEX')
+            return self._send_json(r,200 if r.get('ok') else 400)
         if parsed.path=='/api/historical/replay_day':
             p=parse_qs(parsed.query)
             day=_parse_replay_date(p.get('date',[''])[0])
