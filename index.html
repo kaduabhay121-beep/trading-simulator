@@ -491,6 +491,11 @@ canvas { width: 100% !important; height: 100% !important; display: block; }
         <div id="replayResult" class="bot-reason">Replay runs the same strategy engine on historical candles. It never changes your live paper account.</div>
         <div id="replayMetrics" class="bot-grid4"></div>
         <button id="replayLogBtn" class="bot-small-btn bot-test replay-log-btn" style="display:none" onclick="openReplayTradeLog()">VIEW TRADE LOG</button>
+        <div class="bot-card-title" style="margin-top:12px">Market Data Vault · Online Capture → Offline Lab</div>
+        <div class="bot-safe" style="margin-bottom:6px">MARKET HOURS: store received NIFTY/SENSEX 1M candles + real option-chain snapshots locally. AFTER CLOSE: replay reads the stored dataset only — no Angel One calls.</div>
+        <div class="bot-row2"><select id="vaultSymbol" class="bot-select"><option value="NIFTY">NIFTY</option><option value="SENSEX">SENSEX</option></select><input id="vaultDate" class="bot-input" type="date"></div>
+        <div class="bot-row2"><button class="bot-small-btn bot-test" style="width:100%" onclick="refreshDataVaultStatus()">CHECK LOCAL DATA</button><button class="bot-small-btn bot-test" style="width:100%" onclick="finalizeDataVault()">FINALIZE SESSION</button></div>
+        <div id="vaultStatus" class="bot-reason">Local data status will appear here. No broker connection is used by this panel after capture.</div>
         <div class="bot-card-title" style="margin-top:12px">Offline Engine Test · Historical Replay</div>
         <div class="bot-safe" style="margin-bottom:6px">OFFLINE ONLY · no Angel One connection · no order placement · candle-by-candle point-in-time evaluation</div>
         <div class="bot-row2"><select id="offlineSymbol" class="bot-select"><option value="NIFTY">NIFTY</option><option value="SENSEX">SENSEX</option></select><input id="offlineDate" class="bot-input" type="date" title="Historical trading day"></div>
@@ -3030,6 +3035,18 @@ async function loadHistoricalChartTradeLog(){
   try{const r=await fetch(`/api/research/trades?run_id=${encodeURIComponent(historicalReplay.run_id)}`,{cache:'no-store'}),d=await r.json();if(!r.ok||!d.ok)throw new Error(d.error||'Trade log unavailable');const t=d.trades.map(x=>x.trade||{});el.innerHTML=t.length?`<div class="bot-muted">${t.length} permanent historical trades</div><div style="overflow:auto"><table class="bot-table"><thead><tr><th>#</th><th>Entry</th><th>Exit</th><th>Lots</th><th>Lot Size</th><th>Qty</th><th>Reason</th><th>P&L</th></tr></thead><tbody>${t.map((x,i)=>`<tr><td>${i+1}</td><td>${replayLogTime(x.entry_time)} · ₹${Number(x.entry).toFixed(2)}</td><td>${replayLogTime(x.exit_time)} · ₹${Number(x.exit).toFixed(2)}</td><td>${x.lots??'—'}</td><td>${x.lot_size??'—'}</td><td>${x.qty}</td><td>${x.reason}</td><td class="${Number(x.pnl)>=0?'bot-good':'bot-bad'}">${money(x.pnl)}</td></tr>`).join('')}</tbody></table></div>`:'No closed trades yet.';}catch(e){el.innerText=e.message||'Trade log unavailable'}
 }
 
+async function refreshDataVaultStatus(){
+  const el=document.getElementById('vaultStatus'),u=document.getElementById('vaultSymbol')?.value||'NIFTY',d=document.getElementById('vaultDate')?.value||defaultReplayDate();
+  if(el)el.innerText='Checking local Data Vault…';
+  try{const r=await fetch('/api/offline/data_status?'+new URLSearchParams({underlying:u,date:d}),{cache:'no-store'}),x=await r.json();if(!r.ok||!x.ok)throw new Error(x.error||'Data status unavailable');
+    const ds=x.datasets?.[0]; el.innerText=ds?(u+' · '+d+' · '+ds.candles+' stored 1M candles · option snapshots: '+x.option_snapshots+' · '+(x.ready?'READY FOR OFFLINE REPLAY':'INCOMPLETE')):(u+' · '+d+' · no stored 1M session yet.');
+  }catch(e){if(el)el.innerText=e.message||'Data Vault unavailable'}
+}
+async function finalizeDataVault(){
+  const el=document.getElementById('vaultStatus');if(el)el.innerText='Finalizing locally received market data…';
+  try{const r=await fetch('/api/offline/finalize',{cache:'no-store'}),x=await r.json();if(!r.ok||!x.ok)throw new Error(x.error||'Finalize failed');if(el)el.innerText='Session finalized · NIFTY '+(x.nifty_candles||0)+' candles · SENSEX '+(x.sensex_candles||0)+' candles · option snapshots '+(x.option_chains||0)+'. Offline replay will use only stored data.';refreshDataVaultStatus();}catch(e){if(el)el.innerText=e.message||'Finalize unavailable'}
+}
+
 function defaultReplayDate(){
   const d=new Date(); d.setDate(d.getDate()-1);
   while(d.getDay()===0||d.getDay()===6)d.setDate(d.getDate()-1);
@@ -3121,6 +3138,8 @@ const histDateEl2=document.getElementById('histChartDate'); if(histDateEl2) hist
 });
 const replayDateEl=document.getElementById('replayDate'); if(replayDateEl && !replayDateEl.value) replayDateEl.value=historicalDefaultDate();
 const offlineDateEl=document.getElementById('offlineDate'); if(offlineDateEl && !offlineDateEl.value) offlineDateEl.value=historicalDefaultDate();
+const vaultDateEl=document.getElementById('vaultDate'); if(vaultDateEl && !vaultDateEl.value) vaultDateEl.value=historicalDefaultDate();
+const vaultSymbolEl=document.getElementById('vaultSymbol'); if(vaultSymbolEl) vaultSymbolEl.addEventListener('change',refreshDataVaultStatus);
 renderTabs();
 renderWatchlist();
 setInterval(() => fetchMarket(false), 1000);
