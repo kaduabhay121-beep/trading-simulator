@@ -1154,7 +1154,7 @@ class SimulationState:
             pass
 
     def _capture_live_data_vault(self, force=False):
-        """Capture NIFTY/SENSEX candles and real option-chain snapshots during market hours only."""
+        """Capture live NIFTY/SENSEX data during market hours only."""
         if not self.angel.enabled or market_session_status('INDEX') != 'OPEN':
             return {'ok':True,'captured':False,'reason':'MARKET_CLOSED_OR_ANGEL_DISABLED'}
         now=time.time(); minute=int(now//60)
@@ -1165,7 +1165,6 @@ class SimulationState:
         self._persist_live_market_session('NIFTY',nifty)
         self._persist_live_market_session('SENSEX',sensex)
         self.last_local_capture_minute=minute
-        # Option-chain snapshots are deliberately throttled to avoid unnecessary broker calls.
         option_captured=0
         if force or now-self.last_option_capture >= 60:
             for u in ('NIFTY','SENSEX'):
@@ -1181,6 +1180,32 @@ class SimulationState:
                     pass
             self.last_option_capture=now
         return {'ok':True,'captured':True,'minute':minute,'nifty_candles':len(nifty),'sensex_candles':len(sensex),'option_chains':option_captured}
+
+    def _finalize_live_data_vault(self, day=None):
+        """Finalize already-captured in-memory data after market close without broker access.
+        This is intentionally separate from live capture: FINALIZE must remain offline-safe."""
+        day = str(day or datetime.now(IST).date().isoformat())
+        try:
+            with self.lock:
+                nifty=list(self.candles_1m); sensex=list(self.sensex_candles_1m)
+            before_nifty=self._load_historical_dataset('NIFTY','INDEX_1M',60,day,day)
+            before_sensex=self._load_historical_dataset('SENSEX','INDEX_1M',60,day,day)
+            self._persist_live_market_session('NIFTY',nifty,day)
+            self._persist_live_market_session('SENSEX',sensex,day)
+            after_nifty=self._load_historical_dataset('NIFTY','INDEX_1M',60,day,day)
+            after_sensex=self._load_historical_dataset('SENSEX','INDEX_1M',60,day,day)
+            status=self._offline_data_status('ALL',day)
+            return {
+                'ok':True,'finalized':True,'offline_only':True,'market_status':market_session_status('INDEX'),
+                'date':day,
+                'nifty_candles_before':len(before_nifty),'nifty_candles':len(after_nifty),
+                'sensex_candles_before':len(before_sensex),'sensex_candles':len(after_sensex),
+                'option_snapshots':status.get('option_snapshots',0),
+                'ready':status.get('ready',False),
+                'reason':'IN_MEMORY_SESSION_PERSISTED'
+            }
+        except Exception as e:
+            return {'ok':False,'finalized':False,'offline_only':True,'date':day,'error':str(e)}
 
     def _offline_data_status(self, underlying=None, day=None):
         """Return what is locally available without contacting Angel One."""
@@ -2214,10 +2239,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
             r=state._capture_live_data_vault(True)
             return self._send_json(r,200 if r.get('ok') else 400)
         if parsed.path=='/api/offline/finalize':
-            # Finalize writes only already-received candles. It never calls the broker after close.
-            r=state._capture_live_data_vault(True)
-            r['finalized']=True
-            r['market_status']=market_session_status('INDEX')
+            # FINALIZE never calls Angel One. It persists only data already received in memory.
+            p=parse_qs(parsed.query); day=p.get('date',[datetime.now(IST).date().isoformat()])[0]
+            r=state._finalize_live_data_vault(day)
             return self._send_json(r,200 if r.get('ok') else 400)
         if parsed.path=='/api/historical/replay_day':
             p=parse_qs(parsed.query)
