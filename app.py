@@ -1146,7 +1146,8 @@ class SimulationState:
                 return
             day = day or _session_date(rows[-1].get('time'))
             # _init_history may contain prior sessions; the Data Vault stores only today's session.
-            rows=[x for x in rows if _session_date(x.get('time'))==str(day)]
+            day_key = str(day.isoformat() if hasattr(day, 'isoformat') else day)
+            rows=[x for x in rows if str(_session_date(x.get('time'))) == day_key]
             if not rows:
                 return
             self._store_historical_dataset(str(underlying).upper(),'INDEX_1M',60,day,day,rows)
@@ -1673,10 +1674,11 @@ class SimulationState:
                             if not self.sensex_candles_1m or ts>self.sensex_candles_1m[-1]['time']:
                                 p=self.sensex_spot; self.sensex_candles_1m.append({'time':ts,'is_prev_day':False,'open':p,'high':p,'low':p,'close':p,'volume':0})
                             sc=self.sensex_candles_1m[-1]; sc['close']=self.sensex_spot; sc['high']=max(sc['high'],self.sensex_spot); sc['low']=min(sc['low'],self.sensex_spot)
-                        # Persist the current session locally. This path is market-hours only.
-                        try: self._capture_live_data_vault(False)
-                        except Exception: pass
-                        # Push the latest index price directly to connected browsers.
+                    # Persist the current session locally outside the state lock so the
+                    # capture path can safely snapshot data and perform broker I/O.
+                    try: self._capture_live_data_vault(False)
+                    except Exception: pass
+                    # Push the latest index price directly to connected browsers.
                         self._push_tick('NIFTY', self.nifty_spot, self.prev_close, 'NSE', 'INDEX')
                         self._push_tick('SENSEX', self.sensex_spot, self.sensex_prev_close, 'BSE', 'INDEX')
                         # Push actively watched option contracts from the WebSocket cache.
@@ -2054,7 +2056,11 @@ def invalidate_market_cache():
 class Handler(http.server.BaseHTTPRequestHandler):
     def log_message(self,format,*args): return
     def _send_json(self,data,code=200):
-        body=json.dumps(data).encode(); self.send_response(code); self.send_header('Content-Type','application/json'); self.send_header('Access-Control-Allow-Origin','*'); self.send_header('Content-Length',str(len(body))); self.end_headers(); self.wfile.write(body)
+        body=json.dumps(data).encode(); self.send_response(code); self.send_header('Content-Type','application/json'); self.send_header('Access-Control-Allow-Origin','*'); self.send_header('Content-Length',str(len(body))); self.end_headers()
+        try:
+            self.wfile.write(body)
+        except (BrokenPipeError, ConnectionResetError):
+            return
     def do_GET(self):
         parsed=urlparse(self.path)
         if parsed.path in ('/','/index.html'):
@@ -2080,8 +2086,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if parsed.path=='/api/option_chain':
             p=parse_qs(parsed.query); symbol=p.get('symbol',['NIFTY'])[0]; expiry=p.get('expiry',[None])[0]
             try:
-                with state.lock:
-                    chain=state.get_option_chain(symbol,expiry)
+                # get_option_chain may perform broker I/O; never hold the global state
+                # lock while waiting on the network.
+                chain=state.get_option_chain(symbol,expiry)
                 src=chain.get('market_source') or ('Angel One SmartAPI' if state.angel.enabled and chain.get('chain') else 'SIMULATED PAPER CHAIN')
                 err=(chain.get('diagnostics') or {}).get('last_error') or (chain.get('diagnostics') or {}).get('live_error') or ''
                 return self._send_json({'ok':True,**chain,'market_source':src,'nifty_spot':state.nifty_spot,'sensex_spot':state.sensex_spot,'error':err if not chain.get('chain') and src!='SIMULATED PAPER CHAIN' else ''})
@@ -2094,20 +2101,23 @@ class Handler(http.server.BaseHTTPRequestHandler):
             cache_key=(symbol,tf,expiry)
             if state.market_cache.get('key')==cache_key and time.time()-state.market_cache_ts < 0.10:
                 return self._send_json(state.market_cache['data'])
-            with state.lock:
-                market_errors=[]
-                try:
-                    chart=state.get_instrument_chart_data(symbol,tf)
-                except Exception as e:
+            # Chart and option-chain hydration may perform broker I/O. Keep the global
+            # state lock out of those operations so a slow broker response cannot block
+            # the tick loop or every other browser request.
+            market_errors=[]
+            try:
+                chart=state.get_instrument_chart_data(symbol,tf)
+            except Exception as e:
                     chart=state.chart_cache.get((symbol,tf)) if isinstance(state.chart_cache.get((symbol,tf)),dict) else None
                     if not chart: chart={'symbol':symbol,'display_title':symbol,'timeframe':tf,'ltp':state.sensex_spot if 'SENSEX' in symbol.upper() else state.nifty_spot,'candles':[],'countdown':'00:00','ema9':0,'ema15':0,'vwap':0,'vwap_series':[],'ema9_series':[],'ema15_series':[],'strategy_markers':[],'strategy_states':{},'greeks':{'delta':1.0,'gamma':0,'theta':0,'vega':0,'iv':0}}
                     market_errors.append('Chart: '+str(e))
-                try:
-                    chain=state.get_option_chain(symbol,expiry)
-                except Exception as e:
-                    cached_chain=state.live_chain_cache.get((symbol,expiry))
-                    chain=cached_chain[1] if cached_chain else {'chain':[],'expiries':[],'selected_expiry':expiry}
-                    market_errors.append('Option chain: '+str(e))
+            try:
+                chain=state.get_option_chain(symbol,expiry)
+            except Exception as e:
+                cached_chain=state.live_chain_cache.get((symbol,expiry))
+                chain=cached_chain[1] if cached_chain else {'chain':[],'expiries':[],'selected_expiry':expiry}
+                market_errors.append('Option chain: '+str(e))
+            with state.lock:
                 unreal=sum(x.get('pnl',0) for x in state.positions); trades=list(state.closed_trades); wins=sum(1 for t in trades if t['pnl']>0); gp=sum(t['pnl'] for t in trades if t['pnl']>0); gl=abs(sum(t['pnl'] for t in trades if t['pnl']<0)); pf=round(gp/gl,2) if gl else (gp if gp else 0)
                 data={'nifty_spot':state.nifty_spot,'sensex_spot':state.sensex_spot,'nifty_chg':round(state.nifty_spot-state.prev_close,2),'nifty_pct':round((state.nifty_spot-state.prev_close)/state.prev_close*100,2) if state.prev_close else 0,'sensex_chg':round(state.sensex_spot-state.sensex_prev_close,2) if state.sensex_prev_close else 0,'sensex_pct':round((state.sensex_spot-state.sensex_prev_close)/state.sensex_prev_close*100,2) if state.sensex_prev_close else 0,'chart':chart,'chain':chain.get('chain',[]),'expiries':chain.get('expiries',[]),'selected_expiry':chain.get('selected_expiry'),'wallet':{**state.wallet,'unrealized_pnl':round(unreal,2),'net_pnl':round(state.wallet['realized_pnl']+unreal,2)},'analytics':{'win_rate':round(wins/len(trades)*100,1) if trades else 0,'profit_factor':pf,'net_pnl':round(state.wallet['realized_pnl']+unreal,2),'total_trades':len(trades)},'positions':list(state.positions),'pending_orders':list(state.pending_orders),'orders':list(state.orders),'closed_trades':trades[:15],'market_source':'Angel One SmartAPI' if state.angel.enabled else 'Development mode','market_error':' | '.join([x for x in market_errors+[state.angel.last_error if state.angel.enabled else ''] if x]),'bot':state.bot,'bot_positions':len(state._bot_positions())}
                 state.market_cache={'key':cache_key,'data':data}; state.market_cache_ts=time.time(); return self._send_json(data)
