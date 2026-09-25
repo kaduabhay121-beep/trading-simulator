@@ -725,6 +725,38 @@ let longPressTimer = null;
 let hasMovedSignificant = false;
 let touchCoordinates = { x: 0, y: 0 };
 
+// Trading chart interaction state. Crosshair is viewport-only and never changes market state.
+let chartCrosshair = { active:false, x:0, y:0, candleIndex:-1, price:0, time:0 };
+let crosshairPointerId = null;
+function clearChartCrosshair(redraw=true){ chartCrosshair.active=false; chartCrosshair.candleIndex=-1; if(redraw) drawChart(); }
+function updateChartCrosshair(clientX, clientY){
+  if(!canvas || !marketCache?.chart?.candles?.length) return;
+  const rect=canvas.getBoundingClientRect(), x=Math.max(0,Math.min(rect.width,clientX-rect.left)), y=Math.max(68,Math.min(rect.height-24,clientY-rect.top));
+  const total=marketCache.chart.candles.length, visible=Math.max(10,Number(visibleCandleCount||35));
+  const safePan=Math.max(0,Math.min(Math.max(0,total-visible),Number(panOffsetFloat||panOffset||0))), endIdx=total-safePan;
+  const startIdx=Math.max(0,endIdx-visible-1), step=(rect.width-70)/Math.max(visible,1);
+  const idx=Math.max(0,Math.min(total-1,Math.floor(startIdx+x/Math.max(step,1)))), c=marketCache.chart.candles[idx];
+  if(!c) return;
+  chartCrosshair={active:true,x,y,candleIndex:idx,price:getPriceFromY(y),time:Number(c.time||0)}; drawChart();
+}
+function formatCrosshairTime(ts){ if(!ts) return '—'; try{return new Date(Number(ts)*1000).toLocaleString('en-IN',{hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false,timeZone:'Asia/Kolkata'});}catch(_){return '—';} }
+function drawChartCrosshair(ctx,logicalW,logicalH){
+  if(!chartCrosshair.active || chartCrosshair.candleIndex<0) return;
+  const chartRight=logicalW-70, chartTop=68, chartBottom=logicalH-24, total=marketCache?.chart?.candles?.length||0;
+  if(!total) return;
+  const visible=Math.max(10,Number(visibleCandleCount||35)), safePan=Math.max(0,Math.min(Math.max(0,total-visible),Number(panOffsetFloat||panOffset||0))), endIdx=total-safePan;
+  const step=chartRight/Math.max(visible,1), x=chartRight-((endIdx-chartCrosshair.candleIndex)-0.5)*step, y=Math.max(chartTop,Math.min(chartBottom,chartCrosshair.y));
+  ctx.save();ctx.strokeStyle='rgba(148,163,184,.72)';ctx.lineWidth=1;ctx.setLineDash([4,4]);
+  ctx.beginPath();ctx.moveTo(x,chartTop);ctx.lineTo(x,chartBottom);ctx.stroke();ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(chartRight,y);ctx.stroke();ctx.setLineDash([]);
+  const c=marketCache.chart.candles[chartCrosshair.candleIndex]||{}, px=Number(chartCrosshair.price||getPriceFromY(y)), pText=Number.isFinite(px)?px.toFixed(2):'—', tText=formatCrosshairTime(Number(c.time||0));
+  ctx.font='700 10px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif';
+  const pW=Math.max(54,ctx.measureText('₹'+pText).width+12);ctx.fillStyle='#1e293b';ctx.fillRect(chartRight,y-9,pW,18);ctx.fillStyle='#e2e8f0';ctx.fillText('₹'+pText,chartRight+6,y+4);
+  const tW=Math.max(70,ctx.measureText(tText).width+12),tx=Math.max(0,Math.min(chartRight-tW,x-tW/2));ctx.fillStyle='#1e293b';ctx.fillRect(tx,chartBottom,tW,24);ctx.fillStyle='#e2e8f0';ctx.fillText(tText,tx+6,chartBottom+16);
+  const o=Number(c.open),h=Number(c.high),l=Number(c.low),cl=Number(c.close),v=Number(c.volume||0),info=['O '+(Number.isFinite(o)?o.toFixed(2):'—'),'H '+(Number.isFinite(h)?h.toFixed(2):'—'),'L '+(Number.isFinite(l)?l.toFixed(2):'—'),'C '+(Number.isFinite(cl)?cl.toFixed(2):'—'),'V '+(Number.isFinite(v)?Math.round(v):'—')].join('  ');
+  const infoW=Math.min(chartRight-8,Math.max(170,ctx.measureText(info).width+14));ctx.fillStyle='rgba(8,12,20,.94)';ctx.fillRect(8,8,infoW,24);ctx.fillStyle='#cbd5e1';ctx.fillText(info,14,24);ctx.restore();
+}
+
+
 let smoothMinP = null;
 let smoothMaxP = null;
 let historicalChartMode = false;
@@ -845,6 +877,9 @@ viewport.addEventListener('touchstart', e => {
     dragStartX = touchX;
     dragStartY = touchY;
     touchCoordinates = { x: touchX, y: touchY };
+    chartCrosshair.active = true;
+    chartCrosshair.x = touchX;
+    chartCrosshair.y = touchY;
     hasMovedSignificant = false;
 
     clearTimeout(longPressTimer);
@@ -886,6 +921,7 @@ viewport.addEventListener('touchmove', e => {
     if (Math.hypot(touchX - dragStartX, touchY - dragStartY) > 8) {
       hasMovedSignificant = true;
       clearTimeout(longPressTimer);
+      chartCrosshair.active = false;
     }
 
     if (dragMode === 'price_scale_zoom') {
@@ -952,6 +988,7 @@ viewport.addEventListener('wheel', e => {
 viewport.addEventListener('touchend', e => {
   if (e.target && e.target.closest && (e.target.closest('#historicalChartToolbar') || e.target.closest('#livePriceOverlayPill'))) return;
   clearTimeout(longPressTimer);
+  if (e.changedTouches && e.changedTouches[0] && !hasMovedSignificant) updateChartCrosshair(e.changedTouches[0].clientX,e.changedTouches[0].clientY);
   dragMode = 'none';
 });
 
@@ -960,10 +997,14 @@ let mouseLastX = 0;
 let mouseLastY = 0;
 viewport.addEventListener('pointerdown', e => {
   if (e.target && e.target.closest && e.target.closest('#livePriceOverlayPill')) return;
-  if (e.pointerType === 'mouse' && e.button === 0) { mouseDragging = true; mouseLastX = e.clientX; mouseLastY = e.clientY; viewport.setPointerCapture?.(e.pointerId); }
+  if (e.pointerType === 'mouse' && e.button === 0) {
+    crosshairPointerId=e.pointerId;
+    updateChartCrosshair(e.clientX,e.clientY);
+    mouseDragging = true; mouseLastX = e.clientX; mouseLastY = e.clientY; viewport.setPointerCapture?.(e.pointerId); }
 });
 viewport.addEventListener('pointermove', e => {
   if (e.target && e.target.closest && e.target.closest('#livePriceOverlayPill')) return;
+  if (e.pointerType === 'mouse' && marketCache?.chart && !mouseDragging) { updateChartCrosshair(e.clientX,e.clientY); return; }
   if (!mouseDragging || e.pointerType !== 'mouse' || !marketCache?.chart) return;
   e.preventDefault();
   const rect = canvas.getBoundingClientRect();
@@ -1713,6 +1754,7 @@ function applyLiveTick(t) {
       last.close = ch.ltp;
       last.high = Math.max(Number(last.high || ch.ltp), ch.ltp);
       last.low = Math.min(Number(last.low || ch.ltp), ch.ltp);
+      if (Number.isFinite(Number(t.volume)) && Number(t.volume) >= 0) last.volume = Number(t.volume);
     }
     const closes = candles.map(c => Number(c.close || 0));
     ch.ema9_series = calcEmaLocal(closes, 9);
@@ -2611,6 +2653,8 @@ async function saveBotConfig(showMessage=false) {
     return d.bot;
   }catch(e){const msg=document.getElementById('botConfigSaved');if(msg)msg.innerText='⚠ '+(e.message||'Save failed');console.error(e);return null}
 }
+  drawChartCrosshair(ctx, logicalW, logicalH);
+
 function updateBotRiskPreview(){
   const sl=Number(document.getElementById('botSL')?.value||0),tp=Number(document.getElementById('botTP')?.value||0);
   const rr=document.getElementById('botRR'); if(rr) rr.innerText='1 : '+(tp/Math.max(sl,0.1)).toFixed(2);
