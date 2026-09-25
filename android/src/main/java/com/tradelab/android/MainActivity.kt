@@ -19,7 +19,6 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        vm.seedEmptySymbols()
         setContent { TradeLabApp(vm) }
     }
 }
@@ -30,6 +29,7 @@ private fun TradeLabApp(vm: TradeLabViewModel) {
     var symbol by remember { mutableStateOf("NIFTY") }
     var backendUrl by remember { mutableStateOf("") }
     val sessions by vm.sessions.collectAsState()
+    val account by vm.account.collectAsState()
 
     MaterialTheme {
         Scaffold(topBar = {
@@ -84,6 +84,17 @@ private fun TradeLabApp(vm: TradeLabViewModel) {
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth()
                     )
+                }
+                item {
+                    Card {
+                        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Text("Paper Account", style = MaterialTheme.typography.titleLarge)
+                            Text("Balance  ₹" + String.format("%,.2f", account.balance))
+                            Text("Realized P&L  ₹" + String.format("%,.2f", account.realizedPnl))
+                            Text("Used margin  ₹" + String.format("%,.2f", account.usedMargin))
+                            Text("Initial capital  ₹" + String.format("%,.2f", account.initialBalance))
+                        }
+                    }
                 }
                 item {
                     Text("Market Data Vault", style = MaterialTheme.typography.titleLarge)
