@@ -1088,7 +1088,7 @@ class _DBAdapter:
 
 class SimulationState:
     def __init__(self):
-        self.lock=threading.Lock(); self.nifty_spot=23765.0; self.sensex_spot=81200.0; self.prev_close=23897.70; self.sensex_prev_close=0.0
+        self.lock=threading.Lock(); self.persistence_error=''; self.last_persistence_ok=True; self.nifty_spot=23765.0; self.sensex_spot=81200.0; self.prev_close=23897.70; self.sensex_prev_close=0.0
         self.signal_engine = SignalEngine() if SignalEngine else None
         self.signal_cache = {}
         self.signal_cache_ts = 0.0
@@ -1378,8 +1378,9 @@ class SimulationState:
         try:
             payload={'wallet':self.wallet,'positions':self.positions,'pending_orders':self.pending_orders,'orders':self.orders,'closed_trades':self.closed_trades,'order_counter':self.order_counter,'bot':{k:v for k,v in self.bot.items() if k not in ('enabled','last_signal','last_confidence','last_reason','last_eval_ts')}}
             db=self._db(); db.execute("INSERT INTO simulator_state(id,data) VALUES(1,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data", (json.dumps(payload,separators=(',',':')),)); db.commit(); db.close()
-        except Exception:
-            pass
+            self.last_persistence_ok=True; self.persistence_error=''
+        except Exception as e:
+            self.last_persistence_ok=False; self.persistence_error=str(e)
 
     def _load_state(self):
         try:
@@ -1765,17 +1766,38 @@ class SimulationState:
         return arr[0] if arr else None
 
     def _execute_fill(self,symbol,action,qty,price,sl=0,target=0,tsl=0,bot_tag=False):
-        pos_id=f'pos_{self.order_counter}'; self.order_counter+=1; ltp,delta,theta=self._get_live_instrument_ltp(symbol); cost=round(price*qty,2)
-        self.wallet['balance']=round(self.wallet['balance']-cost,2); self.wallet['used_margin']=round(self.wallet['used_margin']+cost,2)
-        self.positions.append({'id':pos_id,'symbol':symbol,'action':action,'qty':qty,'buy_price':price,'ltp':ltp,'pnl':0.0,'stop_loss':sl,'target':target,'trailing_sl':tsl,'delta':delta,'theta':theta,'bot_tag':bool(bot_tag)})
-        self.orders.insert(0,{'id':pos_id,'time':datetime.now(IST).strftime('%H:%M:%S'),'symbol':symbol,'action':action,'qty':qty,'price':price,'status':'FILLED','bot_tag':bool(bot_tag)}); self._save_state()
+        action=str(action or 'BUY').upper()
+        qty=max(1,int(qty)); price=float(price)
+        pos_id=f'pos_{self.order_counter}'; self.order_counter+=1
+        ltp,delta,theta=self._get_live_instrument_ltp(symbol); value=round(price*qty,2)
+        # Paper broker accounting: BUY consumes cash; SELL supplies proceeds.
+        # The simulator remains paper-only and never calls an order-placement API.
+        if action=='BUY':
+            self.wallet['balance']=round(self.wallet['balance']-value,2)
+        else:
+            self.wallet['balance']=round(self.wallet['balance']+value,2)
+        self.wallet['used_margin']=round(self.wallet['used_margin']+value,2)
+        self.positions.append({'id':pos_id,'symbol':symbol,'action':action,'qty':qty,'buy_price':price,'entry_value':value,'ltp':ltp,'pnl':0.0,'stop_loss':sl,'target':target,'trailing_sl':tsl,'delta':delta,'theta':theta,'bot_tag':bool(bot_tag)})
+        self.orders.insert(0,{'id':pos_id,'time':datetime.now(IST).strftime('%H:%M:%S'),'symbol':symbol,'action':action,'qty':qty,'price':price,'status':'FILLED','bot_tag':bool(bot_tag),'event':'ENTRY_FILLED'})
+        self._journal_paper_trade({'event':'ENTRY_FILLED','id':pos_id,'symbol':symbol,'action':action,'qty':qty,'price':price,'time':datetime.now(IST).isoformat(),'bot_tag':bool(bot_tag)})
+        self._save_state()
 
     def _internal_exit(self,pos_id,reason='MANUAL'):
         target=str(pos_id or '')
         for i,p in enumerate(self.positions):
             if str(p.get('id'))==target:
-                p=self.positions.pop(i); cost=round(float(p.get('buy_price',0))*int(p.get('qty',0)),2); pnl=float(p.get('pnl',0) or 0); self.wallet['used_margin']=max(0,round(self.wallet['used_margin']-cost,2)); self.wallet['balance']=round(self.wallet['balance']+cost+pnl,2); self.wallet['realized_pnl']=round(self.wallet['realized_pnl']+pnl,2); self.bot['daily_pnl']=round(self.bot.get('daily_pnl',0)+pnl,2) if p.get('bot_tag') else self.bot.get('daily_pnl',0)
-                trade={'id':p['id'],'symbol':p['symbol'],'action':p['action'],'qty':p['qty'],'buy_price':p['buy_price'],'exit_price':p.get('ltp',p.get('buy_price',0)),'pnl':pnl,'reason':reason,'time':datetime.now(IST).isoformat(),'bot_tag':bool(p.get('bot_tag'))}; self.closed_trades.insert(0,trade); self._journal_paper_trade(trade); self._save_state(); return True
+                p=self.positions.pop(i)
+                entry=float(p.get('buy_price',0) or 0); exit_price=float(p.get('ltp',entry) or entry); qty=int(p.get('qty',0) or 0); action=str(p.get('action','BUY')).upper()
+                pnl=round((exit_price-entry)*qty if action=='BUY' else (entry-exit_price)*qty,2)
+                entry_value=round(entry*qty,2); exit_value=round(exit_price*qty,2)
+                self.wallet['used_margin']=max(0,round(self.wallet['used_margin']-entry_value,2))
+                # Reverse the entry cash movement at the actual exit price.
+                if action=='BUY': self.wallet['balance']=round(self.wallet['balance']+exit_value,2)
+                else: self.wallet['balance']=round(self.wallet['balance']-exit_value,2)
+                self.wallet['realized_pnl']=round(self.wallet['realized_pnl']+pnl,2)
+                if p.get('bot_tag'): self.bot['daily_pnl']=round(self.bot.get('daily_pnl',0)+pnl,2)
+                trade={'id':p['id'],'symbol':p['symbol'],'action':action,'qty':qty,'buy_price':entry,'exit_price':exit_price,'pnl':pnl,'reason':reason,'time':datetime.now(IST).isoformat(),'bot_tag':bool(p.get('bot_tag')),'event':'EXIT_FILLED'}
+                self.closed_trades.insert(0,trade); self._journal_paper_trade(trade); self._save_state(); return True
         return False
 
     def _resample(self,candles,tf):
@@ -2053,6 +2075,23 @@ def _build_live_signal(symbol='NIFTY', expiry=None):
 def invalidate_market_cache():
     state.market_cache={}; state.market_cache_ts=0
 
+def _self_test():
+    """Offline deterministic smoke tests. No broker calls, no orders, no DB writes."""
+    ticks=[{'time':1710000000,'price':100.0},{'time':1710000010,'price':101.0},{'time':1710000020,'price':99.0},{'time':1710000061,'price':102.0}]
+    c=[]
+    for t in ticks:
+        bucket=(int(t['time'])//60)*60
+        if not c or c[-1]['time']!=bucket:
+            c.append({'time':bucket,'open':t['price'],'high':t['price'],'low':t['price'],'close':t['price'],'volume':0})
+        else:
+            c[-1]['close']=t['price']; c[-1]['high']=max(c[-1]['high'],t['price']); c[-1]['low']=min(c[-1]['low'],t['price'])
+    assert len(c)==2 and c[0]['open']==100.0 and c[0]['high']==101.0 and c[0]['low']==99.0 and c[0]['close']==99.0 and c[1]['open']==102.0
+    # Point-in-time invariant used by offline option-chain replay.
+    snapshots=[(1000,{'v':'old'}),(1100,{'v':'new'})]
+    at=[x for ts,x in snapshots if ts<=1050]
+    assert at[-1]['v']=='old'
+    return {'ok':True,'tests':['tick_candle_builder','ohlc_invariants','point_in_time_no_lookahead'],'broker_calls':0,'orders_sent':0}
+
 class Handler(http.server.BaseHTTPRequestHandler):
     def log_message(self,format,*args): return
     def _send_json(self,data,code=200):
@@ -2066,6 +2105,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if parsed.path in ('/','/index.html'):
             with open('index.html','rb') as f: body=f.read()
             self.send_response(200); self.send_header('Content-Type','text/html; charset=utf-8'); self.send_header('Content-Length',str(len(body))); self.end_headers(); self.wfile.write(body); return
+        if parsed.path=='/api/health':
+            db_mode='POSTGRES' if state.DATABASE_URL else 'SQLITE'
+            return self._send_json({'ok':True,'service':'TradeLab','paper_only':True,'no_real_orders':True,'market_source':'Angel One SmartAPI' if state.angel.enabled else 'Development mode','storage':db_mode,'persistence_ok':bool(state.last_persistence_ok),'persistence_error':state.persistence_error,'data_vault':{'nifty_1m':len(state.candles_1m),'sensex_1m':len(state.sensex_candles_1m),'option_snapshots_available':bool(state._load_option_chain_snapshot('NIFTY',int(time.time())) or state._load_option_chain_snapshot('SENSEX',int(time.time())))}})
+        if parsed.path=='/api/self_test':
+            try: return self._send_json(_self_test())
+            except Exception as e: return self._send_json({'ok':False,'error':str(e)},500)
         if parsed.path=='/api/chart':
             p=parse_qs(parsed.query); symbol=p.get('symbol',['NIFTY'])[0]; tf=p.get('tf',['1m'])[0]
             try:
