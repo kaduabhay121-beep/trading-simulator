@@ -8,21 +8,55 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 
 class TradeLabViewModel(app: Application) : AndroidViewModel(app) {
-    private val dao = TradeLabDatabase.get(app).marketSessionDao()
+    private val db = TradeLabDatabase.get(app)
+    private val sessionDao = db.marketSessionDao()
+    private val paperDao = db.paperTradingDao()
+
     private val _sessions = MutableStateFlow<List<MarketSessionEntity>>(emptyList())
     val sessions: StateFlow<List<MarketSessionEntity>> = _sessions
 
-    init { refresh() }
+    private val _account = MutableStateFlow(PaperAccountEntity())
+    val account: StateFlow<PaperAccountEntity> = _account
 
-    fun refresh() {
-        viewModelScope.launch { _sessions.value = dao.all() }
+    init {
+        viewModelScope.launch {
+            ensureAccount()
+            refresh()
+        }
     }
 
-    fun seedEmptySymbols() {
+    private suspend fun ensureAccount() {
+        val existing = paperDao.account()
+        if (existing == null) {
+            val fresh = PaperAccountEntity()
+            paperDao.saveAccount(fresh)
+            _account.value = fresh
+        } else {
+            _account.value = existing
+        }
+    }
+
+    fun refresh() {
         viewModelScope.launch {
-            dao.upsert(MarketSessionEntity("—", "NIFTY", "No captured session yet", 0, 0))
-            dao.upsert(MarketSessionEntity("—", "SENSEX", "No captured session yet", 0, 0))
-            refresh()
+            _sessions.value = sessionDao.all()
+            _account.value = paperDao.account() ?: PaperAccountEntity()
+        }
+    }
+
+    fun resetPaperAccount() {
+        viewModelScope.launch {
+            val fresh = PaperAccountEntity()
+            paperDao.saveAccount(fresh)
+            paperDao.clearOrders()
+            paperDao.clearPositions()
+            _account.value = fresh
+        }
+    }
+
+    fun clearLocalSessions() {
+        viewModelScope.launch {
+            sessionDao.clear()
+            _sessions.value = emptyList()
         }
     }
 }
