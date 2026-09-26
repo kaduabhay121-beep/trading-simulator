@@ -761,7 +761,10 @@ function updateChartCrosshair(clientX, clientY){
   const startIdx=Math.max(0,endIdx-visible-1), step=(rect.width-70)/Math.max(visible,1);
   const idx=Math.max(0,Math.min(total-1,Math.floor(startIdx+x/Math.max(step,1)))), c=marketCache.chart.candles[idx];
   if(!c) return;
-  chartCrosshair={active:true,x,y,candleIndex:idx,price:getPriceFromY(y),time:Number(c.time||0)}; drawChart();
+  chartCrosshair={active:true,x,y,candleIndex:idx,price:getPriceFromY(y),time:Number(c.time||0)};
+  const limitBtn=document.getElementById('chartCrosshairLimit');
+  if(limitBtn){limitBtn.disabled=false;limitBtn.textContent='LIMIT @ ₹'+Number(chartCrosshair.price).toFixed(2);}
+  drawChart();
 }
 function formatCrosshairTime(ts){ if(!ts) return '—'; try{return new Date(Number(ts)*1000).toLocaleString('en-IN',{hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false,timeZone:'Asia/Kolkata'});}catch(_){return '—';} }
 function drawChartCrosshair(ctx,logicalW,logicalH){
@@ -887,7 +890,7 @@ function getPriceFromY(pixelY) {
 
 // Touch Gestures
 viewport.addEventListener('touchstart', e => {
-  if (e.target && e.target.closest && (e.target.closest('#historicalChartToolbar') || e.target.closest('#livePriceOverlayPill'))) return;
+  if (e.target && e.target.closest && (e.target.closest('#historicalChartToolbar') || e.target.closest('#livePriceOverlayPill') || e.target.closest('#chartCrosshairControls'))) return;
   if (e.touches.length === 2) {
     e.preventDefault();
     clearTimeout(longPressTimer);
@@ -1034,7 +1037,7 @@ let mouseDragging = false;
 let mouseLastX = 0;
 let mouseLastY = 0;
 viewport.addEventListener('pointerdown', e => {
-  if (e.target && e.target.closest && e.target.closest('#livePriceOverlayPill')) return;
+  if (e.target && e.target.closest && e.target.closest('#livePriceOverlayPill') || e.target.closest('#chartCrosshairControls')) return;
   if (e.pointerType === 'mouse' && e.button === 0) {
     crosshairPointerId=e.pointerId;
     updateChartCrosshair(e.clientX,e.clientY);
