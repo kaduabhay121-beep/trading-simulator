@@ -971,6 +971,8 @@ viewport.addEventListener('touchmove', e => {
       }
       if (redraw) drawChart();
     }
+    // Keep the crosshair attached to the finger while the chart is being moved.
+    updateChartCrosshair(e.touches[0].clientX,e.touches[0].clientY);
   }
 }, { passive: false });
 
@@ -1021,6 +1023,7 @@ viewport.addEventListener('pointermove', e => {
   const pRange = (smoothMaxP && smoothMinP) ? (smoothMaxP-smoothMinP) : 80;
   verticalPanOffset += dy * (pRange / Math.max(rect.height-92,50));
   mouseLastX=e.clientX; mouseLastY=e.clientY; drawChart();
+  updateChartCrosshair(e.clientX,e.clientY);
 });
 viewport.addEventListener('pointerup', () => { mouseDragging=false; });
 viewport.addEventListener('pointercancel', () => { mouseDragging=false; });
