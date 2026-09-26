@@ -751,11 +751,15 @@ function drawChartCrosshair(ctx,logicalW,logicalH){
   const wholePan=Math.floor(safePan), panFrac=safePan-wholePan, endIdx=total-wholePan;
   const startIdx=Math.max(0,endIdx-visible-(panFrac>0?1:0)), visibleLen=Math.max(1,endIdx-startIdx);
   const step=chartRight/visibleLen, x=(chartCrosshair.candleIndex-startIdx)*step+step/2-panFrac*step, y=Math.max(chartTop,Math.min(chartBottom,chartCrosshair.y));
-  ctx.save();ctx.strokeStyle='rgba(148,163,184,.72)';ctx.lineWidth=1;ctx.setLineDash([4,4]);
+  ctx.save();ctx.strokeStyle='rgba(100,116,139,.95)';ctx.lineWidth=1.2;ctx.setLineDash([5,4]);
   ctx.beginPath();ctx.moveTo(x,chartTop);ctx.lineTo(x,chartBottom);ctx.stroke();ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(chartRight,y);ctx.stroke();ctx.setLineDash([]);
   const c=marketCache.chart.candles[chartCrosshair.candleIndex]||{}, px=Number(chartCrosshair.price||getPriceFromY(y)), pText=Number.isFinite(px)?px.toFixed(2):'—', tText=formatCrosshairTime(Number(c.time||0));
   ctx.font='700 10px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif';
-  const pW=Math.max(54,ctx.measureText('₹'+pText).width+12);ctx.fillStyle='#1e293b';ctx.fillRect(chartRight,y-9,pW,18);ctx.fillStyle='#e2e8f0';ctx.fillText('₹'+pText,chartRight+6,y+4);
+  // Price-scale tag doubles as the visible limit-order affordance, like the reference chart.
+  const tagW=69,tagH=22,tagX=logicalW-tagW,tagY=Math.max(chartTop,Math.min(chartBottom-tagH,y-tagH/2));
+  ctx.fillStyle='#111827';ctx.fillRect(tagX,tagY,tagW,tagH);ctx.strokeStyle='#cbd5e1';ctx.lineWidth=1;ctx.strokeRect(tagX,tagY,tagW,tagH);
+  ctx.beginPath();ctx.fillStyle='#334155';ctx.arc(tagX+10,tagY+tagH/2,6,0,Math.PI*2);ctx.fill();ctx.strokeStyle='#e2e8f0';ctx.lineWidth=1;ctx.beginPath();ctx.moveTo(tagX+7,tagY+tagH/2);ctx.lineTo(tagX+13,tagY+tagH/2);ctx.moveTo(tagX+10,tagY+tagH/2-3);ctx.lineTo(tagX+10,tagY+tagH/2+3);ctx.stroke();
+  ctx.fillStyle='#f8fafc';ctx.textAlign='left';ctx.fillText(pText,tagX+20,tagY+14);
   const tW=Math.max(70,ctx.measureText(tText).width+12),tx=Math.max(0,Math.min(chartRight-tW,x-tW/2));ctx.fillStyle='#1e293b';ctx.fillRect(tx,chartBottom,tW,24);ctx.fillStyle='#e2e8f0';ctx.fillText(tText,tx+6,chartBottom+16);
   const o=Number(c.open),h=Number(c.high),l=Number(c.low),cl=Number(c.close),v=Number(c.volume||0),info=['O '+(Number.isFinite(o)?o.toFixed(2):'—'),'H '+(Number.isFinite(h)?h.toFixed(2):'—'),'L '+(Number.isFinite(l)?l.toFixed(2):'—'),'C '+(Number.isFinite(cl)?cl.toFixed(2):'—'),'V '+(Number.isFinite(v)?Math.round(v):'—')].join('  ');
   const infoW=Math.min(chartRight-8,Math.max(170,ctx.measureText(info).width+14));ctx.fillStyle='rgba(8,12,20,.94)';ctx.fillRect(8,8,infoW,24);ctx.fillStyle='#cbd5e1';ctx.fillText(info,14,24);ctx.restore();
