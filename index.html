@@ -46,6 +46,10 @@ window.onerror = function(msg, src, line) { alert("FATAL JS ERROR: " + msg + " (
   /* Chart Viewport */
   .chart-viewport { position: relative; flex: 1; width: 100%; background: #05070a; overflow: hidden; touch-action: none !important; user-select: none; -webkit-user-select: none; } .offline-engine-panel{position:absolute;top:8px;right:42px;z-index:45;display:none;min-width:270px;max-width:calc(100% - 54px);background:rgba(8,12,20,.96);border:1px solid #29405e;border-radius:9px;padding:7px;box-shadow:0 8px 24px rgba(0,0,0,.35);font-size:9px;pointer-events:auto}.offline-engine-panel.open{display:block}.offline-engine-head{display:flex;justify-content:space-between;gap:8px;align-items:center;font-weight:900;letter-spacing:.5px}.offline-engine-status{color:#93c5fd;font-size:8px}.offline-engine-controls{display:flex;gap:4px;flex-wrap:wrap;margin-top:5px}.offline-engine-controls button,.offline-engine-controls select{height:25px;border:1px solid #334155;background:#111827;color:#e5e7eb;border-radius:5px;padding:0 7px;font-size:8px;font-weight:900}.offline-engine-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:4px;margin-top:5px}.offline-engine-cell{background:#0b111b;border:1px solid #1d2a3b;border-radius:5px;padding:4px}.offline-engine-cell span{display:block;color:#64748b;font-size:7px}.offline-engine-cell b{font-size:9px}.offline-engine-decision{margin-top:5px;padding:5px;background:#0b111b;border:1px solid #1d2a3b;border-radius:5px;line-height:1.35;color:#cbd5e1}.offline-engine-decision .buy{color:#86efac}.offline-engine-decision .sell{color:#fca5a5}.offline-engine-decision .hold{color:#fbbf24}.offline-engine-tick{position:absolute;right:8px;top:42px;z-index:44;display:none;padding:4px 6px;border-radius:5px;background:rgba(8,12,20,.9);border:1px solid #29405e;color:#93c5fd;font:900 9px monospace}.offline-engine-tick.open{display:block}
   #chartCanvas { width: 100%; height: 100%; display: block; touch-action: none !important; }
+  #chartCrosshairControls{position:absolute;right:8px;top:8px;z-index:46;display:flex;gap:6px;align-items:center;max-width:calc(100% - 16px);touch-action:manipulation}
+  #chartCrosshairControls button{border:1px solid #475569;border-radius:7px;background:rgba(15,23,42,.96);color:#e2e8f0;padding:7px 9px;font:700 11px system-ui;box-shadow:0 2px 8px #0005}
+  #chartCrosshairToggle.active{background:#0f766e;border-color:#2dd4bf;color:#fff}
+  #chartCrosshairLimit:disabled{opacity:.45}
 
   /* Fast Trade Widget */
   .onchart-order-widget { position: absolute; top: 8px; left: 8px; z-index: 10; pointer-events: auto !important; }
@@ -254,6 +258,10 @@ canvas { width: 100% !important; height: 100% !important; display: block; }
 
     <!-- Canvas Viewport -->
     <div class="chart-viewport" id="chartViewport">
+      <div id="chartCrosshairControls">
+        <button type="button" id="chartCrosshairToggle" onclick="toggleChartCrosshairMode()">⌖ CROSSHAIR OFF</button>
+        <button type="button" id="chartCrosshairLimit" onclick="openLimitAtCrosshair()" disabled>LIMIT @ PRICE</button>
+      </div>
       <!-- Historical Chart Trading controls live on the chart only -->
       <div id="historicalChartToolbar" class="historical-chart-toolbar">
         <div id="historicalChartHandle" class="hist-ct-handle" title="Drag to move historical controls"><span>⋮⋮ HISTORICAL CHART TRADING · V2.12.1</span><span class="hist-ct-actions"><button type="button" id="histMinBtn" class="hist-ct-icon" title="Minimize" aria-label="Minimize">—</button><button type="button" id="histMaxBtn" class="hist-ct-icon" title="Maximize" aria-label="Maximize">□</button></span></div>
@@ -727,7 +735,23 @@ let touchCoordinates = { x: 0, y: 0 };
 
 // Trading chart interaction state. Crosshair is viewport-only and never changes market state.
 let chartCrosshair = { active:false, x:0, y:0, candleIndex:-1, price:0, time:0 };
+let crosshairMode = false;
 let crosshairPointerId = null;
+function toggleChartCrosshairMode(force){
+  crosshairMode = typeof force === 'boolean' ? force : !crosshairMode;
+  const btn=document.getElementById('chartCrosshairToggle');
+  if(btn){btn.classList.toggle('active',crosshairMode);btn.textContent=crosshairMode?'⌖ CROSSHAIR ON':'⌖ CROSSHAIR OFF';}
+  if(!crosshairMode) dragMode='none';
+  drawChart();
+}
+function openLimitAtCrosshair(){
+  if(!chartCrosshair.active || !Number.isFinite(Number(chartCrosshair.price)) || Number(chartCrosshair.price)<=0){
+    const btn=document.getElementById('chartCrosshairToggle');
+    if(btn){btn.textContent='⌖ SELECT PRICE FIRST';setTimeout(()=>{if(btn)btn.textContent=crosshairMode?'⌖ CROSSHAIR ON':'⌖ CROSSHAIR OFF';},1200);}
+    return;
+  }
+  openChartLimitModal(Number(chartCrosshair.price));
+}
 function clearChartCrosshair(redraw=true){ chartCrosshair.active=false; chartCrosshair.candleIndex=-1; if(redraw) drawChart(); }
 function updateChartCrosshair(clientX, clientY){
   if(!canvas || !marketCache?.chart?.candles?.length) return;
@@ -882,6 +906,14 @@ viewport.addEventListener('touchstart', e => {
     chartCrosshair.y = touchY;
     hasMovedSignificant = false;
 
+    if(crosshairMode){
+      e.preventDefault();
+      dragMode='crosshair';
+      updateChartCrosshair(e.touches[0].clientX,e.touches[0].clientY);
+      clearTimeout(longPressTimer);
+      return;
+    }
+
     clearTimeout(longPressTimer);
     longPressTimer = setTimeout(() => {
       if (!hasMovedSignificant) {
@@ -914,6 +946,12 @@ viewport.addEventListener('touchmove', e => {
       drawChart();
     }
   } else if (e.touches.length === 1 && marketCache && marketCache.chart) {
+    if(crosshairMode){
+      e.preventDefault();
+      clearTimeout(longPressTimer);
+      updateChartCrosshair(e.touches[0].clientX,e.touches[0].clientY);
+      return;
+    }
     const rect = canvas.getBoundingClientRect();
     const touchX = e.touches[0].clientX - rect.left;
     const touchY = e.touches[0].clientY - rect.top;
@@ -1000,6 +1038,7 @@ viewport.addEventListener('pointerdown', e => {
   if (e.pointerType === 'mouse' && e.button === 0) {
     crosshairPointerId=e.pointerId;
     updateChartCrosshair(e.clientX,e.clientY);
+    if(crosshairMode){mouseDragging=false;return;}
     mouseDragging = true; mouseLastX = e.clientX; mouseLastY = e.clientY; viewport.setPointerCapture?.(e.pointerId); }
 });
 viewport.addEventListener('pointermove', e => {
@@ -1026,7 +1065,6 @@ let lomAction = 'BUY';
 
 function openChartLimitModal(targetPrice) {
   if (!marketCache || !marketCache.chart) return;
-  playSound('ORDER_PLACED');
   
   var isSensex = currentChartSymbol.includes("SENSEX");
   const formattedPrice = isSensex || currentChartSymbol !== 'NIFTY' ? targetPrice.toFixed(2) : targetPrice.toFixed(1);
