@@ -1031,7 +1031,8 @@ function openChartLimitModal(targetPrice) {
   var isSensex = currentChartSymbol.includes("SENSEX");
   const formattedPrice = isSensex || currentChartSymbol !== 'NIFTY' ? targetPrice.toFixed(2) : targetPrice.toFixed(1);
   document.getElementById('lomSymbolTitle').innerText = `${marketCache.chart.display_title} (LIMIT)`;
-  document.getElementById('lomCurrentLTP').innerText = `₹${marketCache.chart.ltp.toFixed(2)}`;
+  const currentLtp = Number(marketCache.chart.ltp ?? marketCache.chart.close ?? targetPrice);
+  document.getElementById('lomCurrentLTP').innerText = Number.isFinite(currentLtp) ? `₹${currentLtp.toFixed(2)}` : '₹—';
   document.getElementById('inputLomPrice').value = formattedPrice;
 
   const numP = parseFloat(formattedPrice);
@@ -1164,7 +1165,8 @@ function setTradeMode(mode) {
   const lmtInput = document.getElementById('inputLimitPriceDirect');
   lmtInput.style.display = mode === 'LIMIT' ? 'inline-block' : 'none';
   if (mode === 'LIMIT' && marketCache && !lmtInput.value) {
-    lmtInput.value = marketCache.chart.ltp.toFixed(1);
+    const ltp = Number(marketCache.chart.ltp ?? marketCache.chart.close);
+    lmtInput.value = Number.isFinite(ltp) ? ltp.toFixed(1) : '';
   }
   document.getElementById('btnBuyLabel').innerText = mode === 'LIMIT' ? 'BUY LMT' : 'BUY';
   document.getElementById('btnSellLabel').innerText = mode === 'LIMIT' ? 'SELL LMT' : 'SELL';
