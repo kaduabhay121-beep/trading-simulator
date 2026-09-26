@@ -735,9 +735,9 @@ function updateChartCrosshair(clientX, clientY){
   if(!canvas || !marketCache?.chart?.candles?.length) return;
   const rect=canvas.getBoundingClientRect(), x=Math.max(0,Math.min(rect.width,clientX-rect.left)), y=Math.max(68,Math.min(rect.height-24,clientY-rect.top));
   const total=marketCache.chart.candles.length, visible=Math.max(10,Number(visibleCandleCount||35));
-  const safePan=Math.max(0,Math.min(Math.max(0,total-visible),Number(panOffsetFloat||panOffset||0))), endIdx=total-safePan;
-  const startIdx=Math.max(0,endIdx-visible-1), step=(rect.width-70)/Math.max(visible,1);
-  const idx=Math.max(0,Math.min(total-1,Math.floor(startIdx+x/Math.max(step,1)))), c=marketCache.chart.candles[idx];
+  const safePan=Math.max(0,Math.min(Math.max(0,total-visible),Number(panOffsetFloat||panOffset||0))), wholePan=Math.floor(safePan), panFrac=safePan-wholePan, endIdx=total-wholePan;
+  const startIdx=Math.max(0,endIdx-visible-(panFrac>0?1:0)), visibleLen=Math.max(1,endIdx-startIdx), step=(rect.width-70)/visibleLen;
+  const idx=Math.max(0,Math.min(total-1,startIdx+Math.floor((x+panFrac*step)/Math.max(step,1)))), c=marketCache.chart.candles[idx];
   if(!c) return;
   chartCrosshair={active:true,x,y,candleIndex:idx,price:getPriceFromY(y),time:Number(c.time||0)};
   drawChart();
@@ -747,8 +747,10 @@ function drawChartCrosshair(ctx,logicalW,logicalH){
   if(!chartCrosshair.active || chartCrosshair.candleIndex<0) return;
   const chartRight=logicalW-70, chartTop=68, chartBottom=logicalH-24, total=marketCache?.chart?.candles?.length||0;
   if(!total) return;
-  const visible=Math.max(10,Number(visibleCandleCount||35)), safePan=Math.max(0,Math.min(Math.max(0,total-visible),Number(panOffsetFloat||panOffset||0))), endIdx=total-safePan;
-  const step=chartRight/Math.max(visible,1), x=chartRight-((endIdx-chartCrosshair.candleIndex)-0.5)*step, y=Math.max(chartTop,Math.min(chartBottom,chartCrosshair.y));
+  const visible=Math.max(10,Number(visibleCandleCount||35)), safePan=Math.max(0,Math.min(Math.max(0,total-visible),Number(panOffsetFloat||panOffset||0)));
+  const wholePan=Math.floor(safePan), panFrac=safePan-wholePan, endIdx=total-wholePan;
+  const startIdx=Math.max(0,endIdx-visible-(panFrac>0?1:0)), visibleLen=Math.max(1,endIdx-startIdx);
+  const step=chartRight/visibleLen, x=(chartCrosshair.candleIndex-startIdx)*step+step/2-panFrac*step, y=Math.max(chartTop,Math.min(chartBottom,chartCrosshair.y));
   ctx.save();ctx.strokeStyle='rgba(148,163,184,.72)';ctx.lineWidth=1;ctx.setLineDash([4,4]);
   ctx.beginPath();ctx.moveTo(x,chartTop);ctx.lineTo(x,chartBottom);ctx.stroke();ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(chartRight,y);ctx.stroke();ctx.setLineDash([]);
   const c=marketCache.chart.candles[chartCrosshair.candleIndex]||{}, px=Number(chartCrosshair.price||getPriceFromY(y)), pText=Number.isFinite(px)?px.toFixed(2):'—', tText=formatCrosshairTime(Number(c.time||0));
@@ -833,35 +835,18 @@ function resizeCanvas() {
 window.addEventListener('resize', resizeCanvas);
 
 function getPriceFromY(pixelY) {
-  if (!marketCache || !marketCache.chart) return 0;
-  const allCandles = marketCache.chart.candles;
-  if (!allCandles.length) return 0;
-
-  const chartTop = 68;
-  const timeAxisHeight = 24;
-  const chartBottom = (canvas.height / (window.devicePixelRatio || 1)) - timeAxisHeight;
-  const chartHeight = chartBottom - chartTop;
-
-  let minP = Math.min(...allCandles.map(c => c.low));
-  let maxP = Math.max(...allCandles.map(c => c.high));
-
-    const matchingPos = historicalChartMode && historicalReplay?.position ? {buy_price:Number(historicalReplay.position.entry),ltp:Number(historicalCurrentCandle()?.close||historicalReplay.position.entry)} : ((typeof findMatchingPosition === 'function') ? findMatchingPosition() : null);
-  if (matchingPos && matchingPos.buy_price > 0) {
-    const avgP = (minP + maxP) / 2;
-    if (Math.abs(matchingPos.buy_price - avgP) / avgP < 0.35) {
-      minP = Math.min(minP, matchingPos.buy_price);
-      maxP = Math.max(maxP, matchingPos.buy_price);
-    }
+  if (!marketCache?.chart?.candles?.length || !canvas) return 0;
+  const dpr=window.devicePixelRatio||1;
+  const chartTop=68, chartBottom=canvas.height/dpr-24, chartHeight=Math.max(chartBottom-chartTop,1);
+  let minP=Number(smoothMinP), maxP=Number(smoothMaxP);
+  if(!Number.isFinite(minP)||!Number.isFinite(maxP)||maxP<=minP){
+    const candles=marketCache.chart.candles;
+    minP=Math.min(...candles.map(c=>Number(c.low)).filter(Number.isFinite));
+    maxP=Math.max(...candles.map(c=>Number(c.high)).filter(Number.isFinite));
   }
-
-  const midP = (minP + maxP) / 2;
-  const span = ((maxP - minP) / 2 || 1) * priceScaleZoomFactor;
-  minP = midP - span + verticalPanOffset;
-  maxP = midP + span + verticalPanOffset;
-
-  const clampedY = Math.max(chartTop, Math.min(chartBottom, pixelY));
-  const price = maxP - ((clampedY - chartTop) / chartHeight) * (maxP - minP);
-  return Math.max(0.5, price);
+  if(!Number.isFinite(minP)||!Number.isFinite(maxP)||maxP<=minP)return 0;
+  const y=Math.max(chartTop,Math.min(chartBottom,Number(pixelY)));
+  return maxP-((y-chartTop)/chartHeight)*(maxP-minP);
 }
 
 // Touch Gestures
