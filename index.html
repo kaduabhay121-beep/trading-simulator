@@ -2653,8 +2653,6 @@ async function saveBotConfig(showMessage=false) {
     return d.bot;
   }catch(e){const msg=document.getElementById('botConfigSaved');if(msg)msg.innerText='⚠ '+(e.message||'Save failed');console.error(e);return null}
 }
-  drawChartCrosshair(ctx, logicalW, logicalH);
-
 function updateBotRiskPreview(){
   const sl=Number(document.getElementById('botSL')?.value||0),tp=Number(document.getElementById('botTP')?.value||0);
   const rr=document.getElementById('botRR'); if(rr) rr.innerText='1 : '+(tp/Math.max(sl,0.1)).toFixed(2);
