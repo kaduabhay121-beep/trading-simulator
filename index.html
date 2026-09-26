@@ -728,8 +728,11 @@ let hasMovedSignificant = false;
 let touchCoordinates = { x: 0, y: 0 };
 
 // Trading chart interaction state. Crosshair is viewport-only and never changes market state.
-let chartCrosshair = { active:true, x:0, y:90, candleIndex:-1, price:0, time:0 };
+let chartCrosshair = { active:false, x:0, y:90, candleIndex:-1, price:0, time:0 };
 let crosshairPointerId = null;
+let crosshairHoldTimer = null;
+let crosshairTouchMode = false;
+let crosshairWasActiveAtTouchStart = false;
 function clearChartCrosshair(redraw=true){ chartCrosshair.active=false; chartCrosshair.candleIndex=-1; if(redraw) drawChart(); }
 function updateChartCrosshair(clientX, clientY){
   if(!canvas || !marketCache?.chart?.candles?.length) return;
@@ -750,7 +753,7 @@ function drawChartCrosshair(ctx,logicalW,logicalH){
   const visible=Math.max(10,Number(visibleCandleCount||35)), safePan=Math.max(0,Math.min(Math.max(0,total-visible),Number(panOffsetFloat||panOffset||0)));
   const wholePan=Math.floor(safePan), panFrac=safePan-wholePan, endIdx=total-wholePan;
   const startIdx=Math.max(0,endIdx-visible-(panFrac>0?1:0)), visibleLen=Math.max(1,endIdx-startIdx);
-  const step=chartRight/visibleLen, x=(chartCrosshair.candleIndex-startIdx)*step+step/2-panFrac*step, y=Math.max(chartTop,Math.min(chartBottom,chartCrosshair.y));
+  const step=chartRight/visibleLen, x=Math.max(0,Math.min(chartRight,(chartCrosshair.candleIndex-startIdx)*step+step/2-panFrac*step)), y=Math.max(chartTop,Math.min(chartBottom-1,chartCrosshair.y));
   ctx.save();ctx.strokeStyle='rgba(100,116,139,.95)';ctx.lineWidth=1.2;ctx.setLineDash([5,4]);
   ctx.beginPath();ctx.moveTo(x,chartTop);ctx.lineTo(x,chartBottom);ctx.stroke();ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(chartRight,y);ctx.stroke();ctx.setLineDash([]);
   const c=marketCache.chart.candles[chartCrosshair.candleIndex]||{}, px=Number(chartCrosshair.price||getPriceFromY(y)), pText=Number.isFinite(px)?px.toFixed(2):'—', tText=formatCrosshairTime(Number(c.time||0));
@@ -856,115 +859,52 @@ function getPriceFromY(pixelY) {
 // Touch Gestures
 viewport.addEventListener('touchstart', e => {
   if (e.target && e.target.closest && (e.target.closest('#historicalChartToolbar') || e.target.closest('#livePriceOverlayPill') || e.target.closest('#chartCrosshairControls'))) return;
+  clearTimeout(crosshairHoldTimer);
   if (e.touches.length === 2) {
-    e.preventDefault();
-    clearTimeout(longPressTimer);
-    dragMode = 'pinch';
-    pinchStartDist = Math.hypot(e.touches[0].clientX - e.touches[1].clientX, e.touches[0].clientY - e.touches[1].clientY);
-    pinchStartCount = visibleCandleCount;
-  } else if (e.touches.length === 1) {
-    const rect = canvas.getBoundingClientRect();
-    const touchX = e.touches[0].clientX - rect.left;
-    const touchY = e.touches[0].clientY - rect.top;
-    dragStartX = touchX;
-    dragStartY = touchY;
-    touchCoordinates = { x: touchX, y: touchY };
-    chartCrosshair.active = true;
-    chartCrosshair.x = touchX;
-    chartCrosshair.y = touchY;
-    hasMovedSignificant = false;
-
-    updateChartCrosshair(e.touches[0].clientX,e.touches[0].clientY);
-    clearTimeout(longPressTimer);
-
-    const logicalW = canvas.width / (window.devicePixelRatio || 1);
-    if (touchX >= logicalW - 70) {
-      dragMode = 'price_scale_zoom';
-    } else if (touchY >= (canvas.height / (window.devicePixelRatio || 1)) - 24) {
-      dragMode = 'time_row_zoom';
-    } else {
-      dragMode = 'chart_pan';
-    }
+    e.preventDefault(); clearTimeout(longPressTimer); dragMode='pinch'; crosshairTouchMode=false;
+    pinchStartDist=Math.hypot(e.touches[0].clientX-e.touches[1].clientX,e.touches[0].clientY-e.touches[1].clientY);
+    pinchStartCount=visibleCandleCount; return;
   }
-}, { passive: false });
+  if(e.touches.length!==1)return;
+  const rect=canvas.getBoundingClientRect(),t=e.touches[0],touchX=t.clientX-rect.left,touchY=t.clientY-rect.top;
+  dragStartX=touchX;dragStartY=touchY;touchCoordinates={x:touchX,y:touchY};hasMovedSignificant=false;
+  crosshairWasActiveAtTouchStart=!!chartCrosshair.active;crosshairTouchMode=false;
+  const logicalW=canvas.width/(window.devicePixelRatio||1);
+  if(touchX>=logicalW-70)dragMode='price_scale_zoom';
+  else if(touchY>=rect.height-24)dragMode='time_row_zoom';
+  else dragMode='chart_pan';
+  if(crosshairWasActiveAtTouchStart){
+    clearChartCrosshair(false);dragMode='dismiss_crosshair';
+  }else if(touchX<logicalW-70&&touchY>=68&&touchY<rect.height-24){
+    crosshairHoldTimer=setTimeout(()=>{crosshairTouchMode=true;dragMode='crosshair';updateChartCrosshair(t.clientX,t.clientY);},450);
+  }
+},{passive:false});
 
 viewport.addEventListener('touchmove', e => {
-  if (e.target && e.target.closest && (e.target.closest('#historicalChartToolbar') || e.target.closest('#livePriceOverlayPill'))) return;
-  if (dragMode === 'pinch' && e.touches.length === 2) {
-    e.preventDefault();
-    clearTimeout(longPressTimer);
-    const dist = Math.hypot(e.touches[0].clientX - e.touches[1].clientX, e.touches[0].clientY - e.touches[1].clientY);
-    if (pinchStartDist > 0) {
-      const factor = pinchStartDist / dist;
-      visibleCandleCount = Math.round(Math.max(10, Math.min(120, pinchStartCount * factor)));
-      drawChart();
-    }
-  } else if (e.touches.length === 1 && marketCache && marketCache.chart) {
-    const rect = canvas.getBoundingClientRect();
-    const touchX = e.touches[0].clientX - rect.left;
-    const touchY = e.touches[0].clientY - rect.top;
-
-    if (Math.hypot(touchX - dragStartX, touchY - dragStartY) > 8) {
-      hasMovedSignificant = true;
-      clearTimeout(longPressTimer);
-      chartCrosshair.active = true;
-    }
-
-    if (dragMode === 'price_scale_zoom') {
-      e.preventDefault();
-      const dy = touchY - dragStartY;
-      priceScaleZoomFactor = Math.max(0.15, Math.min(6.0, priceScaleZoomFactor * (1 + dy * 0.01)));
-      dragStartY = touchY;
-      drawChart();
-    } else if (dragMode === 'time_row_zoom') {
-      e.preventDefault();
-      const dx = touchX - dragStartX;
-      if (Math.abs(dx) >= 3) {
-        // Horizontal drag on the TIME AXIS changes candle density, like chart replay zoom.
-        // Drag right = fewer candles (zoom in), drag left = more candles (zoom out).
-        const factor = Math.exp(-dx / 140);
-        visibleCandleCount = Math.round(Math.max(10, Math.min(150, visibleCandleCount * factor)));
-        const total = marketCache.chart.candles.length;
-        panOffsetFloat = Math.max(0, Math.min(Math.max(0, total - visibleCandleCount), Number(panOffsetFloat || panOffset || 0)));
-        panOffset = Math.floor(panOffsetFloat);
-        dragStartX = touchX;
-        drawChart();
-      }
-    } else if (dragMode === 'chart_pan') {
-      e.preventDefault();
-      const dx = touchX - dragStartX;
-      const dy = touchY - dragStartY;
-      let redraw = false;
-      const logicalW = canvas.width / (window.devicePixelRatio || 1);
-      const candlePx = Math.max(4, (logicalW - 70) / Math.max(visibleCandleCount, 1));
-      // Smooth horizontal panning: keep fractional candle displacement so even a small
-      // finger movement visibly moves the chart instead of waiting for a full candle.
-      if (Math.abs(dx) >= 0.5) {
-        const total = marketCache.chart.candles.length;
-        const maxPan = Math.max(0, total - visibleCandleCount);
-        panOffsetFloat = Math.max(0, Math.min(maxPan, Number(panOffsetFloat || panOffset || 0) + (dx / candlePx)));
-        panOffset = Math.floor(panOffsetFloat);
-        dragStartX = touchX; redraw = true;
-      }
-      if (Math.abs(dy) >= 1) {
-        const chartTop = 68;
-        const chartBottom = (canvas.height / (window.devicePixelRatio || 1)) - 24;
-        const chartH = Math.max(chartBottom - chartTop, 50);
-        const pRange = (smoothMaxP && smoothMinP) ? (smoothMaxP - smoothMinP) : 80;
-        const shiftPrice = dy * (pRange / chartH);
-        // Keep one authoritative vertical pan state. drawChart() applies
-        // verticalPanOffset to the auto-fit bounds, so do not mutate the
-        // historical bounds separately or the next draw would cancel the drag.
-        verticalPanOffset += shiftPrice;
-        dragStartY = touchY; redraw = true;
-      }
-      if (redraw) drawChart();
-    }
-    // Keep the crosshair attached to the finger while the chart is being moved.
-    updateChartCrosshair(e.touches[0].clientX,e.touches[0].clientY);
+  if(e.target&&e.target.closest&&(e.target.closest('#historicalChartToolbar')||e.target.closest('#livePriceOverlayPill')))return;
+  if(dragMode==='pinch'&&e.touches.length===2){
+    e.preventDefault();clearTimeout(crosshairHoldTimer);clearTimeout(longPressTimer);
+    const dist=Math.hypot(e.touches[0].clientX-e.touches[1].clientX,e.touches[0].clientY-e.touches[1].clientY);
+    if(pinchStartDist>0){const factor=pinchStartDist/dist;visibleCandleCount=Math.round(Math.max(10,Math.min(120,pinchStartCount*factor)));drawChart();}return;
   }
-}, { passive: false });
-
+  if(e.touches.length!==1||!marketCache?.chart)return;
+  const t=e.touches[0],rect=canvas.getBoundingClientRect(),touchX=t.clientX-rect.left,touchY=t.clientY-rect.top;
+  const moved=Math.hypot(touchX-dragStartX,touchY-dragStartY)>8;
+  if(moved){hasMovedSignificant=true;clearTimeout(crosshairHoldTimer);}
+  if(dragMode==='crosshair'&&chartCrosshair.active){e.preventDefault();updateChartCrosshair(t.clientX,t.clientY);return;}
+  if(dragMode==='dismiss_crosshair')return;
+  if(dragMode==='price_scale_zoom'){
+    if(moved){e.preventDefault();const dy=touchY-dragStartY;priceScaleZoomFactor=Math.max(.15,Math.min(6,priceScaleZoomFactor*(1+dy*.01)));dragStartY=touchY;drawChart();}
+  }else if(dragMode==='time_row_zoom'){
+    if(moved){e.preventDefault();const dx=touchX-dragStartX;if(Math.abs(dx)>=3){const factor=Math.exp(-dx/140);visibleCandleCount=Math.round(Math.max(10,Math.min(150,visibleCandleCount*factor)));const total=marketCache.chart.candles.length;panOffsetFloat=Math.max(0,Math.min(Math.max(0,total-visibleCandleCount),Number(panOffsetFloat||panOffset||0)));panOffset=Math.floor(panOffsetFloat);dragStartX=touchX;drawChart();}}
+  }else if(dragMode==='chart_pan'&&moved){
+    e.preventDefault();const dx=touchX-dragStartX,dy=touchY-dragStartY,logicalW=canvas.width/(window.devicePixelRatio||1);
+    const candlePx=Math.max(4,(logicalW-70)/Math.max(visibleCandleCount,1));let redraw=false;
+    if(Math.abs(dx)>=.5){const total=marketCache.chart.candles.length,maxPan=Math.max(0,total-visibleCandleCount);panOffsetFloat=Math.max(0,Math.min(maxPan,Number(panOffsetFloat||panOffset||0)+dx/candlePx));panOffset=Math.floor(panOffsetFloat);dragStartX=touchX;redraw=true;}
+    if(Math.abs(dy)>=1){const top=68,bottom=rect.height-24,h=Math.max(bottom-top,50),range=(smoothMaxP&&smoothMinP)?smoothMaxP-smoothMinP:80;verticalPanOffset+=dy*(range/h);dragStartY=touchY;redraw=true;}
+    if(redraw)drawChart();
+  }
+},{passive:false});
 
 viewport.addEventListener('wheel', e => {
   e.preventDefault();
@@ -974,17 +914,15 @@ viewport.addEventListener('wheel', e => {
 }, { passive: false });
 
 viewport.addEventListener('touchend', e => {
-  if (e.target && e.target.closest && (e.target.closest('#historicalChartToolbar') || e.target.closest('#livePriceOverlayPill'))) return;
-  clearTimeout(longPressTimer);
-  if (e.changedTouches && e.changedTouches[0]) {
-    const t=e.changedTouches[0], rect=canvas.getBoundingClientRect();
-    updateChartCrosshair(t.clientX,t.clientY);
-    const x=t.clientX-rect.left, y=t.clientY-rect.top, logicalW=canvas.width/(window.devicePixelRatio||1);
-    if(!hasMovedSignificant && x>=logicalW-70 && y>=68 && y<=rect.height-24 && chartCrosshair.active){
-      openChartLimitModal(Number(chartCrosshair.price));
-    }
+  if(e.target&&e.target.closest&&(e.target.closest('#historicalChartToolbar')||e.target.closest('#livePriceOverlayPill')))return;
+  clearTimeout(crosshairHoldTimer);
+  if(e.changedTouches&&e.changedTouches[0]){
+    const t=e.changedTouches[0],rect=canvas.getBoundingClientRect(),x=t.clientX-rect.left,y=t.clientY-rect.top,logicalW=canvas.width/(window.devicePixelRatio||1);
+    if(!hasMovedSignificant&&x>=logicalW-70&&y>=68&&y<=rect.height-24){
+      updateChartCrosshair(t.clientX,t.clientY);openChartLimitModal(Number(chartCrosshair.price));
+    }else if(!crosshairTouchMode&&!crosshairWasActiveAtTouchStart){clearChartCrosshair(false);drawChart();}
   }
-  dragMode = 'none';
+  dragMode='none';crosshairTouchMode=false;
 });
 
 let mouseDragging = false;
@@ -994,12 +932,12 @@ viewport.addEventListener('pointerdown', e => {
   if (e.target && e.target.closest && e.target.closest('#livePriceOverlayPill')) return;
   if (e.pointerType === 'mouse' && e.button === 0) {
     crosshairPointerId=e.pointerId;
-    updateChartCrosshair(e.clientX,e.clientY);
+    clearChartCrosshair(false);
     mouseDragging = true; mouseLastX = e.clientX; mouseLastY = e.clientY; viewport.setPointerCapture?.(e.pointerId); }
 });
 viewport.addEventListener('pointermove', e => {
   if (e.target && e.target.closest && e.target.closest('#livePriceOverlayPill')) return;
-  if (e.pointerType === 'mouse' && marketCache?.chart && !mouseDragging) { updateChartCrosshair(e.clientX,e.clientY); return; }
+  if (e.pointerType === 'mouse' && marketCache?.chart && !mouseDragging) return;
   if (!mouseDragging || e.pointerType !== 'mouse' || !marketCache?.chart) return;
   e.preventDefault();
   const rect = canvas.getBoundingClientRect();
@@ -1012,7 +950,6 @@ viewport.addEventListener('pointermove', e => {
   const pRange = (smoothMaxP && smoothMinP) ? (smoothMaxP-smoothMinP) : 80;
   verticalPanOffset += dy * (pRange / Math.max(rect.height-92,50));
   mouseLastX=e.clientX; mouseLastY=e.clientY; drawChart();
-  updateChartCrosshair(e.clientX,e.clientY);
 });
 viewport.addEventListener('pointerup', () => { mouseDragging=false; });
 viewport.addEventListener('pointercancel', () => { mouseDragging=false; });
@@ -2535,17 +2472,6 @@ function drawChart() {
   }
   // 8. Live Price Line & Countdown Badge
   const curLTP = Number(marketCache?.chart?.ltp);
-  if(!chartCrosshair.active || chartCrosshair.candleIndex<0){
-    const all=marketCache?.chart?.candles||[], last=all.length-1;
-    const cw=Math.max(10,Number(visibleCandleCount||35)), total=all.length;
-    const chartRight=logicalW-70, safePan=Math.max(0,Math.min(Math.max(0,total-cw),Number(panOffsetFloat||panOffset||0))), endIdx=total-safePan;
-    chartCrosshair.candleIndex=Math.max(0,last);
-    chartCrosshair.x=chartRight-((endIdx-chartCrosshair.candleIndex)-0.5)*(chartRight/cw);
-    chartCrosshair.y=Number.isFinite(curLTP)?toY(curLTP):Math.max(chartTop,chartBottom-30);
-    chartCrosshair.price=getPriceFromY(chartCrosshair.y);
-    chartCrosshair.time=Number(all[last]?.time||0);
-    chartCrosshair.active=true;
-  }
   if (!Number.isFinite(curLTP)) { drawChartCrosshair(ctx,logicalW,logicalH); return; }
   const yLTP = toY(curLTP);
   const lastC = candles[candles.length - 1];
